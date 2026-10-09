@@ -78,3 +78,7 @@ Jeder hat jetzt einen Regressionstest.
 6. **Handy-Layout** (Playwright): Das Latenz-Overlay verdeckte auf schmalen
    Bildschirmen die umgebrochene Werkzeugleiste samt „Trennen“.
 7. **Kontrast** (axe): Der Video-Platzhalter hatte nur 3,9:1.
+8. **Zähler-Überlauf** (cargo-fuzz in CI): Eine gefälschte erste Frame-ID
+   nahe `u32::MAX` ließ `frames_dropped` überlaufen (Panic im Debug-Build,
+   stilles Umschlagen im Release). Zähler sättigen jetzt, und Lücken über
+   65 536 Frames gelten als Resync.
