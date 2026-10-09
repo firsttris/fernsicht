@@ -10,6 +10,9 @@ use crate::frame_newer;
 /// completes or when a slot is needed.
 pub const MAX_IN_FLIGHT: usize = 8;
 
+/// Largest frame-id gap booked as dropped frames (about 18 min at 60 fps).
+pub const MAX_COUNTED_GAP: u32 = 1 << 16;
+
 /// A fully received frame; `data` borrows the reassembler's buffer.
 #[derive(Debug)]
 pub struct CompletedFrame<'a> {
@@ -199,7 +202,7 @@ impl Reassembler {
             None => self.session_id = Some(h.session_id),
             _ => {}
         }
-        self.count(|s| s.packets_received += 1);
+        self.count(|s| s.packets_received = s.packets_received.saturating_add(1));
         if self.interval.packets_received == 1
             || frame_newer(h.frame_id, self.total.highest_frame_id)
         {
@@ -210,7 +213,7 @@ impl Reassembler {
             && !frame_newer(h.frame_id, last)
             && !self.has_slot(h.frame_id)
         {
-            self.count(|s| s.packets_late += 1);
+            self.count(|s| s.packets_late = s.packets_late.saturating_add(1));
             return None;
         }
 
@@ -271,7 +274,7 @@ impl Reassembler {
         } else {
             0
         };
-        self.count(|s| s.packets_recovered += restored as u32);
+        self.count(|s| s.packets_recovered = s.packets_recovered.saturating_add(restored as u32));
         let slot = &mut self.slots[idx];
         slot.groups[gi].done = true;
         slot.groups_done += 1;
@@ -341,10 +344,13 @@ impl Reassembler {
             Some(last) => frame_id.wrapping_sub(last).wrapping_sub(1),
             // Frame ids start at 0 in every session.
             None => frame_id,
-        };
+        }
+        // A jump this large is a resync (or a forged id), not that many
+        // lost frames; don't let it swamp the statistics.
+        .min(MAX_COUNTED_GAP);
         self.count(|s| {
-            s.frames_completed += 1;
-            s.frames_dropped += gap;
+            s.frames_completed = s.frames_completed.saturating_add(1);
+            s.frames_dropped = s.frames_dropped.saturating_add(gap);
         });
         if keyframe {
             self.needs_keyframe = false;
@@ -376,7 +382,7 @@ impl Reassembler {
         let slot = &mut self.slots[idx];
         let lost = slot.expected_packets().saturating_sub(slot.received) as u32;
         slot.active = false;
-        self.count(|s| s.packets_lost += lost);
+        self.count(|s| s.packets_lost = s.packets_lost.saturating_add(lost));
     }
 
     fn has_slot(&self, frame_id: u32) -> bool {
@@ -417,7 +423,7 @@ impl Reassembler {
                     .unwrap();
                 if frame_newer(self.slots[oldest].header.frame_id, h.frame_id) {
                     // Everything tracked is newer than this packet.
-                    self.count(|s| s.packets_late += 1);
+                    self.count(|s| s.packets_late = s.packets_late.saturating_add(1));
                     return None;
                 }
                 self.retire(oldest);
@@ -627,6 +633,21 @@ mod tests {
         }
         let s = r.take_interval();
         assert_eq!((s.frames_completed, s.frames_dropped), (1, 3));
+    }
+
+    #[test]
+    fn huge_frame_id_jumps_do_not_overflow_counters() {
+        // Regression (found by cargo-fuzz in CI): a first frame with an id
+        // near u32::MAX, then another big jump, overflowed frames_dropped.
+        let mut r = Reassembler::new();
+        for id in [u32::MAX - 5, u32::MAX / 2 - 7] {
+            for p in &packets(id, &frame(300, 1), cfg(0.0), false) {
+                feed(&mut r, p);
+            }
+        }
+        let t = r.totals();
+        assert_eq!(t.frames_completed, 2);
+        assert_eq!(t.frames_dropped, 2 * MAX_COUNTED_GAP);
     }
 
     #[test]
