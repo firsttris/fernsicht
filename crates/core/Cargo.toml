@@ -1,0 +1,14 @@
+[package]
+name = "fernsicht-core"
+description = "Pipeline primitives: monotonic clock, latest-frame-wins slots, latency stats, hot threads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

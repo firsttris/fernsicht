@@ -1,0 +1,10 @@
+[package]
+name = "fernsicht-input"
+description = "Input events and injection (phase 2: uinput, libei)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

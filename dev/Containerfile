@@ -1,0 +1,21 @@
+# Fernsicht dev container for Distrobox on Bazzite (or any Fedora Atomic).
+# The host system stays untouched; everything needed to build host agent
+# and client with the GPU backends lives in here.
+FROM registry.fedoraproject.org/fedora-toolbox:42
+
+RUN dnf install -y \
+      gcc gcc-c++ clang pkgconf-pkg-config cmake git \
+      libva-devel libva-utils mesa-va-drivers \
+      libdrm-devel pipewire-devel \
+      vulkan-headers vulkan-loader-devel vulkan-validation-layers vulkan-tools \
+      opus-devel libei-devel libevdev-devel \
+      wayland-devel libxkbcommon-devel \
+      webkit2gtk4.1-devel gtk3-devel libsoup3-devel \
+      nodejs22 pnpm \
+      iproute iperf3 \
+    && dnf clean all
+
+# Rust via rustup for the user (distrobox shares $HOME).
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component rustfmt,clippy \
+    && chmod -R a+w /usr/local/rustup /usr/local/cargo

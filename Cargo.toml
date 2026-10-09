@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/host-agent", "apps/client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/firsttris/fernsicht"
+publish = false
+
+[workspace.dependencies]
+fernsicht-core = { path = "crates/core" }
+fernsicht-proto = { path = "crates/proto" }
+fernsicht-net = { path = "crates/net" }
+fernsicht-capture = { path = "crates/capture" }
+fernsicht-codec = { path = "crates/codec" }
+fernsicht-render = { path = "crates/render" }
+fernsicht-input = { path = "crates/input" }
+fernsicht-audio = { path = "crates/audio" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+reed-solomon-simd = "3.1"
+socket2 = "0.6"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1

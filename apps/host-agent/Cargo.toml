@@ -1,0 +1,26 @@
+[package]
+name = "fernsicht-host-agent"
+description = "Per-session host agent: capture, encode, FEC, paced UDP send"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fernsicht-host-agent"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+env_logger.workspace = true
+fernsicht-capture.workspace = true
+fernsicht-codec.workspace = true
+fernsicht-core.workspace = true
+fernsicht-net.workspace = true
+fernsicht-proto.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true
