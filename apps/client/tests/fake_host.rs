@@ -184,6 +184,18 @@ fn serve(sock: UdpSocket, script: Script, stop: &AtomicBool, seen: &Mutex<Observ
         }
         frame_id += 1;
     }
+
+    // The client's last datagrams (its Bye) may still be queued when the
+    // test stops us; record them instead of racing the shutdown.
+    sock.set_nonblocking(true).unwrap();
+    while let Ok(n) = sock.recv(&mut buf) {
+        let mut seen = seen.lock().unwrap();
+        match Packet::decode(&buf[..n]) {
+            Ok(Packet::Feedback(f)) => seen.feedback.push(f),
+            Ok(Packet::Bye(b)) => seen.byes.push(b),
+            _ => {}
+        }
+    }
 }
 
 fn client(host: &FakeHost, secs: f32) -> anyhow::Result<RunSummary> {
@@ -206,7 +218,9 @@ fn handshake_and_stream() {
     assert_eq!(s.session_id, Some(SESSION));
     assert_eq!(s.codec, Some(Codec::Synthetic));
     assert!(s.frames_presented >= 45, "{s:?}");
-    assert_eq!(s.keyframes_decoded, 1, "{s:?}");
+    // The first feedback may still ask for a keyframe before the first one
+    // was decoded; the fake host then sends a second.
+    assert!((1..=2).contains(&s.keyframes_decoded), "{s:?}");
     assert_eq!(s.decode_errors, 0);
     assert_eq!(
         seen.hellos, 1,
