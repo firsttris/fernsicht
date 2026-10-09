@@ -1,0 +1,127 @@
+# Fernsicht
+
+Self-hosted Remote-Desktop und Game-Streaming für Linux, in Rust. Ziel ist
+die Latenz von Sunshine/Moonlight oder Parsec und der Komfort von
+TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
+1080p60.
+
+## Stand
+
+| Phase | Inhalt | Stand |
+|---|---|---|
+| 0 – Fundament | Workspace, CI, Latenz-Messung pro Stufe, Uhren-Sync, Overlay, Distrobox | ✅ fertig. Die Sunshine-Referenzmessung steht noch aus ([Vorlage](docs/latency-baseline.md)) |
+| 1 – Hot Path im LAN | Paketformat, FEC, Pacing, UDP, Slots, Threads | ✅ Transport fertig und getestet |
+| | KMS-/PipeWire-Capture, VAAPI-Encode/-Decode, Vulkan-Fenster | ⏳ offen, braucht die echte GPU (Traits stehen) |
+| 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
+| UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
+
+Bis die GPU-Backends da sind, läuft die komplette Pipeline mit einem
+**Testbild** und einem **synthetischen Codec**. Der synthetische Codec
+erzeugt Frames in realistischer Größe für die eingestellte Bitrate und
+prüft sie per Checksumme. Damit werden Transport, FEC, Pacing und
+Latenz-Messung echt gemessen, nur Capture und Encode sind Platzhalter.
+
+## Schnellstart
+
+```sh
+cargo build --release
+
+# Host
+./target/release/fernsicht-host-agent --bind 0.0.0.0:47800
+
+# Client (zweites Terminal oder zweiter Rechner)
+./target/release/fernsicht-client <host-ip>:47800 --fps 60 --bitrate 20000
+# mit 1 % künstlichem Paketverlust
+./target/release/fernsicht-client <host-ip>:47800 --loss 0.01 --duration 10
+```
+
+Der Client gibt jede Sekunde das Latenz-Overlay aus:
+
+```text
+Glass-to-Glass 2,3 ms  (p95 3,0 ms, max 4,0 ms)
+Capture 0,7 ms · Encode 0,2 ms · Netz 1,0 ms · Decode 0,3 ms · Anzeige 0,0 ms
+Codec Synthetisch · Bildrate 60 fps · Bitrate 24 Mbit/s · Verlust (FEC) 1,0 % → 0 · RTT 0,1 ms
+```
+
+Oberflächen:
+
+```sh
+pnpm install
+pnpm dev:client   # Client-UI auf http://localhost:1420
+pnpm dev:viewer   # Web-Viewer auf http://localhost:5174
+```
+
+## Aufbau
+
+```text
+crates/  core · proto · net · capture · codec · render · input · audio
+apps/    host-agent · client · client-ui
+web/     ui · viewer
+dev/     Distrobox-Container (Fedora) für Bazzite
+docs/    Messprotokolle
+```
+
+| Crate | Inhalt |
+|---|---|
+| `core` | Slot mit Kapazität 1 (latest frame wins, Puffer-Recycling), monotone Uhr, Latenz-Statistik pro Stufe, Hot-Threads mit erhöhter Priorität |
+| `proto` | UDP-Paketformat v1: Video-Shards mit Stufen-Zeitstempeln, Feedback, Clock-Ping/-Pong, Hello/Ack, Bye. Der Parser panict nie und allokiert nicht |
+| `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen, adaptive Redundanz 10–30 %, Reassembly mit Keyframe-Anforderung, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
+| `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken) |
+| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec |
+| `render` | `Presenter`-Trait, Overlay-Formatierung |
+| `input`, `audio` | Event-Typen, Traits, Duplikat-Filter (Phase 2) |
+
+### Threading im Host-Agent
+
+```text
+[capture] --slot(1)--> [encode] --slot(1)--> [packetize + FEC + pacing + send]
+[control]  Hello/Ack, Clock-Pong, Feedback → FEC-Redundanz, Keyframe
+```
+
+Jede Stufe läuft auf einem eigenen OS-Thread. Nach dem Aufwärmen wird
+nicht mehr allokiert: Frame-Puffer laufen über kleine Freilisten im Kreis.
+Ein übersprungener Frame wandert direkt zurück zum Erzeuger.
+
+### Latenz-Messung
+
+Der Host schreibt Capture-Zeitpunkt sowie die Abstände bis „Capture fertig“
+und „Encode fertig“ in jeden Paket-Header. Der Client misst Ankunft,
+Decode und Anzeige selbst und rechnet alles über den geschätzten
+Uhren-Offset auf eine Zeitachse um. Für den Offset zählt die Probe mit der
+kleinsten RTT aus den letzten 16. Die Stufen heißen wie im UI: Capture,
+Encode, Netz, Decode, Anzeige.
+
+## Entwicklung
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace     # inkl. Loopback-Test: 1 % Verlust ohne verlorenen Frame
+pnpm -r typecheck && pnpm -r build
+```
+
+Auf Bazzite: `dev/setup.sh` baut den Dev-Container und legt die Distrobox an.
+
+Bei Drops auf Keyframes (`RcvbufErrors` in `/proc/net/snmp`) die
+UDP-Puffer anheben:
+
+```sh
+sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+```
+
+## Nächste Schritte (Phase 1)
+
+1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
+2. VAAPI-Encode H.264 (radeonsi), zuerst über `ffmpeg-next` mit
+   HW-Kontext: keine B-Frames, CBR mit kleinem Puffer. Prüfen, ob
+   Intra-Refresh und Slices verfügbar sind.
+3. KMS-Capture → DMA-BUF → VAAPI-Import ohne Kopie, danach das
+   PipeWire-Portal als zweites Backend.
+4. Client: VAAPI-Decode → Vulkan-Textur → `winit`-Fenster (Mailbox/Immediate).
+5. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.
+
+## Offene Entscheidungen
+
+Lizenz, Name/Marke, erster Client (eigener vs. Moonlight-kompatibel),
+Codec-Start (H.264 vs. AV1), Self-hosted only vs. gehosteter
+Rendezvous-Dienst. Details stehen im Implementierungsplan.

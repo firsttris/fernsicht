@@ -1,0 +1,61 @@
+/*
+ * Fernsicht theme: shadcn/ui "zinc" in dark, Geist + Geist Mono.
+ * Import after tailwindcss in each app.
+ */
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+
+  --color-background: #09090b;
+  --color-foreground: #fafafa;
+  --color-card: #09090b;
+  --color-muted: #18181b;
+  --color-muted-foreground: #a1a1aa;
+  --color-subtle-foreground: #d4d4d8;
+  --color-border: #27272a;
+  --color-input: #27272a;
+  --color-ring: #52525b;
+  --color-primary: #fafafa;
+  --color-primary-foreground: #18181b;
+  --color-secondary: #27272a;
+  --color-secondary-foreground: #fafafa;
+  --color-destructive: #7f1d1d;
+  --color-destructive-foreground: #fef2f2;
+  --color-success: #4ade80;
+  --color-success-muted: #052e16;
+  --color-success-border: #14532d;
+  --color-overlay: rgb(9 9 11 / 0.88);
+
+  /* Latency stage colors (overlay bar) */
+  --color-stage-capture: #60a5fa;
+  --color-stage-encode: #a78bfa;
+  --color-stage-network: #fbbf24;
+  --color-stage-decode: #34d399;
+  --color-stage-present: #a1a1aa;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
