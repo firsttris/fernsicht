@@ -1,34 +1,38 @@
 //! Host agent: answers session requests and runs the streaming pipeline.
 //!
 //! ```text
-//! [capture] --slot(1)--> [encode] --slot(1)--> [packetize + FEC + pacing + send]
+//! [capture] --slot(1)--> [encode] --fifo(2)--> [packetize + FEC + pacing + send]
 //! [control] Hello/HelloAck, clock pings, feedback → FEC + keyframes
 //! ```
 //!
-//! Each arrow is a [`Slot`]: the newest frame replaces an unconsumed one.
-//! Buffers circulate through small free lists, so steady state does not
-//! allocate.
+//! Raw frames meet a latest-frame-wins [`Slot`]: when the encoder is busy,
+//! the newest capture replaces an unconsumed one, which costs nothing.
+//! Encoded frames reference each other, so they go through a short FIFO and
+//! are only dropped when it overflows; that forces a keyframe. Buffers
+//! circulate through small free lists, so steady state does not allocate.
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use fernsicht_capture::{Frame, FrameSource, TestPattern};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 use fernsicht_codec::{EncodedFrame, Encoder};
 use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock, now_us};
-use fernsicht_net::{AdaptiveRedundancy, FecConfig, FrameMeta, LossSim, Pacer, Packetizer};
+use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
 use fernsicht_proto::{Bye, ClockPong, Feedback, Hello, HelloAck, MAX_DATAGRAM, Packet};
 
-/// A session ends when the client has been silent this long.
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Buffers per pipeline stage: producer, slot, consumer.
+/// Raw frame buffers: producer, slot, consumer.
 const BUFFERS: usize = 3;
+/// Encoded frames waiting for the sender.
+const SEND_QUEUE: usize = 2;
+/// Encoded frame buffers: the queue, one being encoded, one being sent.
+const ENCODED_BUFFERS: usize = SEND_QUEUE + 2;
 
 #[derive(Clone, Debug)]
 pub struct HostConfig {
@@ -40,6 +44,8 @@ pub struct HostConfig {
     /// Fraction of video packets to drop on purpose (testing).
     pub loss: f64,
     pub pace_bytes_per_sec: u64,
+    /// A session ends when the client has been silent this long.
+    pub client_timeout: Duration,
 }
 
 impl Default for HostConfig {
@@ -52,6 +58,7 @@ impl Default for HostConfig {
             max_bitrate_kbps: 80_000,
             loss: 0.0,
             pace_bytes_per_sec: 50_000_000,
+            client_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -66,11 +73,34 @@ pub struct SessionParams {
 }
 
 /// State the control loop shares with the pipeline threads.
+/// Cumulative counters across all sessions of one host agent.
+#[derive(Debug, Default)]
+pub struct HostStats {
+    pub sessions: AtomicU64,
+    pub frames_captured: AtomicU64,
+    pub frames_encoded: AtomicU64,
+    pub keyframes_encoded: AtomicU64,
+    /// Encoded frames dropped because the sender was a whole queue behind.
+    pub send_overflows: AtomicU64,
+    pub frames_sent: AtomicU64,
+}
+
+impl HostStats {
+    fn bump(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get(counter: &AtomicU64) -> u64 {
+        counter.load(Ordering::Relaxed)
+    }
+}
+
 struct Shared {
+    stats: Arc<HostStats>,
     running: AtomicBool,
     keyframe_requested: AtomicBool,
-    /// FEC redundancy as `f32` bits.
-    redundancy: AtomicU32,
+    /// Loss rate FEC is sized for, as `f32` bits.
+    fec_loss: AtomicU32,
 }
 
 struct Session {
@@ -78,17 +108,15 @@ struct Session {
     peer: SocketAddr,
     last_seen: Instant,
     shared: Arc<Shared>,
-    redundancy: AdaptiveRedundancy,
+    loss: LossEstimator,
     threads: Vec<JoinHandle<()>>,
     frame_slot: Arc<Slot<Frame>>,
-    encoded_slot: Arc<Slot<EncodedFrame>>,
 }
 
 impl Session {
     fn stop(mut self) {
         self.shared.running.store(false, Ordering::Release);
         self.frame_slot.close();
-        self.encoded_slot.close();
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -98,6 +126,7 @@ impl Session {
 pub struct HostAgent {
     cfg: HostConfig,
     socket: Arc<UdpSocket>,
+    stats: Arc<HostStats>,
 }
 
 impl HostAgent {
@@ -108,7 +137,13 @@ impl HostAgent {
         Ok(Self {
             cfg,
             socket: Arc::new(socket),
+            stats: Arc::default(),
         })
+    }
+
+    /// Counters that stay readable while and after [`run`](Self::run) runs.
+    pub fn stats(&self) -> Arc<HostStats> {
+        self.stats.clone()
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -122,6 +157,14 @@ impl HostAgent {
         let mut session: Option<Session> = None;
 
         while !stop.load(Ordering::Relaxed) {
+            if session
+                .as_ref()
+                .is_some_and(|s| s.last_seen.elapsed() > self.cfg.client_timeout)
+            {
+                let s = session.take().unwrap();
+                log::info!("session {:08x}: client timed out", s.params.session_id);
+                s.stop();
+            }
             let (len, from) = match self.socket.recv_from(&mut buf) {
                 Ok(r) => r,
                 Err(e)
@@ -130,14 +173,6 @@ impl HostAgent {
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
-                    if let Some(s) = session.take() {
-                        if s.last_seen.elapsed() > CLIENT_TIMEOUT {
-                            log::info!("session {:08x}: client timed out", s.params.session_id);
-                            s.stop();
-                        } else {
-                            session = Some(s);
-                        }
-                    }
                     continue;
                 }
                 Err(e) => {
@@ -244,14 +279,16 @@ impl HostAgent {
     }
 
     fn start_session(&self, params: SessionParams, peer: SocketAddr) -> anyhow::Result<Session> {
-        let redundancy = AdaptiveRedundancy::default();
+        let loss = LossEstimator::default();
+        HostStats::bump(&self.stats.sessions);
         let shared = Arc::new(Shared {
+            stats: self.stats.clone(),
             running: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(true),
-            redundancy: AtomicU32::new(redundancy.redundancy().to_bits()),
+            fec_loss: AtomicU32::new(loss.estimate().to_bits()),
         });
         let frame_slot = Arc::new(Slot::new());
-        let encoded_slot = Arc::new(Slot::new());
+        let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
 
         let source = TestPattern::new(
             u32::from(params.width),
@@ -262,8 +299,8 @@ impl HostAgent {
         for _ in 0..BUFFERS {
             free_frames_tx.send(source.alloc_frame()).unwrap();
         }
-        let (free_enc_tx, free_enc_rx) = bounded(BUFFERS);
-        for _ in 0..BUFFERS {
+        let (free_enc_tx, free_enc_rx) = bounded(ENCODED_BUFFERS);
+        for _ in 0..ENCODED_BUFFERS {
             free_enc_tx.send(EncodedFrame::default()).unwrap();
         }
 
@@ -275,8 +312,7 @@ impl HostAgent {
             })?
         };
         let encode = {
-            let (shared, in_slot, out_slot) =
-                (shared.clone(), frame_slot.clone(), encoded_slot.clone());
+            let (shared, in_slot) = (shared.clone(), frame_slot.clone());
             let free_enc_tx = free_enc_tx.clone();
             let encoder = SyntheticEncoder::new(params.bitrate_kbps, u32::from(params.fps));
             spawn_hot("encode", move || {
@@ -284,7 +320,7 @@ impl HostAgent {
                     encoder,
                     &shared,
                     &in_slot,
-                    &out_slot,
+                    &send_tx,
                     &free_frames_tx,
                     &free_enc_rx,
                     &free_enc_tx,
@@ -292,8 +328,7 @@ impl HostAgent {
             })?
         };
         let send = {
-            let (shared, slot, socket) =
-                (shared.clone(), encoded_slot.clone(), self.socket.clone());
+            let (shared, socket) = (shared.clone(), self.socket.clone());
             let pacer = Pacer {
                 rate_bytes_per_sec: self.cfg.pace_bytes_per_sec,
                 burst: 4,
@@ -302,7 +337,7 @@ impl HostAgent {
             spawn_hot("send", move || {
                 if let Err(e) = send_loop(
                     &shared,
-                    &slot,
+                    &send_rx,
                     &free_enc_tx,
                     &socket,
                     peer,
@@ -320,26 +355,27 @@ impl HostAgent {
             peer,
             last_seen: Instant::now(),
             shared,
-            redundancy,
+            loss,
             threads: vec![capture, encode, send],
             frame_slot,
-            encoded_slot,
         })
     }
 }
 
 fn on_feedback(s: &mut Session, fb: &Feedback) {
-    let r = s.redundancy.update(fb.loss_ratio());
-    s.shared.redundancy.store(r.to_bits(), Ordering::Relaxed);
+    let estimate = s.loss.update(fb.loss_ratio());
+    s.shared
+        .fec_loss
+        .store(estimate.to_bits(), Ordering::Relaxed);
     if fb.request_keyframe {
         s.shared.keyframe_requested.store(true, Ordering::Relaxed);
     }
     log::debug!(
-        "feedback: loss {:.2} % recovered {} dropped {} → FEC {:.0} %",
+        "feedback: loss {:.2} % recovered {} dropped {} → FEC sized for {:.1} %",
         fb.loss_ratio() * 100.0,
         fb.packets_recovered,
         fb.frames_dropped,
-        r * 100.0
+        estimate * 100.0
     );
 }
 
@@ -365,6 +401,7 @@ fn capture_loop(
             log::error!("capture: {e}");
             break;
         }
+        HostStats::bump(&shared.stats.frames_captured);
         if let Some(skipped) = slot.put(frame) {
             let _ = free_tx.send(skipped);
         }
@@ -376,11 +413,12 @@ fn encode_loop(
     mut encoder: SyntheticEncoder,
     shared: &Shared,
     in_slot: &Slot<Frame>,
-    out_slot: &Slot<EncodedFrame>,
+    send_tx: &Sender<EncodedFrame>,
     free_frames: &Sender<Frame>,
     free_enc_rx: &Receiver<EncodedFrame>,
     free_enc_tx: &Sender<EncodedFrame>,
 ) {
+    let mut next_frame_id = 0u32;
     while let Some(frame) = in_slot.take() {
         if !shared.running.load(Ordering::Acquire) {
             break;
@@ -396,13 +434,23 @@ fn encode_loop(
         let _ = free_frames.send(frame);
         match result {
             Ok(()) => {
-                if let Some(skipped) = out_slot.put(out) {
-                    // The sender fell behind; the skipped frame may have been
-                    // a reference for later ones, so resync with a keyframe.
-                    if skipped.keyframe {
+                HostStats::bump(&shared.stats.frames_encoded);
+                if out.keyframe {
+                    HostStats::bump(&shared.stats.keyframes_encoded);
+                }
+                out.frame_id = next_frame_id;
+                next_frame_id = next_frame_id.wrapping_add(1);
+                match send_tx.try_send(out) {
+                    Ok(()) => {}
+                    // The sender is a whole queue behind (network or CPU
+                    // overload). Later frames reference this one, so resync
+                    // with a keyframe; the client sees the frame-id gap too.
+                    Err(TrySendError::Full(out)) => {
+                        HostStats::bump(&shared.stats.send_overflows);
                         encoder.request_keyframe();
+                        let _ = free_enc_tx.send(out);
                     }
-                    let _ = free_enc_tx.send(skipped);
+                    Err(TrySendError::Disconnected(_)) => break,
                 }
             }
             Err(e) => {
@@ -411,13 +459,13 @@ fn encode_loop(
             }
         }
     }
-    out_slot.close();
+    // Dropping `send_tx` on return ends the send loop.
 }
 
 #[allow(clippy::too_many_arguments)]
 fn send_loop(
     shared: &Shared,
-    slot: &Slot<EncodedFrame>,
+    queue: &Receiver<EncodedFrame>,
     free_enc: &Sender<EncodedFrame>,
     socket: &UdpSocket,
     peer: SocketAddr,
@@ -427,24 +475,22 @@ fn send_loop(
 ) -> anyhow::Result<()> {
     let mut packetizer = Packetizer::new(FecConfig::default())?;
     let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)) / 2);
-    let mut frame_id = 0u32;
     let mut window_start = Instant::now();
     let (mut frames, mut bytes, mut packets) = (0u32, 0u64, 0u64);
 
-    while let Some(enc) = slot.take() {
+    while let Ok(enc) = queue.recv() {
         if !shared.running.load(Ordering::Acquire) {
             break;
         }
-        packetizer.set_redundancy(f32::from_bits(shared.redundancy.load(Ordering::Relaxed)));
+        packetizer.set_loss(f32::from_bits(shared.fec_loss.load(Ordering::Relaxed)));
         let meta = FrameMeta {
             session_id: params.session_id,
-            frame_id,
+            frame_id: enc.frame_id,
             keyframe: enc.keyframe,
             capture_us: enc.capture_us,
             capture_ready_delta_us: enc.capture_ready_us.saturating_sub(enc.capture_us) as u32,
             encoded_delta_us: enc.encoded_us.saturating_sub(enc.capture_us) as u32,
         };
-        frame_id = frame_id.wrapping_add(1);
         let pkts = packetizer.packetize(&meta, &enc.data)?;
         let _ = free_enc.send(enc);
         pacer.pace(pkts, budget, |p| {
@@ -461,17 +507,18 @@ fn send_loop(
             }
         })?;
         frames += 1;
+        HostStats::bump(&shared.stats.frames_sent);
 
         let elapsed = window_start.elapsed();
         if elapsed >= Duration::from_secs(5) {
             let secs = elapsed.as_secs_f64();
             log::info!(
-                "session {:08x}: {:.1} fps, {:.1} Mbit/s, {:.0} pkt/s, FEC {:.0} %",
+                "session {:08x}: {:.1} fps, {:.1} Mbit/s, {:.0} pkt/s, FEC sized for {:.1} % loss",
                 params.session_id,
                 f64::from(frames) / secs,
                 bytes as f64 * 8.0 / secs / 1e6,
                 packets as f64 / secs,
-                packetizer.config().redundancy * 100.0
+                packetizer.config().loss * 100.0
             );
             window_start = Instant::now();
             (frames, bytes, packets) = (0, 0, 0);

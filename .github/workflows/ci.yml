@@ -2,15 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
+  schedule:
+    # Nightly: long fuzzing and the soak test.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
 jobs:
-  rust:
+  # ── Rust ──────────────────────────────────────────────────────────────
+  rust-lint:
+    name: Rust · fmt, clippy, benches compile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,10 +28,96 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
+      - run: cargo bench --workspace --no-run
 
-  web:
+  rust-test:
+    name: Rust · unit, property, integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --exclude fernsicht-e2e
+        env:
+          PROPTEST_CASES: "1024"
+
+  rust-e2e:
+    name: Rust · end-to-end (impaired network, binaries)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Raise UDP buffer limits like a tuned host
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - run: cargo test -p fernsicht-e2e
+
+  rust-coverage:
+    name: Rust · coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      # CLI entry points are exercised by the binary E2E tests but run as
+      # separate processes, so they are excluded from the measurement.
+      - run: >
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          --ignore-filename-regex 'main\.rs$' --fail-under-lines 90
+      - run: cargo llvm-cov report --summary-only --ignore-filename-regex 'main\.rs$' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: lcov.info
+
+  fuzz:
+    name: Fuzz · ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [proto_decode, reassembler, fec_roundtrip, synthetic_decode]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz (60 s per push, 15 min nightly)
+        working-directory: fuzz
+        run: |
+          secs=60
+          if [ "${{ github.event_name }}" = "schedule" ]; then secs=900; fi
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=$secs -rss_limit_mb=1024
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts
+
+  soak:
+    name: Rust · soak (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - run: cargo test -p fernsicht-e2e --release --test soak -- --ignored
+
+  # ── Web ───────────────────────────────────────────────────────────────
+  web-lint:
+    name: Web · format, typecheck, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,5 +127,44 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
       - run: pnpm -r typecheck
       - run: pnpm -r build
+
+  web-unit:
+    name: Web · unit & component (coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage
+          path: coverage
+
+  web-e2e:
+    name: Web · browser E2E & accessibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @fernsicht/web-e2e exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/e2e/playwright-report
+            web/e2e/test-results

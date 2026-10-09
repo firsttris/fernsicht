@@ -10,7 +10,7 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | Phase | Inhalt | Stand |
 |---|---|---|
 | 0 – Fundament | Workspace, CI, Latenz-Messung pro Stufe, Uhren-Sync, Overlay, Distrobox | ✅ fertig. Die Sunshine-Referenzmessung steht noch aus ([Vorlage](docs/latency-baseline.md)) |
-| 1 – Hot Path im LAN | Paketformat, FEC, Pacing, UDP, Slots, Threads | ✅ Transport fertig und getestet |
+| 1 – Hot Path im LAN | Paketformat, FEC, Pacing, UDP, Slots, Threads | ✅ Transport fertig und getestet (inkl. 1 % Verlust ohne verlorenen Frame) |
 | | KMS-/PipeWire-Capture, VAAPI-Encode/-Decode, Vulkan-Fenster | ⏳ offen, braucht die echte GPU (Traits stehen) |
 | 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
@@ -65,22 +65,26 @@ docs/    Messprotokolle
 |---|---|
 | `core` | Slot mit Kapazität 1 (latest frame wins, Puffer-Recycling), monotone Uhr, Latenz-Statistik pro Stufe, Hot-Threads mit erhöhter Priorität |
 | `proto` | UDP-Paketformat v1: Video-Shards mit Stufen-Zeitstempeln, Feedback, Clock-Ping/-Pong, Hello/Ack, Bye. Der Parser panict nie und allokiert nicht |
-| `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen, adaptive Redundanz 10–30 %, Reassembly mit Keyframe-Anforderung, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
+| `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen; Recovery-Shards pro Gruppe binomial aus der gemessenen Verlustrate (Gruppenausfall ≤ 10⁻⁵, mindestens 10 %), Reassembly mit Keyframe-Anforderung und harten Größengrenzen, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
 | `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken) |
 | `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec |
 | `render` | `Presenter`-Trait, Overlay-Formatierung |
 | `input`, `audio` | Event-Typen, Traits, Duplikat-Filter (Phase 2) |
 
-### Threading im Host-Agent
+### Threading
 
 ```text
-[capture] --slot(1)--> [encode] --slot(1)--> [packetize + FEC + pacing + send]
-[control]  Hello/Ack, Clock-Pong, Feedback → FEC-Redundanz, Keyframe
+Host:   [capture] --slot(1)--> [encode] --fifo(2)--> [packetize + FEC + pacing + send]
+        [control]  Hello/Ack, Clock-Pong, Feedback → FEC-Bemessung, Keyframe
+Client: [network] --fifo(4)--> [decode] --latest wins--> [present]
 ```
 
 Jede Stufe läuft auf einem eigenen OS-Thread. Nach dem Aufwärmen wird
 nicht mehr allokiert: Frame-Puffer laufen über kleine Freilisten im Kreis.
-Ein übersprungener Frame wandert direkt zurück zum Erzeuger.
+„Latest frame wins“ gilt nur für *rohe* bzw. *dekodierte* Frames.
+Komprimierte Frames hängen voneinander ab und gehen deshalb durch eine
+kurze FIFO. Läuft die über, zeigt eine Lücke in der Frame-ID das an, und
+ein Keyframe wird angefordert.
 
 ### Latenz-Messung
 
@@ -91,14 +95,26 @@ Uhren-Offset auf eine Zeitachse um. Für den Offset zählt die Probe mit der
 kleinsten RTT aus den letzten 16. Die Stufen heißen wie im UI: Capture,
 Encode, Netz, Decode, Anzeige.
 
-## Entwicklung
+## Entwicklung und Tests
 
 ```sh
+# Rust: Lint, Unit-, Property-, Integrations- und E2E-Tests
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace     # inkl. Loopback-Test: 1 % Verlust ohne verlorenen Frame
-pnpm -r typecheck && pnpm -r build
+cargo test --workspace
+
+# Web: Format, Typen, Unit-/Komponententests mit Coverage, Browser-E2E + axe
+pnpm install
+pnpm format:check && pnpm -r typecheck
+pnpm test:coverage
+pnpm test:e2e
 ```
+
+Die Testebenen (Unit, Property, Integration, Protokoll-Konformität, E2E
+über ein gestörtes Netz, Binaries, Soak, Fuzzing, Benchmarks, Browser-E2E,
+Accessibility) und ihre CI-Jobs beschreibt [docs/testing.md](docs/testing.md).
+CI läuft bei jedem Push. Nachts kommen 15 Minuten Fuzzing pro Target und
+der Soak-Test dazu.
 
 Auf Bazzite: `dev/setup.sh` baut den Dev-Container und legt die Distrobox an.
 

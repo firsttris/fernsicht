@@ -1,8 +1,22 @@
 //! Frame → FEC-protected datagrams.
 
-use fernsicht_proto::{DEFAULT_SHARD_SIZE, VideoHeader};
+use fernsicht_proto::{DEFAULT_SHARD_SIZE, MAX_FRAME_LEN, VideoHeader};
 use reed_solomon_simd::ReedSolomonEncoder;
 use thiserror::Error;
+
+/// Probability that a group stays unrecoverable that recovery sizing aims
+/// for. At 60 fps with one to three groups per frame this is roughly one
+/// lost frame per hour at the design loss rate.
+pub const TARGET_GROUP_FAILURE: f64 = 1e-5;
+
+/// Upper bound for `max_data_per_group`. With `max_redundancy ≤ 1` a group
+/// then stays within the protocol's `MAX_GROUP_SHARDS`.
+pub const MAX_DATA_PER_GROUP: usize = 512;
+
+/// Small groups may always use this many recovery shards, whatever
+/// `max_redundancy` says: tiny frames (a static desktop) are cheap to
+/// protect, and one recovery shard alone fails too often.
+pub const MIN_RECOVERY_CAP: usize = 3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FecConfig {
@@ -11,8 +25,14 @@ pub struct FecConfig {
     /// Upper bound for data shards per FEC group. Smaller groups decode
     /// faster and isolate burst loss; larger groups protect better.
     pub max_data_per_group: usize,
-    /// Recovery shards as a fraction of data shards (0.0 disables FEC).
+    /// Minimum recovery shards as a fraction of data shards (0.0 disables
+    /// FEC entirely).
     pub redundancy: f32,
+    /// Upper bound for the recovery fraction.
+    pub max_redundancy: f32,
+    /// Packet loss rate (0–1) the recovery shards are sized for. With 0,
+    /// only `redundancy` applies.
+    pub loss: f32,
 }
 
 impl Default for FecConfig {
@@ -21,18 +41,52 @@ impl Default for FecConfig {
             shard_size: DEFAULT_SHARD_SIZE,
             max_data_per_group: 64,
             redundancy: 0.10,
+            max_redundancy: 0.50,
+            loss: LossEstimator::FLOOR,
         }
     }
 }
 
 impl FecConfig {
+    /// Recovery shards for a group of `data_shards`.
+    ///
+    /// At least `redundancy` of the data, then enough that independent loss
+    /// at rate `loss` makes the group unrecoverable with probability at most
+    /// [`TARGET_GROUP_FAILURE`], capped at `max_redundancy` (but always
+    /// allowing [`MIN_RECOVERY_CAP`]).
     pub fn recovery_for(&self, data_shards: usize) -> usize {
-        if self.redundancy <= 0.0 {
-            0
-        } else {
-            ((data_shards as f32 * self.redundancy).ceil() as usize).max(1)
+        if self.redundancy <= 0.0 || data_shards == 0 {
+            return 0;
         }
+        let base = ((data_shards as f32 * self.redundancy).ceil() as usize).max(1);
+        let cap = ((data_shards as f32 * self.max_redundancy).ceil() as usize)
+            .max(base)
+            .max(MIN_RECOVERY_CAP);
+        if self.loss <= 0.0 {
+            return base;
+        }
+        let p = f64::from(self.loss.min(0.5));
+        (base..=cap)
+            .find(|&r| group_failure(data_shards, r, p) <= TARGET_GROUP_FAILURE)
+            .unwrap_or(cap)
     }
+}
+
+/// Probability that more than `recovery` of `data + recovery` shards are
+/// lost when each is lost independently with probability `p`.
+pub fn group_failure(data: usize, recovery: usize, p: f64) -> f64 {
+    let n = data + recovery;
+    if p <= 0.0 {
+        return 0.0;
+    }
+    // Binomial pmf, iteratively: pmf(k+1) = pmf(k) · (n−k)/(k+1) · p/(1−p).
+    let mut pmf = (1.0 - p).powi(n as i32);
+    let mut cdf = pmf;
+    for k in 0..recovery {
+        pmf *= (n - k) as f64 / (k + 1) as f64 * p / (1.0 - p);
+        cdf += pmf;
+    }
+    (1.0 - cdf).max(0.0)
 }
 
 /// Per-frame values copied into every packet header.
@@ -71,11 +125,14 @@ pub struct Packetizer {
 
 impl Packetizer {
     pub fn new(cfg: FecConfig) -> Result<Self, FecError> {
-        if cfg.shard_size == 0 || cfg.shard_size % 2 != 0 {
+        if cfg.shard_size == 0 || !cfg.shard_size.is_multiple_of(2) {
             return Err(FecError::Config("shard_size must be even and non-zero"));
         }
-        if cfg.max_data_per_group == 0 || cfg.max_data_per_group > 4096 {
-            return Err(FecError::Config("max_data_per_group must be 1..=4096"));
+        if cfg.max_data_per_group == 0 || cfg.max_data_per_group > MAX_DATA_PER_GROUP {
+            return Err(FecError::Config("max_data_per_group must be 1..=512"));
+        }
+        if !(0.0..=1.0).contains(&cfg.max_redundancy) {
+            return Err(FecError::Config("max_redundancy must be within 0..=1"));
         }
         Ok(Self {
             cfg,
@@ -89,9 +146,9 @@ impl Packetizer {
         self.cfg
     }
 
-    /// Changes redundancy for subsequent frames (adaptive FEC).
-    pub fn set_redundancy(&mut self, redundancy: f32) {
-        self.cfg.redundancy = redundancy.clamp(0.0, 1.0);
+    /// Changes the loss rate FEC is sized for (adaptive FEC).
+    pub fn set_loss(&mut self, loss: f32) {
+        self.cfg.loss = loss.clamp(0.0, 1.0);
     }
 
     /// Splits `frame` into datagrams. The returned packets stay valid until
@@ -100,7 +157,7 @@ impl Packetizer {
         if frame.is_empty() {
             return Err(FecError::Empty);
         }
-        if frame.len() > u32::MAX as usize {
+        if frame.len() > MAX_FRAME_LEN as usize {
             return Err(FecError::TooLarge(frame.len()));
         }
         let shard = self.cfg.shard_size;
@@ -189,38 +246,32 @@ impl Packetizer {
     }
 }
 
-/// Picks FEC redundancy from reported packet loss: 10 % floor, 30 % cap,
-/// roughly twice the loss rate on top of the floor, smoothed so a single
-/// bad report doesn't swing it.
-#[derive(Clone, Copy, Debug)]
-pub struct AdaptiveRedundancy {
-    pub min: f32,
-    pub max: f32,
-    smoothed_loss: f32,
+/// Turns loss reports into the loss rate FEC is sized for: smoothed so a
+/// single bad report doesn't swing it, and never below [`Self::FLOOR`] so a
+/// clean link still survives the occasional burst.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LossEstimator {
+    smoothed: f32,
 }
 
-impl Default for AdaptiveRedundancy {
-    fn default() -> Self {
-        Self {
-            min: 0.10,
-            max: 0.30,
-            smoothed_loss: 0.0,
-        }
-    }
-}
-
-impl AdaptiveRedundancy {
+impl LossEstimator {
+    /// Design for at least 1 % loss (phase 1 acceptance criterion).
+    pub const FLOOR: f32 = 0.01;
     const ALPHA: f32 = 0.3;
 
-    /// Feeds one loss report (0.0–1.0) and returns the new redundancy.
+    /// Feeds one loss report (0.0–1.0) and returns the new estimate.
     pub fn update(&mut self, loss_ratio: f32) -> f32 {
-        let loss = loss_ratio.clamp(0.0, 1.0);
-        self.smoothed_loss += Self::ALPHA * (loss - self.smoothed_loss);
-        self.redundancy()
+        let loss = if loss_ratio.is_nan() {
+            0.0
+        } else {
+            loss_ratio.clamp(0.0, 1.0)
+        };
+        self.smoothed += Self::ALPHA * (loss - self.smoothed);
+        self.estimate()
     }
 
-    pub fn redundancy(&self) -> f32 {
-        (self.min + 2.0 * self.smoothed_loss).clamp(self.min, self.max)
+    pub fn estimate(&self) -> f32 {
+        self.smoothed.max(Self::FLOOR)
     }
 }
 
@@ -242,11 +293,53 @@ mod tests {
 
     #[test]
     fn rejects_bad_config() {
-        let odd = FecConfig {
-            shard_size: 1001,
+        for bad in [
+            FecConfig {
+                shard_size: 1001,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                shard_size: 0,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                max_data_per_group: 0,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                max_data_per_group: MAX_DATA_PER_GROUP + 1,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                max_redundancy: 1.5,
+                ..FecConfig::default()
+            },
+        ] {
+            assert!(Packetizer::new(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_and_oversized_frames() {
+        let mut p = Packetizer::new(FecConfig::default()).unwrap();
+        assert!(matches!(p.packetize(&meta(), &[]), Err(FecError::Empty)));
+        let huge = vec![0u8; MAX_FRAME_LEN as usize + 1];
+        assert!(matches!(
+            p.packetize(&meta(), &huge),
+            Err(FecError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn largest_groups_fit_the_protocol() {
+        let cfg = FecConfig {
+            max_data_per_group: MAX_DATA_PER_GROUP,
+            max_redundancy: 1.0,
+            loss: 0.5,
             ..FecConfig::default()
         };
-        assert!(Packetizer::new(odd).is_err());
+        let total = MAX_DATA_PER_GROUP + cfg.recovery_for(MAX_DATA_PER_GROUP);
+        assert!(total <= fernsicht_proto::MAX_GROUP_SHARDS as usize);
     }
 
     #[test]
@@ -255,6 +348,8 @@ mod tests {
             shard_size: 100,
             max_data_per_group: 64,
             redundancy: 0.2,
+            loss: 0.0,
+            ..FecConfig::default()
         };
         let mut p = Packetizer::new(cfg).unwrap();
         let frame: Vec<u8> = (0..250u32).map(|i| i as u8).collect();
@@ -284,6 +379,8 @@ mod tests {
             shard_size: 64,
             max_data_per_group: 10,
             redundancy: 0.3,
+            loss: 0.0,
+            ..FecConfig::default()
         };
         let mut p = Packetizer::new(cfg).unwrap();
         let frame = vec![7u8; 64 * 25 + 1]; // 26 data shards → groups of 10, 10, 6
@@ -308,6 +405,8 @@ mod tests {
             shard_size: 100,
             max_data_per_group: 64,
             redundancy: 0.0,
+            loss: 0.0,
+            ..FecConfig::default()
         };
         let mut p = Packetizer::new(cfg).unwrap();
         assert_eq!(p.packetize(&meta(), &[1; 150]).unwrap().len(), 2);
@@ -325,21 +424,67 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_redundancy_bounds() {
-        let mut a = AdaptiveRedundancy::default();
-        assert!((a.redundancy() - 0.10).abs() < 1e-6);
+    fn loss_estimator_smooths_and_floors() {
+        let mut e = LossEstimator::default();
+        assert_eq!(e.estimate(), LossEstimator::FLOOR);
         for _ in 0..50 {
-            a.update(0.5);
+            e.update(0.2);
         }
-        assert!((a.redundancy() - 0.30).abs() < 1e-6);
+        assert!((e.estimate() - 0.2).abs() < 1e-3);
+        // One clean report only moves it part of the way.
+        assert!(e.update(0.0) > 0.1);
         for _ in 0..50 {
-            a.update(0.0);
+            e.update(0.0);
         }
-        assert!(a.redundancy() < 0.11);
-        let mut b = AdaptiveRedundancy::default();
-        for _ in 0..50 {
-            b.update(0.05);
+        assert_eq!(e.estimate(), LossEstimator::FLOOR);
+        assert_eq!(e.update(f32::NAN), LossEstimator::FLOOR);
+    }
+
+    #[test]
+    fn group_failure_matches_closed_forms() {
+        // No recovery: failure = 1 − (1−p)^n.
+        let p = 0.01;
+        assert!((group_failure(10, 0, p) - (1.0 - 0.99f64.powi(10))).abs() < 1e-12);
+        // One recovery shard over 2 shards: both lost = p².
+        assert!((group_failure(1, 1, p) - p * p).abs() < 1e-12);
+        assert_eq!(group_failure(5, 2, 0.0), 0.0);
+        // More recovery never hurts.
+        assert!(group_failure(16, 4, p) < group_failure(16, 3, p));
+    }
+
+    #[test]
+    fn recovery_sized_for_one_percent_loss() {
+        let cfg = FecConfig::default();
+        for d in [1, 4, 16, 32, 64] {
+            let r = cfg.recovery_for(d);
+            assert!(r as f32 >= d as f32 * 0.1, "d={d} r={r}");
+            assert!(
+                group_failure(d, r, 0.01) <= TARGET_GROUP_FAILURE,
+                "d={d} r={r}"
+            );
+            // Minimal: one shard less would miss the target (unless at floor).
+            let floor = ((d as f32 * 0.1).ceil() as usize).max(1);
+            if r > floor {
+                assert!(group_failure(d, r - 1, 0.01) > TARGET_GROUP_FAILURE);
+            }
         }
-        assert!((b.redundancy() - 0.20).abs() < 0.01);
+        // Large groups need proportionally less.
+        assert!(cfg.recovery_for(64) * 16 < cfg.recovery_for(16) * 64);
+    }
+
+    #[test]
+    fn recovery_is_capped() {
+        let cfg = FecConfig {
+            loss: 0.4,
+            ..FecConfig::default()
+        };
+        assert_eq!(cfg.recovery_for(20), 10);
+        assert_eq!(cfg.recovery_for(2), MIN_RECOVERY_CAP);
+        let off = FecConfig {
+            redundancy: 0.0,
+            ..FecConfig::default()
+        };
+        assert_eq!(off.recovery_for(20), 0);
+        assert_eq!(cfg.recovery_for(0), 0);
     }
 }

@@ -1,0 +1,20 @@
+[package]
+name = "fernsicht-e2e"
+description = "End-to-end tests: host agent and client through an impaired network link"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fernsicht-client.workspace = true
+fernsicht-core.workspace = true
+fernsicht-host-agent.workspace = true
+fernsicht-net.workspace = true
+fernsicht-proto.workspace = true
+
+[dev-dependencies]
+escargot.workspace = true
+
+[lints]
+workspace = true

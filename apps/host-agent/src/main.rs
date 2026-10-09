@@ -41,6 +41,7 @@ fn main() -> anyhow::Result<()> {
         max_bitrate_kbps: args.max_bitrate,
         loss: args.loss,
         pace_bytes_per_sec: args.pace_mbit * 1_000_000 / 8,
+        ..HostConfig::default()
     };
     let agent = HostAgent::bind(cfg)?;
     log::info!("listening on {}", agent.local_addr()?);

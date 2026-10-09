@@ -23,7 +23,7 @@ fernsicht-render.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-fernsicht-host-agent = { path = "../host-agent" }
+fernsicht-capture.workspace = true
 
 [lints]
 workspace = true

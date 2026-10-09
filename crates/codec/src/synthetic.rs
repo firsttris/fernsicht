@@ -2,8 +2,9 @@
 //!
 //! Bitstream: `"FSYN" | seq u64 | width u16 | height u16 | keyframe u8 |
 //! checksum u32 | body`. The body is pseudo-random (incompressible, like
-//! real encoder output) and covered by an FNV-1a checksum, so any
-//! transport corruption is detected by the decoder.
+//! real encoder output). An FNV-1a checksum covers every byte after the
+//! magic except the checksum itself, so any single corrupted byte is
+//! detected by the decoder.
 
 use fernsicht_capture::Frame;
 use fernsicht_core::now_us;
@@ -67,7 +68,8 @@ impl Encoder for SyntheticEncoder {
         head[12..14].copy_from_slice(&(frame.width as u16).to_le_bytes());
         head[14..16].copy_from_slice(&(frame.height as u16).to_le_bytes());
         head[16] = u8::from(keyframe);
-        head[17..21].copy_from_slice(&fnv1a(body).to_le_bytes());
+        let checksum = checksum(&head[4..17], body);
+        head[17..21].copy_from_slice(&checksum.to_le_bytes());
 
         out.keyframe = keyframe;
         out.seq = frame.seq;
@@ -100,8 +102,8 @@ impl Decoder for SyntheticDecoder {
         if &head[..4] != MAGIC {
             return Err(CodecError::Corrupt("bad magic"));
         }
-        let checksum = u32::from_le_bytes(head[17..21].try_into().unwrap());
-        if fnv1a(body) != checksum {
+        let expected = u32::from_le_bytes(head[17..21].try_into().unwrap());
+        if checksum(&head[4..17], body) != expected {
             return Err(CodecError::Corrupt("checksum mismatch"));
         }
         let keyframe = head[16] != 0;
@@ -128,9 +130,11 @@ fn mix(seq: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn fnv1a(data: &[u8]) -> u32 {
+/// FNV-1a over header fields and body. Each step is a bijection on the
+/// state, so changing any single byte always changes the result.
+fn checksum(fields: &[u8], body: &[u8]) -> u32 {
     let mut h = 0x811C_9DC5u32;
-    for &b in data {
+    for &b in fields.iter().chain(body) {
         h ^= u32::from(b);
         h = h.wrapping_mul(0x0100_0193);
     }

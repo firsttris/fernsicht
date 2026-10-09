@@ -1,5 +1,14 @@
-//! Client: network thread (receive, reassemble, clock sync, feedback) and
-//! a decode/present thread, connected by a latest-frame-wins [`Slot`].
+//! Client: a network thread (receive, reassemble, clock sync, feedback)
+//! and a decode/present thread.
+//!
+//! ```text
+//! [network] --fifo(4)--> [decode] --latest wins--> [present]
+//! ```
+//!
+//! Compressed frames reference earlier ones, so every received frame is
+//! decoded in order; only *decoded* frames are skipped when presentation
+//! falls behind. Any gap in the frame ids breaks the reference chain: the
+//! decoder then waits for a keyframe and the client asks the host for one.
 
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,12 +16,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use fernsicht_codec::synthetic::SyntheticDecoder;
-use fernsicht_codec::{DecodedFrame, Decoder};
-use fernsicht_core::latency::{FrameTimings, LatencyStats, Summary};
+use fernsicht_codec::{CodecError, DecodedFrame, Decoder};
+use fernsicht_core::latency::{FrameTimings, LatencyStats, Stage, Summary};
+use fernsicht_core::now_us;
 use fernsicht_core::thread::{HOT_NICE, raise_priority, spawn_hot};
-use fernsicht_core::{Slot, now_us};
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
 use fernsicht_proto::{Bye, ClockPing, Codec, Feedback, Hello, MAX_DATAGRAM, Packet, VideoHeader};
 use fernsicht_render::overlay::{self, StreamInfo};
@@ -21,8 +30,10 @@ use fernsicht_render::{HeadlessPresenter, Presenter};
 const HELLO_INTERVAL: Duration = Duration::from_millis(250);
 const FEEDBACK_INTERVAL: Duration = Duration::from_millis(100);
 const OVERLAY_INTERVAL: Duration = Duration::from_secs(1);
-const HOST_TIMEOUT: Duration = Duration::from_secs(5);
-const BUFFERS: usize = 3;
+/// Completed frames waiting for the decoder.
+const DECODE_QUEUE: usize = 4;
+/// Frame buffers: the queue, one being decoded, one being filled.
+const BUFFERS: usize = DECODE_QUEUE + 2;
 
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
@@ -35,6 +46,8 @@ pub struct ClientConfig {
     pub loss: f64,
     pub duration: Option<Duration>,
     pub print_overlay: bool,
+    /// Give up when the host has been silent this long.
+    pub host_timeout: Duration,
 }
 
 impl Default for ClientConfig {
@@ -48,6 +61,7 @@ impl Default for ClientConfig {
             loss: 0.0,
             duration: None,
             print_overlay: false,
+            host_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -55,11 +69,74 @@ impl Default for ClientConfig {
 /// Result of a client run.
 #[derive(Clone, Debug, Default)]
 pub struct RunSummary {
+    /// Session id from the host's `HelloAck`, if one arrived.
+    pub session_id: Option<u32>,
+    pub codec: Option<Codec>,
     pub receiver: ReceiverStats,
     pub frames_presented: u64,
+    pub keyframes_decoded: u64,
+    /// Decoded but not shown because a newer frame was already waiting.
+    pub frames_skipped: u64,
+    /// Dropped before decoding because the decoder fell behind.
+    pub frames_overflowed: u64,
+    /// Frames discarded because the reference chain was broken (no keyframe
+    /// yet, or a frame before them was lost).
+    pub frames_awaiting_keyframe: u64,
+    /// Corrupt frames rejected by the decoder.
     pub decode_errors: u64,
+    /// Estimated host clock − client clock at the end of the run.
+    pub clock_offset_us: i64,
+    pub rtt_us: Option<u64>,
     pub total: Summary,
-    pub stages: Vec<(&'static str, Summary)>,
+    pub stages: Vec<(Stage, Summary)>,
+}
+
+impl RunSummary {
+    pub fn stage(&self, stage: Stage) -> Summary {
+        self.stages
+            .iter()
+            .find(|(s, _)| *s == stage)
+            .map(|(_, sum)| *sum)
+            .unwrap_or_default()
+    }
+}
+
+/// What the network thread learned during the run.
+struct NetOutcome {
+    receiver: ReceiverStats,
+    overflowed: u64,
+    session: Option<(u32, Codec)>,
+    clock_offset_us: i64,
+    rtt_us: Option<u64>,
+}
+
+/// Tracks whether the decoder can use the next frame. Delta frames need
+/// every frame since the last keyframe; after any gap only a keyframe helps.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefChain {
+    next: Option<u32>,
+}
+
+impl RefChain {
+    /// Returns `true` if frame `frame_id` can be decoded now.
+    pub fn accept(&mut self, frame_id: u32, keyframe: bool) -> bool {
+        if keyframe || self.next == Some(frame_id) {
+            self.next = Some(frame_id.wrapping_add(1));
+            true
+        } else {
+            self.next = None;
+            false
+        }
+    }
+
+    /// The decoder rejected a frame: wait for the next keyframe.
+    pub fn break_chain(&mut self) {
+        self.next = None;
+    }
+
+    pub fn needs_keyframe(&self) -> bool {
+        self.next.is_none()
+    }
 }
 
 /// A reassembled frame on its way to the decoder.
@@ -91,7 +168,8 @@ pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummar
         .with_context(|| format!("connect {}", cfg.host))?;
     socket.set_read_timeout(Some(Duration::from_millis(2)))?;
 
-    let slot = Arc::new(Slot::<ReceivedFrame>::new());
+    let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
+    let need_keyframe = Arc::new(AtomicBool::new(true));
     let info = Arc::new(Mutex::new(StreamInfo::default()));
     let (free_tx, free_rx) = bounded(BUFFERS);
     for _ in 0..BUFFERS {
@@ -99,42 +177,64 @@ pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummar
     }
 
     let presenter = {
-        let (slot, info, free_tx) = (slot.clone(), info.clone(), free_tx.clone());
+        let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
         let print = cfg.print_overlay;
         spawn_hot("present", move || {
-            present_loop(&slot, &info, &free_tx, print)
+            present_loop(&decode_rx, &info, &free_tx, &need_keyframe, print)
         })?
     };
 
     if let Err(e) = raise_priority(HOT_NICE) {
         log::debug!("network thread: could not raise priority: {e}");
     }
-    let net = network_loop(&cfg, &socket, &stop, &slot, &info, &free_rx, &free_tx);
-    slot.close();
+    let pipe = Pipe {
+        decode_tx: &decode_tx,
+        free_rx: &free_rx,
+        free_tx: &free_tx,
+        need_keyframe: &need_keyframe,
+    };
+    let net = network_loop(&cfg, &socket, &stop, &pipe, &info);
+    // Closing the queue ends the present thread once it has drained.
+    drop(decode_tx);
     let present = presenter.join().expect("present thread panicked");
-    let receiver = net?;
+    let net = net?;
 
     Ok(RunSummary {
-        receiver,
+        session_id: net.session.map(|(id, _)| id),
+        codec: net.session.map(|(_, codec)| codec),
+        receiver: net.receiver,
         frames_presented: present.presented,
+        keyframes_decoded: present.keyframes,
+        frames_skipped: present.skipped,
+        frames_overflowed: net.overflowed,
+        frames_awaiting_keyframe: present.awaiting_keyframe,
         decode_errors: present.decode_errors,
+        clock_offset_us: net.clock_offset_us,
+        rtt_us: net.rtt_us,
         total: present.stats.total(),
-        stages: fernsicht_core::latency::Stage::ALL
+        stages: Stage::ALL
             .iter()
-            .map(|s| (s.label(), present.stats.stage(*s)))
+            .map(|s| (*s, present.stats.stage(*s)))
             .collect(),
     })
+}
+
+/// The network thread's ends of the decode queue.
+struct Pipe<'a> {
+    decode_tx: &'a Sender<ReceivedFrame>,
+    free_rx: &'a Receiver<ReceivedFrame>,
+    free_tx: &'a Sender<ReceivedFrame>,
+    /// Set by the decoder while its reference chain is broken.
+    need_keyframe: &'a AtomicBool,
 }
 
 fn network_loop(
     cfg: &ClientConfig,
     socket: &UdpSocket,
     stop: &AtomicBool,
-    slot: &Slot<ReceivedFrame>,
+    pipe: &Pipe<'_>,
     info: &Mutex<StreamInfo>,
-    free_rx: &Receiver<ReceivedFrame>,
-    free_tx: &Sender<ReceivedFrame>,
-) -> anyhow::Result<ReceiverStats> {
+) -> anyhow::Result<NetOutcome> {
     let started = Instant::now();
     let deadline = cfg.duration.map(|d| started + d);
     let hello = Hello {
@@ -155,13 +255,14 @@ fn network_loop(
     let mut last_feedback = Instant::now();
     let mut last_packet = Instant::now();
     let mut rates = RateWindow::new();
+    let mut overflowed = 0u64;
 
     loop {
         if stop.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
             break;
         }
-        if last_packet.elapsed() > HOST_TIMEOUT {
-            anyhow::bail!("no packets from {} for {:?}", cfg.host, HOST_TIMEOUT);
+        if last_packet.elapsed() > cfg.host_timeout {
+            anyhow::bail!("no packets from {} for {:?}", cfg.host, cfg.host_timeout);
         }
         if session.is_none() && last_hello.is_none_or(|t| t.elapsed() >= HELLO_INTERVAL) {
             let n = hello.encode(&mut out);
@@ -190,7 +291,8 @@ fn network_loop(
             let s = reassembler.take_interval();
             let fb = Feedback {
                 session_id,
-                request_keyframe: reassembler.needs_keyframe(),
+                request_keyframe: reassembler.needs_keyframe()
+                    || pipe.need_keyframe.load(Ordering::Relaxed),
                 highest_frame_id: s.highest_frame_id,
                 frames_completed: s.frames_completed,
                 frames_dropped: s.frames_dropped,
@@ -256,8 +358,10 @@ fn network_loop(
                 rates.bytes += len as u64;
                 if let Some(done) = reassembler.push(&h, payload, now) {
                     rates.frames += 1;
-                    let Ok(mut rf) = free_rx.try_recv() else {
-                        log::warn!("no free frame buffer; dropping frame");
+                    // The decoder fell behind by a whole queue: drop the
+                    // frame; the gap makes it ask for a keyframe.
+                    let Ok(mut rf) = pipe.free_rx.try_recv() else {
+                        overflowed += 1;
                         continue;
                     };
                     rf.header = done.header;
@@ -265,8 +369,11 @@ fn network_loop(
                     rf.data.extend_from_slice(done.data);
                     rf.completed_us = done.completed_us;
                     rf.offset_us = clock.offset_us();
-                    if let Some(skipped) = slot.put(rf) {
-                        let _ = free_tx.send(skipped);
+                    if let Err(TrySendError::Full(rf) | TrySendError::Disconnected(rf)) =
+                        pipe.decode_tx.try_send(rf)
+                    {
+                        overflowed += 1;
+                        let _ = pipe.free_tx.send(rf);
                     }
                 }
             }
@@ -282,7 +389,13 @@ fn network_loop(
         let n = Bye { session_id }.encode(&mut out);
         let _ = socket.send(&out[..n]);
     }
-    Ok(reassembler.totals())
+    Ok(NetOutcome {
+        receiver: reassembler.totals(),
+        overflowed,
+        session,
+        clock_offset_us: clock.offset_us(),
+        rtt_us: clock.rtt_us(),
+    })
 }
 
 /// Accumulates receive rates for the overlay over [`OVERLAY_INTERVAL`], so
@@ -336,61 +449,145 @@ fn ratio(part: u32, total: u32) -> f32 {
 struct PresentResult {
     stats: LatencyStats,
     presented: u64,
+    skipped: u64,
+    keyframes: u64,
+    awaiting_keyframe: u64,
     decode_errors: u64,
 }
 
 fn present_loop(
-    slot: &Slot<ReceivedFrame>,
+    queue: &Receiver<ReceivedFrame>,
     info: &Mutex<StreamInfo>,
     free_tx: &Sender<ReceivedFrame>,
+    need_keyframe: &AtomicBool,
     print_overlay: bool,
 ) -> PresentResult {
     let mut decoder = SyntheticDecoder::default();
     let mut presenter = HeadlessPresenter::default();
     let mut decoded = DecodedFrame::default();
-    let mut stats = LatencyStats::default();
-    let mut decode_errors = 0u64;
+    let mut chain = RefChain::default();
+    let mut r = PresentResult {
+        stats: LatencyStats::default(),
+        presented: 0,
+        skipped: 0,
+        keyframes: 0,
+        awaiting_keyframe: 0,
+        decode_errors: 0,
+    };
     let mut last_overlay = Instant::now();
 
-    while let Some(rf) = slot.take() {
-        let result = decoder.decode(&rf.data, &mut decoded);
-        let decoded_us = now_us();
-        match result {
-            Ok(()) => {
-                if let Err(e) = presenter.present(&decoded) {
-                    log::warn!("present: {e}");
+    while let Ok(rf) = queue.recv() {
+        let h = rf.header;
+        if !chain.accept(h.frame_id, h.keyframe) {
+            r.awaiting_keyframe += 1;
+        } else {
+            let result = decoder.decode(&rf.data, &mut decoded);
+            let decoded_us = now_us();
+            match result {
+                Ok(()) => {
+                    r.keyframes += u64::from(decoded.keyframe);
+                    // Latest frame wins at presentation: if a newer frame is
+                    // already queued, showing this one would only add latency.
+                    if !queue.is_empty() {
+                        r.skipped += 1;
+                    } else {
+                        if let Err(e) = presenter.present(&decoded) {
+                            log::warn!("present: {e}");
+                        }
+                        let presented_us = now_us();
+                        let captured = h.capture_us as i64 - rf.offset_us;
+                        r.stats.record(&FrameTimings {
+                            captured,
+                            capture_ready: captured + i64::from(h.capture_ready_delta_us),
+                            encoded: captured + i64::from(h.encoded_delta_us),
+                            received: rf.completed_us as i64,
+                            decoded: decoded_us as i64,
+                            presented: presented_us as i64,
+                        });
+                    }
                 }
-                let presented_us = now_us();
-                let h = &rf.header;
-                let captured = h.capture_us as i64 - rf.offset_us;
-                stats.record(&FrameTimings {
-                    captured,
-                    capture_ready: captured + i64::from(h.capture_ready_delta_us),
-                    encoded: captured + i64::from(h.encoded_delta_us),
-                    received: rf.completed_us as i64,
-                    decoded: decoded_us as i64,
-                    presented: presented_us as i64,
-                });
-            }
-            Err(e) => {
-                decode_errors += 1;
-                log::debug!("decode: {e}");
+                Err(e) => {
+                    chain.break_chain();
+                    if matches!(e, CodecError::NeedKeyframe) {
+                        r.awaiting_keyframe += 1;
+                    } else {
+                        r.decode_errors += 1;
+                        log::debug!("decode: {e}");
+                    }
+                }
             }
         }
+        need_keyframe.store(chain.needs_keyframe(), Ordering::Relaxed);
         let _ = free_tx.send(rf);
 
         if print_overlay && last_overlay.elapsed() >= OVERLAY_INTERVAL {
             let info = *info.lock().unwrap();
-            for line in overlay::lines(&stats, &info) {
+            for line in overlay::lines(&r.stats, &info) {
                 println!("{line}");
             }
             println!();
             last_overlay = Instant::now();
         }
     }
-    PresentResult {
-        stats,
-        presented: presenter.presented,
-        decode_errors,
+    r.presented = presenter.presented;
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_chain_needs_a_keyframe_first() {
+        let mut c = RefChain::default();
+        assert!(c.needs_keyframe());
+        assert!(!c.accept(0, false));
+        assert!(c.accept(1, true));
+        assert!(!c.needs_keyframe());
+        assert!(c.accept(2, false));
+        assert!(c.accept(3, false));
+    }
+
+    #[test]
+    fn ref_chain_breaks_on_gaps_until_keyframe() {
+        let mut c = RefChain::default();
+        assert!(c.accept(0, true));
+        assert!(!c.accept(2, false), "frame 1 missing");
+        assert!(!c.accept(3, false), "still broken");
+        assert!(c.needs_keyframe());
+        assert!(c.accept(4, true));
+        assert!(c.accept(5, false));
+    }
+
+    #[test]
+    fn ref_chain_breaks_on_decode_error_and_wraps() {
+        let mut c = RefChain::default();
+        assert!(c.accept(u32::MAX, true));
+        assert!(c.accept(0, false));
+        c.break_chain();
+        assert!(!c.accept(1, false));
+        assert!(c.accept(9, true));
+    }
+
+    #[test]
+    fn rate_window_publishes_ratios() {
+        let mut w = RateWindow::new();
+        w.bytes = 1_000_000;
+        w.frames = 60;
+        w.add(&ReceiverStats {
+            packets_received: 990,
+            packets_lost: 10,
+            frames_completed: 59,
+            frames_dropped: 1,
+            ..ReceiverStats::default()
+        });
+        let mut info = StreamInfo::default();
+        w.publish(&mut info, Codec::H264, Some(500));
+        assert_eq!(info.codec, Codec::H264);
+        assert!((info.loss_before_fec - 0.01).abs() < 1e-6);
+        assert!((info.loss_after_fec - 1.0 / 60.0).abs() < 1e-6);
+        assert_eq!(info.rtt_us, Some(500));
+        assert!(info.fps > 0.0 && info.bitrate_bps > 0);
+        assert_eq!(ratio(1, 0), 0.0);
     }
 }

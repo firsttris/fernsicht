@@ -19,6 +19,10 @@ use thiserror::Error;
 pub struct EncodedFrame {
     pub data: Vec<u8>,
     pub keyframe: bool,
+    /// Position in the encoded stream: consecutive, starting at 0. A gap
+    /// downstream means a frame the decoder needs went missing.
+    pub frame_id: u32,
+    /// Capture sequence number of the source frame.
     pub seq: u64,
     pub capture_us: u64,
     pub capture_ready_us: u64,

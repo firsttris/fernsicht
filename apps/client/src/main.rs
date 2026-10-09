@@ -41,6 +41,7 @@ fn main() -> anyhow::Result<()> {
         loss: args.loss,
         duration: args.duration.map(Duration::from_secs),
         print_overlay: true,
+        ..ClientConfig::default()
     };
     let s = run(cfg, Arc::new(AtomicBool::new(false)))?;
     println!();
@@ -63,6 +64,18 @@ fn main() -> anyhow::Result<()> {
     );
     if s.decode_errors > 0 {
         println!("Decode-Fehler: {}", s.decode_errors);
+    }
+    if s.frames_skipped + s.frames_overflowed > 0 {
+        println!(
+            "Übersprungen (Anzeige hinterher): {} · verworfen (Decoder hinterher): {}",
+            s.frames_skipped, s.frames_overflowed
+        );
+    }
+    if s.frames_awaiting_keyframe > 0 {
+        println!(
+            "Verworfen bis zum ersten Keyframe: {}",
+            s.frames_awaiting_keyframe
+        );
     }
     Ok(())
 }

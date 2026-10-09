@@ -18,10 +18,18 @@ pub const PREFIX_LEN: usize = 4;
 /// phase 3.
 pub const MAX_DATAGRAM: usize = 1400;
 
+/// Largest encoded frame accepted (8 MiB). A 4K keyframe at 80 Mbit/s is
+/// about 1 MB; the bound keeps a spoofed header from making the receiver
+/// allocate gigabytes.
+pub const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
+
+/// Largest FEC group (data + recovery shards).
+pub const MAX_GROUP_SHARDS: u32 = 1024;
+
 /// Default shard size: largest even payload that fits [`MAX_DATAGRAM`].
 pub const DEFAULT_SHARD_SIZE: usize = (MAX_DATAGRAM - VideoHeader::LEN) & !1;
 
-const _: () = assert!(DEFAULT_SHARD_SIZE % 2 == 0);
+const _: () = assert!(DEFAULT_SHARD_SIZE.is_multiple_of(2));
 const _: () = assert!(VideoHeader::LEN + DEFAULT_SHARD_SIZE <= MAX_DATAGRAM);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +74,9 @@ pub enum DecodeError {
 }
 
 /// Header of one video shard. The shard bytes follow directly.
+///
+/// Frame ids start at 0 in every session and increase by one per frame
+/// (wrapping), so gaps tell the receiver how many frames it missed.
 ///
 /// A frame of `frame_len` bytes is split into `group_count` FEC groups.
 /// Group `group_index` covers the bytes starting at `group_offset` and is
@@ -146,6 +157,12 @@ impl VideoHeader {
         use DecodeError::Invalid;
         if self.frame_len == 0 {
             return Err(Invalid("frame_len is zero"));
+        }
+        if self.frame_len > MAX_FRAME_LEN {
+            return Err(Invalid("frame too large"));
+        }
+        if u32::from(self.data_shards) + u32::from(self.recovery_shards) > MAX_GROUP_SHARDS {
+            return Err(Invalid("FEC group too large"));
         }
         if self.group_count == 0 || self.group_index >= self.group_count {
             return Err(Invalid("group_index out of range"));
@@ -436,7 +453,7 @@ impl<'a> Packet<'a> {
             Kind::Video => {
                 let h = VideoHeader::read(flags, &mut r)?;
                 let payload = r.rest();
-                if payload.is_empty() || payload.len() % 2 != 0 {
+                if payload.is_empty() || !payload.len().is_multiple_of(2) {
                     return Err(DecodeError::Invalid("shard size must be even and non-zero"));
                 }
                 Packet::Video(h, payload)
@@ -508,6 +525,33 @@ mod tests {
         let mut odd = vec![0u8; VideoHeader::LEN + 3];
         video_header().write(&mut odd);
         assert!(matches!(Packet::decode(&odd), Err(DecodeError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_oversized_frames_and_groups() {
+        // Regression (found by cargo-fuzz): a spoofed frame_len of ~4 GB
+        // made the receiver allocate the whole frame up front.
+        let mut buf = vec![0u8; VideoHeader::LEN + 2];
+        let h = VideoHeader {
+            frame_len: MAX_FRAME_LEN + 1,
+            ..video_header()
+        };
+        h.write(&mut buf);
+        assert_eq!(
+            Packet::decode(&buf),
+            Err(DecodeError::Invalid("frame too large"))
+        );
+        let h = VideoHeader {
+            data_shards: 1000,
+            recovery_shards: 100,
+            shard_index: 0,
+            ..video_header()
+        };
+        h.write(&mut buf);
+        assert_eq!(
+            Packet::decode(&buf),
+            Err(DecodeError::Invalid("FEC group too large"))
+        );
     }
 
     #[test]

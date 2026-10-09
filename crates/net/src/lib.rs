@@ -15,7 +15,7 @@ pub mod reassembly;
 pub mod socket;
 
 pub use clock_sync::ClockSync;
-pub use fec::{AdaptiveRedundancy, FecConfig, FrameMeta, Packetizer};
+pub use fec::{FecConfig, FrameMeta, LossEstimator, Packetizer};
 pub use loss::LossSim;
 pub use pacer::Pacer;
 pub use reassembly::{CompletedFrame, Reassembler, ReceiverStats};

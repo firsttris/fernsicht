@@ -1,5 +1,6 @@
 import {
   Outlet,
+  type RouterHistory,
   createRootRoute,
   createRoute,
   createRouter,
@@ -86,10 +87,13 @@ const routeTree = rootRoute.addChildren([
   sessionRoute,
 ]);
 
-export const router = createRouter({ routeTree, defaultPreload: "intent" });
+/** Browser history by default; tests pass a memory history. */
+export function createAppRouter(history?: RouterHistory) {
+  return createRouter({ routeTree, history, defaultPreload: "intent" });
+}
 
 declare module "@tanstack/react-router" {
   interface Register {
-    router: typeof router;
+    router: ReturnType<typeof createAppRouter>;
   }
 }

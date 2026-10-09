@@ -46,6 +46,7 @@ export function ConnectPage() {
 
       <main className="flex grow items-center justify-center px-4 py-8">
         <form
+          aria-labelledby="connect-title"
           className="flex w-full max-w-[400px] flex-col gap-[22px] rounded-xl border border-border p-7"
           onSubmit={(e) => {
             e.preventDefault();
@@ -60,7 +61,7 @@ export function ConnectPage() {
           }}
         >
           <div className="flex flex-col gap-1.5">
-            <h1 className="m-0 text-[22px] font-semibold tracking-tight">
+            <h1 id="connect-title" className="m-0 text-[22px] font-semibold tracking-tight">
               Mit einem Rechner verbinden
             </h1>
             <p className="m-0 leading-normal text-muted-foreground">

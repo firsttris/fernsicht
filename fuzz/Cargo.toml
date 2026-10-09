@@ -1,0 +1,42 @@
+[package]
+name = "fernsicht-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fernsicht-proto = { path = "../crates/proto" }
+fernsicht-net = { path = "../crates/net" }
+fernsicht-codec = { path = "../crates/codec" }
+
+[[bin]]
+name = "proto_decode"
+path = "fuzz_targets/proto_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reassembler"
+path = "fuzz_targets/reassembler.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fec_roundtrip"
+path = "fuzz_targets/fec_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "synthetic_decode"
+path = "fuzz_targets/synthetic_decode.rs"
+test = false
+doc = false
+bench = false

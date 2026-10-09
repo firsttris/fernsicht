@@ -3,6 +3,7 @@
 use fernsicht_proto::VideoHeader;
 use reed_solomon_simd::ReedSolomonDecoder;
 
+use crate::fec::MIN_RECOVERY_CAP;
 use crate::frame_newer;
 
 /// Frames tracked at once. Older frames are dropped when a newer one
@@ -225,8 +226,18 @@ impl Reassembler {
         let gi = h.group_index as usize;
         let shard_idx = h.shard_index as usize;
         {
+            let buf_len = slot.buf.len();
             let g = &mut slot.groups[gi];
             if !g.seen {
+                // The group's data shards must lie inside the frame buffer;
+                // otherwise FEC recovery would write past its end. Recovery
+                // shards are bounded by the data they protect, so a hostile
+                // header can't make us buffer more than a few frames' worth.
+                let end = h.group_offset as usize + h.data_shards as usize * shard;
+                let max_recovery = h.data_shards.max(MIN_RECOVERY_CAP as u16);
+                if end > buf_len || h.recovery_shards > max_recovery {
+                    return None;
+                }
                 g.init(h, shard);
             } else if !g.matches(h) {
                 return None;
@@ -328,7 +339,8 @@ impl Reassembler {
         let keyframe = self.slots[idx].header.keyframe;
         let gap = match self.last_completed {
             Some(last) => frame_id.wrapping_sub(last).wrapping_sub(1),
-            None => 0,
+            // Frame ids start at 0 in every session.
+            None => frame_id,
         };
         self.count(|s| {
             s.frames_completed += 1;
@@ -380,6 +392,11 @@ impl Reassembler {
             .position(|s| s.active && s.header.frame_id == h.frame_id)
         {
             return self.slots[i].matches(h, shard).then_some(i);
+        }
+        // Every group carries at least one data shard of this frame.
+        let shards_in_frame = (h.frame_len as usize).div_ceil(shard);
+        if h.group_count as usize > shards_in_frame {
+            return None;
         }
         let idx = match self.slots.iter().position(|s| !s.active) {
             Some(i) => i,
@@ -442,6 +459,8 @@ mod tests {
             shard_size: 128,
             max_data_per_group: 16,
             redundancy,
+            loss: 0.0,
+            ..FecConfig::default()
         }
     }
 
@@ -567,13 +586,10 @@ mod tests {
     #[test]
     fn one_percent_loss_is_fully_recovered() {
         // Phase 1 acceptance criterion: 1 % random loss without visible
-        // artefacts, i.e. no dropped frames at 10 % FEC.
+        // artefacts, i.e. no dropped frames with the default FEC sizing.
         let mut loss = LossSim::new(0.01, 0xC0FFEE);
         let mut r = Reassembler::new();
-        let fec = FecConfig {
-            redundancy: 0.10,
-            ..FecConfig::default()
-        };
+        let fec = FecConfig::default();
         let mut p = Packetizer::new(fec).unwrap();
         let mut completed = 0;
         for id in 0..600u32 {
@@ -601,6 +617,68 @@ mod tests {
         assert_eq!(completed, 600, "{t:?}");
         assert_eq!(t.frames_dropped, 0);
         assert!(t.packets_recovered > 0);
+    }
+
+    #[test]
+    fn frames_before_the_first_completed_one_count_as_dropped() {
+        let mut r = Reassembler::new();
+        for p in &packets(3, &frame(500, 3), cfg(0.0), true) {
+            feed(&mut r, p);
+        }
+        let s = r.take_interval();
+        assert_eq!((s.frames_completed, s.frames_dropped), (1, 3));
+    }
+
+    #[test]
+    fn group_outside_frame_is_rejected() {
+        // Regression (found by proptest): a group whose data shards extend
+        // past frame_len made FEC recovery write out of bounds.
+        let mut r = Reassembler::new();
+        let h = VideoHeader {
+            session_id: 1,
+            frame_len: 160,
+            group_count: 1,
+            group_offset: 100,
+            data_shards: 2,
+            recovery_shards: 1,
+            shard_index: 2,
+            slice_count: 1,
+            ..VideoHeader::default()
+        };
+        assert!(r.push(&h, &[0; 40], 0).is_none());
+        let h = VideoHeader {
+            shard_index: 0,
+            ..h
+        };
+        assert!(r.push(&h, &[0; 40], 0).is_none());
+    }
+
+    #[test]
+    fn hostile_group_geometry_is_rejected() {
+        let mut r = Reassembler::new();
+        let base = VideoHeader {
+            session_id: 1,
+            frame_len: 1_000,
+            group_count: 1,
+            data_shards: 4,
+            recovery_shards: 1,
+            slice_count: 1,
+            ..VideoHeader::default()
+        };
+        // More groups than the frame has shards.
+        let many_groups = VideoHeader {
+            group_count: 100,
+            ..base
+        };
+        assert!(r.push(&many_groups, &[0; 100], 0).is_none());
+        // Far more recovery than data.
+        let greedy = VideoHeader {
+            recovery_shards: 900,
+            shard_index: 500,
+            ..base
+        };
+        assert!(r.push(&greedy, &[0; 100], 0).is_none());
+        assert_eq!(r.totals().frames_completed, 0);
     }
 
     #[test]

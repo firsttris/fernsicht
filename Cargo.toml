@@ -1,11 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "apps/host-agent", "apps/client"]
+members = ["crates/*", "apps/host-agent", "apps/client", "tests/e2e"]
+# Fuzz targets need nightly and cargo-fuzz; see fuzz/README.md.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 repository = "https://github.com/firsttris/fernsicht"
 publish = false
 
@@ -18,6 +20,8 @@ fernsicht-codec = { path = "crates/codec" }
 fernsicht-render = { path = "crates/render" }
 fernsicht-input = { path = "crates/input" }
 fernsicht-audio = { path = "crates/audio" }
+fernsicht-host-agent = { path = "apps/host-agent" }
+fernsicht-client = { path = "apps/client" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -29,11 +33,21 @@ reed-solomon-simd = "3.1"
 socket2 = "0.6"
 thiserror = "2"
 
+# test-only
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+escargot = "0.5"
+proptest = "1.11"
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Optimize dependencies (Reed-Solomon, proptest) in dev/test builds so the
+# test suite and the E2E scenarios run at realistic speed.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 lto = "thin"
