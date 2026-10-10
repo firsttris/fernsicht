@@ -38,6 +38,8 @@ fuzz_target!(|data: &[u8]| {
         }
         Packet::Pair(p) => p.encode(&mut buf),
         Packet::Reject(r) => r.encode(&mut buf),
+        Packet::Discover(d) => d.encode(&mut buf),
+        Packet::Announce(a) => a.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

@@ -23,7 +23,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | 3 – Sicherheit | Kopplung und Verschlüsselung | ✅ einmalig koppeln per 6-stelliger PIN (SPAKE2: kein Offline-Raten, Kopplung schließt nach 3 Fehlversuchen), jede Sitzung mit Noise-IK-Handshake (wie WireGuard), danach alles mit ChaCha20-Poly1305 versiegelt, Wiederholungen werden verworfen; nur gekoppelte Geräte kommen herein |
 | | Internet (NAT), Bitratenanpassung | ⏳ offen |
 | 4–5 | Host als Dienst | ✅ systemd-Dienst mit Installationsskript, Encoder passend zur Grafikkarte, Koppeln/Status/Entfernen über einen lokalen Steuer-Socket ([Anleitung](docs/install.md)) |
-| | Gerätesuche, App, Web-Viewer | ⏳ in Arbeit |
+| | Gerätesuche | ✅ `fernsicht-client discover`: Broadcast über den Stream-Port (keine Firewall-Änderung), Hosts nennen Name, Schlüssel, OS, GPU und ob Kopplung offen ist; neue Adressen gekoppelter Hosts werden übernommen |
+| | App, Web-Viewer | ⏳ in Arbeit |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
@@ -41,8 +42,10 @@ cargo build --release
 # Host, beim ersten Mal mit --pair: zeigt eine PIN zum Koppeln
 ./target/release/fernsicht-host-agent --pair
 
-# Client (zweites Terminal oder zweiter Rechner): einmal koppeln …
-./target/release/fernsicht-client pair <host-ip> <PIN>
+# Client (zweites Terminal oder zweiter Rechner): Hosts im Netz finden …
+./target/release/fernsicht-client discover
+# … einmal koppeln (Name aus discover oder Adresse) …
+./target/release/fernsicht-client pair <host> <PIN>
 # … dann per Name oder Adresse verbinden
 ./target/release/fernsicht-client <host-name> --fps 60
 # mit 1 % künstlichem Paketverlust

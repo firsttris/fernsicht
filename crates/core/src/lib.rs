@@ -7,6 +7,7 @@ pub mod clock;
 pub mod desktop;
 pub mod latency;
 pub mod slot;
+pub mod sysinfo;
 pub mod thread;
 
 pub use clock::now_us;

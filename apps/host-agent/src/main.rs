@@ -3,8 +3,8 @@ use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
 use fernsicht_host_agent::{
-    AudioKind, CaptureKind, EncoderKind, HostAgent, HostConfig, HostSecurity, InputKind,
-    PAIRING_OPEN_FOR,
+    AudioKind, CaptureKind, EncoderKind, HostAgent, HostConfig, HostDescription, HostSecurity,
+    InputKind, PAIRING_OPEN_FOR,
 };
 
 /// Fernsicht host: streams this computer's screen to paired clients.
@@ -214,6 +214,16 @@ fn main() -> anyhow::Result<()> {
     if let Some(cmd) = args.command {
         return command(cmd, args.control);
     }
+    let encoder = match args.encoder {
+        EncoderArg::Auto => fernsicht_host_agent::auto_encoder()?,
+        EncoderArg::Synthetic => EncoderKind::Synthetic,
+        EncoderArg::Vaapi => EncoderKind::Vaapi {
+            render_node: args.render_node,
+        },
+        EncoderArg::Nvenc => EncoderKind::Nvenc {
+            gpu: args.cuda_device,
+        },
+    };
     let cfg = HostConfig {
         control: Some(
             args.control
@@ -243,16 +253,8 @@ fn main() -> anyhow::Result<()> {
         } else {
             InputKind::Off
         },
-        encoder: match args.encoder {
-            EncoderArg::Auto => fernsicht_host_agent::auto_encoder()?,
-            EncoderArg::Synthetic => EncoderKind::Synthetic,
-            EncoderArg::Vaapi => EncoderKind::Vaapi {
-                render_node: args.render_node,
-            },
-            EncoderArg::Nvenc => EncoderKind::Nvenc {
-                gpu: args.cuda_device,
-            },
-        },
+        description: HostDescription::of_this_machine(&encoder),
+        encoder,
         ..HostConfig::default()
     };
     let dir = args.state_dir.clone().unwrap_or_else(default_state_dir);

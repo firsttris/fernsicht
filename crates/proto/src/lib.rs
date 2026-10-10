@@ -52,6 +52,8 @@ pub enum Kind {
     Sealed = 14,
     Pair = 15,
     Reject = 16,
+    Discover = 17,
+    Announce = 18,
 }
 
 impl Kind {
@@ -73,6 +75,8 @@ impl Kind {
             14 => Kind::Sealed,
             15 => Kind::Pair,
             16 => Kind::Reject,
+            17 => Kind::Discover,
+            18 => Kind::Announce,
             _ => return None,
         })
     }
@@ -933,6 +937,99 @@ impl RejectReason {
     }
 }
 
+/// "Which hosts are there?", client → broadcast, unauthenticated. Padded
+/// to [`Discover::LEN`], longer than any [`Announce`], so answering never
+/// sends more than was asked (no use for reflection attacks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Discover {
+    /// Echoed in the answer, to tell answers to this question apart.
+    pub nonce: u64,
+}
+
+impl Discover {
+    pub const LEN: usize = 256;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::Discover, 0);
+        w.u64(self.nonce);
+        w.bytes(&[0; Self::LEN - PREFIX_LEN - 8]);
+        Self::LEN
+    }
+}
+
+/// Longest host name in an [`Announce`].
+pub const MAX_ANNOUNCE_NAME: usize = 64;
+/// Longest OS and GPU description in an [`Announce`].
+pub const MAX_ANNOUNCE_INFO: usize = 48;
+
+/// A host's answer to [`Discover`], unauthenticated: what it says it is.
+/// Its key is proven only by the handshake when connecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Announce<'a> {
+    pub nonce: u64,
+    /// The host's public key (match it against paired hosts).
+    pub key: [u8; 32],
+    /// Pairing is open: a PIN is shown on the host.
+    pub pairing: bool,
+    /// A client is connected.
+    pub busy: bool,
+    pub name: &'a str,
+    /// E.g. "Bazzite".
+    pub os: &'a str,
+    /// GPU and encoder, e.g. "Radeon RX 7800 XT · H.264".
+    pub gpu: &'a str,
+}
+
+const FLAG_PAIRING: u8 = 0x01;
+const FLAG_BUSY: u8 = 0x02;
+
+/// The longest start of `s` that fits `max` bytes, cut at a character.
+pub fn clip(s: &str, max: usize) -> &str {
+    let mut n = s.len().min(max);
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    &s[..n]
+}
+
+impl Announce<'_> {
+    pub const MAX_LEN: usize = PREFIX_LEN + 8 + 32 + 3 + MAX_ANNOUNCE_NAME + 2 * MAX_ANNOUNCE_INFO;
+
+    /// Panics if a text is too long (see [`clip`]) or the name is empty.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            !self.name.is_empty()
+                && self.name.len() <= MAX_ANNOUNCE_NAME
+                && self.os.len() <= MAX_ANNOUNCE_INFO
+                && self.gpu.len() <= MAX_ANNOUNCE_INFO,
+            "announce texts"
+        );
+        let len = PREFIX_LEN + 8 + 32 + 3 + self.name.len() + self.os.len() + self.gpu.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        let flags =
+            if self.pairing { FLAG_PAIRING } else { 0 } | if self.busy { FLAG_BUSY } else { 0 };
+        w.prefix(Kind::Announce, flags);
+        w.u64(self.nonce);
+        w.bytes(&self.key);
+        for s in [self.name, self.os, self.gpu] {
+            w.u8(s.len() as u8);
+            w.bytes(s.as_bytes());
+        }
+        len
+    }
+}
+
+const _: () = assert!(Announce::MAX_LEN < Discover::LEN);
+
+fn read_text<'a>(r: &mut Reader<'a>, max: usize) -> Result<&'a str, DecodeError> {
+    let n = usize::from(r.u8()?);
+    if n > max {
+        return Err(DecodeError::Invalid("announce text too long"));
+    }
+    std::str::from_utf8(r.take_slice(n)?).map_err(|_| DecodeError::Invalid("announce text"))
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -956,6 +1053,8 @@ pub enum Packet<'a> {
     Sealed(SealedHeader, &'a [u8]),
     Pair(Pair<'a>),
     Reject(RejectReason),
+    Discover(Discover),
+    Announce(Announce<'a>),
 }
 
 impl<'a> Packet<'a> {
@@ -1046,6 +1145,40 @@ impl<'a> Packet<'a> {
                     return Err(DecodeError::Invalid("trailing bytes after reject"));
                 }
                 Packet::Reject(reason)
+            }
+            Kind::Discover => {
+                let nonce = r.u64()?;
+                let padding = r.rest();
+                if flags != 0
+                    || padding.len() != Discover::LEN - PREFIX_LEN - 8
+                    || padding.iter().any(|&b| b != 0)
+                {
+                    return Err(DecodeError::Invalid("discover padding"));
+                }
+                Packet::Discover(Discover { nonce })
+            }
+            Kind::Announce => {
+                if flags & !(FLAG_PAIRING | FLAG_BUSY) != 0 {
+                    return Err(DecodeError::Invalid("announce flags"));
+                }
+                let nonce = r.u64()?;
+                let mut key = [0u8; 32];
+                key.copy_from_slice(r.take_slice(32)?);
+                let name = read_text(&mut r, MAX_ANNOUNCE_NAME)?;
+                let os = read_text(&mut r, MAX_ANNOUNCE_INFO)?;
+                let gpu = read_text(&mut r, MAX_ANNOUNCE_INFO)?;
+                if name.is_empty() || !r.is_empty() {
+                    return Err(DecodeError::Invalid("announce"));
+                }
+                Packet::Announce(Announce {
+                    nonce,
+                    key,
+                    pairing: flags & FLAG_PAIRING != 0,
+                    busy: flags & FLAG_BUSY != 0,
+                    name,
+                    os,
+                    gpu,
+                })
             }
         })
     }
@@ -1447,6 +1580,75 @@ mod tests {
         assert!(Packet::decode(&[MAGIC, VERSION, Kind::Reject as u8, 0, 1, 0]).is_err());
         // Everything sealed fits a datagram.
         assert_eq!(MAX_PLAIN + SEALED_OVERHEAD, MAX_DATAGRAM);
+    }
+
+    #[test]
+    fn discovery_roundtrips() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let d = Discover { nonce: 0xfeed };
+        let n = d.encode(&mut buf);
+        assert_eq!(n, Discover::LEN);
+        assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Discover(d));
+        // Short, long or with something in the padding: not a question.
+        assert!(Packet::decode(&buf[..n - 1]).is_err());
+        assert!(Packet::decode(&buf[..n + 1]).is_err());
+        buf[100] = 1;
+        assert!(Packet::decode(&buf[..n]).is_err());
+
+        let name = "ä".repeat(32);
+        let longest = "x".repeat(MAX_ANNOUNCE_INFO);
+        for (pairing, busy, os, gpu) in [
+            (false, false, "", ""),
+            (true, false, "Bazzite", "Radeon RX 7800 XT · H.264"),
+            (true, true, longest.as_str(), longest.as_str()),
+        ] {
+            let a = Announce {
+                nonce: 7,
+                key: [9; 32],
+                pairing,
+                busy,
+                name: &name,
+                os,
+                gpu,
+            };
+            let n = a.encode(&mut buf);
+            assert!(n <= Announce::MAX_LEN);
+            assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Announce(a));
+            assert!(Packet::decode(&buf[..n - 1]).is_err());
+        }
+        // An empty name, bad UTF-8, unknown flags.
+        let a = Announce {
+            nonce: 1,
+            key: [0; 32],
+            pairing: false,
+            busy: false,
+            name: "h",
+            os: "",
+            gpu: "",
+        };
+        let n = a.encode(&mut buf);
+        let name_at = PREFIX_LEN + 8 + 32;
+        let mut bad = buf;
+        bad[name_at] = 0;
+        bad[name_at + 1] = 0;
+        assert!(Packet::decode(&bad[..n - 1]).is_err(), "empty name");
+        let mut bad = buf;
+        bad[name_at + 1] = 0xff;
+        assert!(Packet::decode(&bad[..n]).is_err(), "not UTF-8");
+        let mut bad = buf;
+        bad[3] = 4;
+        assert!(Packet::decode(&bad[..n]).is_err(), "flags");
+        let mut bad = buf;
+        bad[name_at] = 65;
+        assert!(Packet::decode(&bad[..n]).is_err(), "longer than allowed");
+    }
+
+    #[test]
+    fn clip_cuts_at_characters() {
+        assert_eq!(clip("zentrale", 64), "zentrale");
+        assert_eq!(clip("zentrale", 4), "zent");
+        assert_eq!(clip("äöü", 3), "ä");
+        assert_eq!(clip("", 3), "");
     }
 
     #[test]

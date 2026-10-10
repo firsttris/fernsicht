@@ -166,3 +166,59 @@ fn pairing_and_a_secure_session_survive_loss() {
     drop(link);
     host.stop();
 }
+
+#[test]
+fn hosts_are_found_and_tell_about_themselves() {
+    use fernsicht_client::discover::discover;
+    use fernsicht_host_agent::HostDescription;
+    let _serial = exclusive();
+    let sec = host_security();
+    let host = Host::start(HostConfig {
+        security: Some(sec.clone()),
+        description: HostDescription {
+            os: "Bazzite".into(),
+            gpu: "Radeon RX 7700 XT / 7800 XT · H.264".into(),
+        },
+        ..HostConfig::default()
+    });
+    let look = || discover(&[host.addr()], Duration::from_millis(300)).unwrap();
+    let found = look();
+    assert_eq!(found.len(), 1, "{found:?}");
+    let f = &found[0];
+    assert_eq!(
+        (f.name.as_str(), f.key, f.addr),
+        ("zentrale", sec.public_key(), host.addr())
+    );
+    assert_eq!(f.os, "Bazzite");
+    assert_eq!(f.gpu, "Radeon RX 7700 XT / 7800 XT · H.264");
+    assert!(!f.pairing && !f.busy);
+
+    // Pairing open shows; so does a connected client.
+    sec.open_pairing("135790");
+    assert!(look()[0].pairing);
+    let me = Identity::generate();
+    let peer = pair(&host.addr().to_string(), "135790", &me, "bazzite").unwrap();
+    assert!(!look()[0].pairing, "closed after pairing");
+    let cfg = client_cfg(
+        host.addr().to_string(),
+        Some(Arc::new(ClientSecurity {
+            identity: me,
+            host: peer.key,
+        })),
+        2.0,
+    );
+    let client = std::thread::spawn(move || run(cfg, Arc::new(AtomicBool::new(false))));
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(look()[0].busy, "a session is running");
+    assert!(client.join().unwrap().unwrap().frames_presented > 30);
+    host.stop();
+
+    // The library's insecure test host has no key and stays silent.
+    let open = Host::start(HostConfig::default());
+    assert!(
+        discover(&[open.addr()], Duration::from_millis(200))
+            .unwrap()
+            .is_empty()
+    );
+    open.stop();
+}

@@ -11,6 +11,7 @@
 //! decoder then waits for a keyframe and the client asks the host for one.
 
 mod cursor;
+pub mod discover;
 
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -169,6 +170,22 @@ pub fn find_host<'a>(trusted: &'a Trusted, what: &str) -> Option<&'a Peer> {
             .iter()
             .find(|p| p.address.as_deref() == Some(addr.as_str()))
     })
+}
+
+/// Updates the addresses of paired hosts that were found elsewhere (a new
+/// address from DHCP), matched by key. Returns whether anything changed.
+pub fn refresh_addresses(trusted: &mut Trusted, found: &[discover::FoundHost]) -> bool {
+    let mut changed = false;
+    for f in found {
+        let addr = f.addr.to_string();
+        if let Some(p) = trusted.peers.iter_mut().find(|p| p.key == f.key)
+            && p.address.as_deref() != Some(addr.as_str())
+        {
+            p.address = Some(addr);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// How long pairing waits for the host.
@@ -1264,6 +1281,42 @@ mod tests {
         assert!(find_host(&t, "192.168.178.87:47800").is_some());
         assert!(find_host(&t, "192.168.178.88").is_none());
         assert!(find_host(&t, "bazzite").is_none());
+    }
+
+    #[test]
+    fn found_hosts_update_addresses_by_key() {
+        let key = Identity::generate().public;
+        let mut t = Trusted::default();
+        t.add(Peer {
+            name: "zentrale".into(),
+            key,
+            address: Some("192.168.178.87:47800".into()),
+            paired_at: 0,
+        });
+        let found = |addr: &str, key| discover::FoundHost {
+            addr: addr.parse().unwrap(),
+            name: "zentrale".into(),
+            key,
+            pairing: false,
+            busy: false,
+            os: String::new(),
+            gpu: String::new(),
+        };
+        assert!(!refresh_addresses(
+            &mut t,
+            &[found("192.168.178.87:47800", key)]
+        ));
+        // Another host claiming the name changes nothing: the key counts.
+        let other = Identity::generate().public;
+        assert!(!refresh_addresses(
+            &mut t,
+            &[found("192.168.178.66:47800", other)]
+        ));
+        assert!(refresh_addresses(
+            &mut t,
+            &[found("192.168.178.90:47800", key)]
+        ));
+        assert_eq!(t.peers[0].address.as_deref(), Some("192.168.178.90:47800"));
     }
 
     #[test]

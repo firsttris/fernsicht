@@ -1,11 +1,13 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use clap::Parser;
+use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
-    AudioOutput, ClientConfig, ClientSecurity, DecoderChoice, Identity, Trusted, default_state_dir,
-    find_host, pair, run, with_default_port,
+    AudioOutput, ClientConfig, ClientSecurity, DEFAULT_PORT, DecoderChoice, Identity, Trusted,
+    default_state_dir, find_host, pair, refresh_addresses, run, with_default_port,
 };
 use fernsicht_render::overlay::ms;
 
@@ -72,7 +74,8 @@ enum Command {
     /// Pair with a host: run "fernsicht-host-agent pair" there (or start it
     /// with --pair), then enter the PIN it shows.
     Pair {
-        /// The host's address, e.g. 192.168.1.20.
+        /// The host's address (e.g. 192.168.1.20) or its name as
+        /// "fernsicht-client discover" lists it.
         host: String,
         /// The PIN the host shows.
         pin: String,
@@ -82,6 +85,15 @@ enum Command {
     },
     /// List the paired hosts.
     Hosts,
+    /// Look for hosts in the local network.
+    Discover {
+        /// Ask these addresses too, e.g. a host in another network or a
+        /// network's broadcast address (192.168.1.255).
+        targets: Vec<String>,
+        /// How long to wait for answers, seconds.
+        #[arg(long, default_value_t = 1.5)]
+        wait: f64,
+    },
     /// Forget a paired host.
     Forget {
         /// Its name or address.
@@ -97,6 +109,22 @@ fn hostname() -> String {
         .unwrap_or_else(|| "client".into())
 }
 
+/// Where to pair: an address as given, else the host of that name in the
+/// LAN, else the name for DNS.
+fn pairing_address(host: &str) -> String {
+    let addr = with_default_port(host);
+    if addr.parse::<SocketAddr>().is_ok() {
+        return addr;
+    }
+    match discover(&broadcast_targets(DEFAULT_PORT), Duration::from_secs(1)) {
+        Ok(found) => found
+            .iter()
+            .find(|f| f.name == host)
+            .map_or(addr, |f| f.addr.to_string()),
+        Err(_) => addr,
+    }
+}
+
 /// Pairing, listing, forgetting: done, nothing to stream.
 fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
     let hosts_path = dir.join("hosts.json");
@@ -105,7 +133,7 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
         Command::Pair { host, pin, name } => {
             let identity =
                 Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;
-            let addr = with_default_port(&host);
+            let addr = pairing_address(&host);
             let peer = pair(&addr, &pin, &identity, &name.unwrap_or_else(hostname))?;
             println!(
                 "Gekoppelt mit {} ({addr}, Schlüssel {}).",
@@ -127,6 +155,57 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
                     p.address.as_deref().unwrap_or("?"),
                     p.key.fingerprint()
                 );
+            }
+        }
+        Command::Discover {
+            targets: extra,
+            wait,
+        } => {
+            let mut targets = broadcast_targets(DEFAULT_PORT);
+            for t in &extra {
+                let addr = with_default_port(t);
+                targets.push(
+                    addr.parse()
+                        .map_err(|_| anyhow::anyhow!("not an address: {t}"))?,
+                );
+            }
+            // Paired hosts directly, too: that also works where broadcasts
+            // do not get through.
+            targets.extend(
+                hosts
+                    .peers
+                    .iter()
+                    .filter_map(|p| p.address.as_deref()?.parse::<SocketAddr>().ok()),
+            );
+            let found = discover(&targets, Duration::from_secs_f64(wait.clamp(0.1, 30.0)))?;
+            if found.is_empty() {
+                println!("Keine Hosts gefunden.");
+            }
+            for f in &found {
+                let mut notes = Vec::new();
+                if hosts.get(&f.key).is_some() {
+                    notes.push("gekoppelt");
+                }
+                if f.pairing {
+                    notes.push("Kopplung offen");
+                }
+                if f.busy {
+                    notes.push("verbunden");
+                }
+                let about: Vec<&str> = [f.os.as_str(), f.gpu.as_str()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                println!(
+                    "{}  {}  {}  {}",
+                    f.name,
+                    f.addr,
+                    about.join(" · "),
+                    notes.join(", ")
+                );
+            }
+            if refresh_addresses(&mut hosts, &found) {
+                hosts.save(&hosts_path).map_err(anyhow::Error::msg)?;
             }
         }
         Command::Forget { host } => {

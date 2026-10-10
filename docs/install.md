@@ -42,6 +42,27 @@ Der Dienst läuft so:
 - **Maus und Tastatur:** Eingaben gekoppelter Geräte nimmt der Dienst an (`--input`).
 - **Ton:** Ton und Monitoranordnung holt sich der Dienst vom angemeldeten Benutzer. Er nimmt also auf, was auf dessen Desktop läuft.
 
+## Hosts im Netz finden
+
+Auf einem Client-Rechner:
+
+```sh
+fernsicht-client discover
+```
+
+```text
+zentrale  192.168.178.87:47800  Bazzite · Radeon RX 7700 XT / 7800 XT · H.264  gekoppelt
+```
+
+Der Client fragt per Broadcast ins lokale Netz und direkt bei den
+gekoppelten Hosts nach. Dafür ist kein zusätzlicher Port nötig, es läuft
+über denselben UDP-Port 47800. Hat ein gekoppelter Host inzwischen eine
+neue Adresse (DHCP), merkt sich der Client die neue.
+
+Die Antworten sind nicht beglaubigt. Ob am anderen Ende wirklich der
+gekoppelte Host sitzt, prüft erst der Schlüssel beim Verbinden. Ein
+gefälschter Eintrag in der Liste kann also nichts anrichten.
+
 ## Geräte koppeln
 
 Auf dem Host, ohne `sudo`:
@@ -55,10 +76,10 @@ Kopplung offen für 5 Minuten. PIN: 482913
 Auf dem neuen Gerät: fernsicht-client pair <diese Adresse> <PIN>
 ```
 
-Auf dem neuen Gerät:
+Auf dem neuen Gerät, mit dem Namen aus `discover` oder der Adresse:
 
 ```sh
-fernsicht-client pair 192.168.178.87 482913
+fernsicht-client pair zentrale 482913
 ```
 
 Koppeln dürfen nur root und der Benutzer, der am Desktop angemeldet ist. Der

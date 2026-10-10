@@ -30,6 +30,7 @@ fernsicht-codec.workspace = true
 fernsicht-core.workspace = true
 fernsicht-input.workspace = true
 fernsicht-net.workspace = true
+libc.workspace = true
 fernsicht-proto.workspace = true
 fernsicht-secure.workspace = true
 fernsicht-render.workspace = true

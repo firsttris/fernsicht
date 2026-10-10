@@ -193,17 +193,36 @@ proptest! {
             }
             Packet::Pair(p) => p.encode(&mut buf),
             Packet::Reject(r) => r.encode(&mut buf),
+            Packet::Discover(d) => d.encode(&mut buf),
+            Packet::Announce(a) => a.encode(&mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }
 
     /// Valid prefix plus random body: exercises the per-kind validation.
     #[test]
-    fn random_bodies_are_safe(kind in 1u8..=16, flags: u8,
+    fn random_bodies_are_safe(kind in 1u8..=18, flags: u8,
                               body in proptest::collection::vec(any::<u8>(), 0..96)) {
         let mut bytes = vec![MAGIC, VERSION, kind, flags];
         bytes.extend_from_slice(&body);
         let _ = Packet::decode(&bytes);
+    }
+
+    /// Any texts, clipped to their limits, come through an announcement.
+    #[test]
+    fn announcements_roundtrip(nonce: u64, key: [u8; 32], pairing: bool, busy: bool,
+                               name in "\\PC{1,40}", os in "\\PC{0,40}", gpu in "\\PC{0,40}") {
+        let a = Announce {
+            nonce, key, pairing, busy,
+            name: clip(&name, MAX_ANNOUNCE_NAME),
+            os: clip(&os, MAX_ANNOUNCE_INFO),
+            gpu: clip(&gpu, MAX_ANNOUNCE_INFO),
+        };
+        prop_assume!(!a.name.is_empty());
+        let mut buf = vec![0u8; MAX_DATAGRAM];
+        let n = a.encode(&mut buf);
+        prop_assert!(n <= Announce::MAX_LEN);
+        prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Announce(a)));
     }
 
     /// Headers beyond the size limits are rejected, never accepted.

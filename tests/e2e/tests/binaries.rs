@@ -244,6 +244,23 @@ fn host_and_client_binaries_pair_and_stream() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).contains(&host.addr));
+    // Found in the network (asked directly here: no broadcasts on
+    // loopback), and known as paired.
+    let out = bin("fernsicht-client")
+        .args(["discover", &host.addr, "--wait", "0.5", "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    let found = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{found}");
+    let line = found
+        .lines()
+        .find(|l| l.contains(&host.addr))
+        .unwrap_or_else(|| panic!("host not found: {found}"));
+    assert!(
+        line.contains("gekoppelt") && line.contains("Testbild"),
+        "{line}"
+    );
     // Connect by address (the name works the same).
     let out = bin("fernsicht-client")
         .args([

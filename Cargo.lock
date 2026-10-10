@@ -952,6 +952,7 @@ dependencies = [
  "fernsicht-proto",
  "fernsicht-render",
  "fernsicht-secure",
+ "libc",
  "log",
  "winit",
 ]

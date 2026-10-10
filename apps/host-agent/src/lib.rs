@@ -35,6 +35,7 @@ use fernsicht_core::{Slot, clock, now_us};
 use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
 use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
+use fernsicht_proto::{Announce, Discover, MAX_ANNOUNCE_INFO, MAX_ANNOUNCE_NAME, clip};
 use fernsicht_proto::{
     AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Handshake,
     Hello, HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
@@ -75,6 +76,76 @@ pub struct HostConfig {
     /// Local control socket (pairing, status) while running; needs
     /// `security`. See [`control`].
     pub control: Option<PathBuf>,
+    /// What the host says about itself when clients look for hosts in the
+    /// LAN (it answers only with `security`, which gives name and key).
+    pub description: HostDescription,
+}
+
+/// OS and GPU as shown in clients' host lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostDescription {
+    /// E.g. "Bazzite".
+    pub os: String,
+    /// GPU and encoder, e.g. "Radeon RX 7700 XT / 7800 XT · H.264".
+    pub gpu: String,
+}
+
+impl HostDescription {
+    /// This machine, encoding with `encoder`.
+    pub fn of_this_machine(encoder: &EncoderKind) -> Self {
+        let node = match encoder {
+            EncoderKind::Vaapi { render_node } => Some(render_node.clone()),
+            EncoderKind::Nvenc { .. } => render_nodes()
+                .into_iter()
+                .find(|(_, v)| *v == NVIDIA)
+                .map(|(n, _)| n),
+            EncoderKind::Synthetic => None,
+        };
+        let gpu = match (
+            encoder,
+            node.and_then(|n| fernsicht_core::sysinfo::gpu_name(&n)),
+        ) {
+            (EncoderKind::Synthetic, _) => "Testbild".into(),
+            (_, Some(name)) => format!("{name} · H.264"),
+            (_, None) => "H.264".into(),
+        };
+        Self {
+            os: fernsicht_core::sysinfo::os_name(),
+            gpu,
+        }
+    }
+}
+
+/// Answers to "which hosts are there?" a host sends per second at most:
+/// plenty for a LAN, useless for flooding anyone.
+const ANNOUNCE_RATE: f64 = 20.0;
+
+/// A token bucket for those answers.
+#[derive(Debug)]
+struct AnnounceBudget {
+    tokens: f64,
+    at: Instant,
+}
+
+impl AnnounceBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            tokens: ANNOUNCE_RATE,
+            at: now,
+        }
+    }
+
+    fn take(&mut self, now: Instant) -> bool {
+        let refill = now.saturating_duration_since(self.at).as_secs_f64() * ANNOUNCE_RATE;
+        self.tokens = (self.tokens + refill).min(ANNOUNCE_RATE);
+        self.at = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Where the sound comes from.
@@ -93,8 +164,7 @@ pub enum AudioKind {
 #[derive(Clone, Debug, Default)]
 pub enum InputKind {
     /// Ignored (acknowledged, so the client stops resending). The default:
-    /// there is no authentication yet, anyone who reaches the port could
-    /// type on this machine.
+    /// typing on this machine takes an explicit choice.
     #[default]
     Off,
     /// Virtual keyboard and mice through /dev/uinput, created per session.
@@ -151,6 +221,7 @@ impl Default for HostConfig {
             audio: AudioKind::default(),
             security: None,
             control: None,
+            description: HostDescription::default(),
         }
     }
 }
@@ -469,6 +540,7 @@ impl HostAgent {
         let mut pairing: Option<PairingExchange> = None;
         // Newest handshake per client (its clock, ms): older ones are replays.
         let mut handshake_times: HashMap<PublicKey, u64> = HashMap::new();
+        let mut announce_budget = AnnounceBudget::new(Instant::now());
         let control_stop = Arc::new(AtomicBool::new(false));
         let control = match (&self.cfg.control, &self.cfg.security) {
             (Some(path), Some(sec)) => {
@@ -580,6 +652,11 @@ impl HostAgent {
                     );
                 }
                 Packet::Pair(p) => self.on_pair(p, from, &mut pairing, &mut out),
+                Packet::Discover(d) => {
+                    if announce_budget.take(Instant::now()) {
+                        self.announce(d, from, session.is_some(), &mut out);
+                    }
+                }
                 Packet::ClockPing(ping) => {
                     let pong = ClockPong {
                         seq: ping.seq,
@@ -733,6 +810,29 @@ impl HostAgent {
             Ok((s, None)) => s.stop(),
             Err(e) => log::error!("session {:08x}: {e:#}", params.session_id),
         }
+    }
+
+    /// Answers "which hosts are there?" with name, key, OS and GPU. Only
+    /// a host with a key answers (the library's insecure test mode not).
+    fn announce(&self, d: Discover, from: SocketAddr, busy: bool, out: &mut [u8]) {
+        let Some(sec) = self.cfg.security.as_ref() else {
+            return;
+        };
+        let name = match clip(sec.name(), MAX_ANNOUNCE_NAME) {
+            "" => "host",
+            n => n,
+        };
+        let a = Announce {
+            nonce: d.nonce,
+            key: sec.public_key().0,
+            pairing: sec.pairing_remaining().is_some(),
+            busy,
+            name,
+            os: clip(&self.cfg.description.os, MAX_ANNOUNCE_INFO),
+            gpu: clip(&self.cfg.description.gpu, MAX_ANNOUNCE_INFO),
+        };
+        let n = a.encode(out);
+        let _ = self.socket.send_to(&out[..n], from);
     }
 
     /// Pairing messages (only while pairing mode is open).
@@ -1265,12 +1365,12 @@ fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn 
     }
 }
 
-const NVIDIA: u32 = 0x10de;
+const NVIDIA: u16 = 0x10de;
 
 /// The hardware encoder for the GPUs found (render node, PCI vendor), in
 /// order: VAAPI on AMD/Intel, NVENC on NVIDIA, as far as this build
 /// supports them (`vaapi`, `nvenc`).
-pub fn choose_encoder(gpus: &[(String, u32)], vaapi: bool, nvenc: bool) -> Option<EncoderKind> {
+pub fn choose_encoder(gpus: &[(String, u16)], vaapi: bool, nvenc: bool) -> Option<EncoderKind> {
     gpus.iter().find_map(|(node, vendor)| match *vendor {
         NVIDIA if nvenc => Some(EncoderKind::Nvenc { gpu: 0 }),
         NVIDIA => None,
@@ -1281,9 +1381,9 @@ pub fn choose_encoder(gpus: &[(String, u32)], vaapi: bool, nvenc: bool) -> Optio
     })
 }
 
-/// [`choose_encoder`] for this machine's GPUs.
-pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
-    let mut gpus: Vec<(String, u32)> = std::fs::read_dir("/sys/class/drm")
+/// This machine's GPUs: render node and PCI vendor, in node order.
+fn render_nodes() -> Vec<(String, u16)> {
+    let mut gpus: Vec<(String, u16)> = std::fs::read_dir("/sys/class/drm")
         .into_iter()
         .flatten()
         .flatten()
@@ -1293,11 +1393,17 @@ pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
                 return None;
             }
             let vendor = std::fs::read_to_string(e.path().join("device/vendor")).ok()?;
-            let vendor = u32::from_str_radix(vendor.trim().trim_start_matches("0x"), 16).ok()?;
+            let vendor = u16::from_str_radix(vendor.trim().trim_start_matches("0x"), 16).ok()?;
             Some((format!("/dev/dri/{name}"), vendor))
         })
         .collect();
     gpus.sort();
+    gpus
+}
+
+/// [`choose_encoder`] for this machine's GPUs.
+pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
+    let gpus = render_nodes();
     let kind = choose_encoder(&gpus, cfg!(feature = "vaapi"), cfg!(feature = "nvidia"))
         .ok_or_else(|| {
             anyhow::anyhow!("no GPU this build can encode with (found {gpus:x?}); pick --encoder")
@@ -1540,6 +1646,39 @@ mod tests {
         if !cfg!(any(feature = "vaapi", feature = "nvidia")) {
             assert!(here.unwrap_err().to_string().contains("--encoder"));
         }
+    }
+
+    #[test]
+    fn announcements_are_rationed() {
+        let t0 = Instant::now();
+        let mut b = AnnounceBudget::new(t0);
+        let burst = (0..100).filter(|_| b.take(t0)).count();
+        assert_eq!(burst, ANNOUNCE_RATE as usize);
+        assert!(
+            !b.take(t0 + Duration::from_millis(10)),
+            "a fifth of a token"
+        );
+        assert!(b.take(t0 + Duration::from_millis(60)));
+        // A long pause refills to the burst, not beyond.
+        let later = t0 + Duration::from_secs(60);
+        assert_eq!(
+            (0..100).filter(|_| b.take(later)).count(),
+            ANNOUNCE_RATE as usize
+        );
+    }
+
+    #[test]
+    fn the_host_describes_itself() {
+        let test = HostDescription::of_this_machine(&EncoderKind::Synthetic);
+        assert_eq!(test.gpu, "Testbild");
+        assert!(!test.os.is_empty());
+        let unknown = HostDescription::of_this_machine(&EncoderKind::Vaapi {
+            render_node: "/dev/dri/renderD999".into(),
+        });
+        assert_eq!(unknown.gpu, "H.264");
+        // NVENC looks up the NVIDIA card, if there is one.
+        let nv = HostDescription::of_this_machine(&EncoderKind::Nvenc { gpu: 0 });
+        assert!(nv.gpu.ends_with("H.264"), "{}", nv.gpu);
     }
 
     #[test]
