@@ -50,7 +50,10 @@ jobs:
         run: cargo test --workspace --exclude fernsicht-e2e
       # AMD: decoded pictures shown without a copy (DMA-BUF import);
       # NVIDIA: the CPU upload path on the proprietary driver.
+      # The hardware steps below run even when an earlier one failed, so
+      # one red step does not hide the results of the others.
       - name: Vulkan renderer on this GPU
+        if: ${{ !cancelled() }}
         env:
           FERNSICHT_GPU: ${{ matrix.gpu }}
           FERNSICHT_REQUIRE_VULKAN: "1"
@@ -59,22 +62,22 @@ jobs:
           --features "vulkan${{ matrix.gpu == 'amd' && ',vaapi' || '' }}"
           --test vulkan -- --test-threads=1 --nocapture
       - name: VAAPI encode/decode on the GPU
-        if: matrix.gpu == 'amd'
+        if: ${{ !cancelled() && matrix.gpu == 'amd' }}
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-codec --features vaapi --test vaapi -- --test-threads=1 --nocapture
       - name: Real H.264 end to end (host → impaired link → client)
-        if: matrix.gpu == 'amd'
+        if: ${{ !cancelled() && matrix.gpu == 'amd' }}
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-e2e --features vaapi --test gpu -- --nocapture
       - name: NVENC/NVDEC on the GPU
-        if: matrix.gpu == 'nvidia'
+        if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         env:
           FERNSICHT_GPU: nvidia
         run: cargo test -p fernsicht-codec --features nvidia --test nvidia -- --test-threads=1 --nocapture
       - name: Real H.264 end to end (NVENC → impaired link → NVDEC)
-        if: matrix.gpu == 'nvidia'
+        if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         env:
           FERNSICHT_GPU: nvidia
         run: cargo test -p fernsicht-e2e --features nvidia --test gpu -- --nocapture
