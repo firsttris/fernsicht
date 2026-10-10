@@ -24,7 +24,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | | Internet (NAT), Bitratenanpassung | ⏳ offen |
 | 4–5 | Host als Dienst | ✅ systemd-Dienst mit Installationsskript, Encoder passend zur Grafikkarte, Koppeln/Status/Entfernen über einen lokalen Steuer-Socket ([Anleitung](docs/install.md)) |
 | | Gerätesuche | ✅ `fernsicht-client discover`: Broadcast über den Stream-Port (keine Firewall-Änderung), Hosts nennen Name, Schlüssel, OS, GPU und ob Kopplung offen ist; neue Adressen gekoppelter Hosts werden übernommen |
-| | App, Web-Viewer | ⏳ in Arbeit |
+| | Desktop-App | ✅ Tauri um die Client-UI: Rechner im Netz, Koppeln per PIN, Sitzung starten (Bild im nativen Vulkan-Fenster, Latenz-Overlay in der App), „Dieser Rechner" öffnet die Kopplung am eigenen Host ([apps/desktop](apps/desktop)) |
+| | Installer, Web-Viewer | ⏳ offen |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
@@ -79,7 +80,19 @@ Capture 0,7 ms · Encode 0,2 ms · Netz 1,0 ms · Decode 0,3 ms · Anzeige 0,0 m
 Codec Synthetisch · Bildrate 60 fps · Bitrate 24 Mbit/s · Verlust (FEC) 1,0 % → 0 · RTT 0,1 ms
 ```
 
-Oberflächen:
+Die App (Rechner im Netz, Koppeln, Sitzungen):
+
+```sh
+pnpm install && pnpm --filter @fernsicht/client-ui build
+cargo build --release -p fernsicht-client --features vaapi,window   # das Stream-Fenster
+cargo build --release --manifest-path apps/desktop/Cargo.toml        # die App
+FERNSICHT_CLIENT=target/release/fernsicht-client apps/desktop/target/release/fernsicht
+```
+
+Die App sucht den Client neben sich, sonst im `PATH`. `FERNSICHT_CLIENT`
+zeigt ihr den Weg, solange nichts installiert ist.
+
+Oberflächen im Browser (mit Demo-Daten):
 
 ```sh
 pnpm install

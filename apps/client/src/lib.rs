@@ -60,7 +60,8 @@ pub struct ClientConfig {
     /// Fraction of incoming video packets to drop on purpose (testing).
     pub loss: f64,
     pub duration: Option<Duration>,
-    pub print_overlay: bool,
+    /// Print the overlay on stdout once per second.
+    pub print_overlay: OverlayOutput,
     /// Give up when the host has been silent this long.
     pub host_timeout: Duration,
     /// GPU used for hardware decoding (VAAPI).
@@ -91,7 +92,7 @@ impl Default for ClientConfig {
             bitrate_kbps: 0,
             loss: 0.0,
             duration: None,
-            print_overlay: false,
+            print_overlay: OverlayOutput::Off,
             host_timeout: Duration::from_secs(5),
             render_node: "/dev/dri/renderD128".into(),
             decoder: DecoderChoice::Auto,
@@ -101,6 +102,17 @@ impl Default for ClientConfig {
             record: None,
         }
     }
+}
+
+/// How the overlay is printed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverlayOutput {
+    #[default]
+    Off,
+    /// The overlay's text lines (the terminal client).
+    Text,
+    /// One JSON object per line (the desktop app reads them).
+    Json,
 }
 
 /// This device's key and the key of the host it connects to (known from
@@ -1013,7 +1025,7 @@ fn present_loop(
     info: &Mutex<StreamInfo>,
     free_tx: &Sender<ReceivedFrame>,
     need_keyframe: &AtomicBool,
-    print_overlay: bool,
+    print_overlay: OverlayOutput,
     hw: &Hw,
     mut record: Option<&mut dyn std::io::Write>,
     presenter: &mut dyn Presenter,
@@ -1111,11 +1123,15 @@ fn present_loop(
             let info = *info.lock().unwrap();
             let lines = overlay::lines(&r.stats, &info);
             presenter.overlay(&lines);
-            if print_overlay {
-                for line in &lines {
-                    println!("{line}");
+            match print_overlay {
+                OverlayOutput::Off => {}
+                OverlayOutput::Text => {
+                    for line in &lines {
+                        println!("{line}");
+                    }
+                    println!();
                 }
-                println!();
+                OverlayOutput::Json => println!("{}", overlay::json(&r.stats, &info)),
             }
             last_overlay = Instant::now();
         }

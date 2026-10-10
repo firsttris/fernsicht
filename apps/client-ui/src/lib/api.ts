@@ -1,7 +1,8 @@
 /**
- * Data access for the client UI. Today it serves demo data; in phase 4 the
- * same functions call Tauri commands (local host service, native video
- * window) and the rendezvous API (devices, pairing).
+ * Data access for the client UI. In the desktop app (Tauri) it calls the
+ * app's commands: hosts in the LAN, pairing, sessions in the native
+ * window, the host on this machine. In a plain browser (development, the
+ * demo) it serves demo data.
  */
 import {
   type Device,
@@ -10,16 +11,52 @@ import {
   demoStats,
   demoThisMachine,
 } from "@fernsicht/ui";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { queryOptions } from "@tanstack/react-query";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Whether the UI runs inside the desktop app. */
+export const inApp = () => isTauri();
+
+/** The host running on this computer, as its control socket reports it. */
+export interface HostStatus {
+  name: string;
+  key: string;
+  paired: { name: string; key: string }[];
+  session: { client: string; address: string } | null;
+  /** Seconds pairing stays open, if it is. */
+  pairing: number | null;
+}
+
+export interface ThisMachine {
+  /** Account id and code (demo; later the rendezvous server). */
+  id?: string;
+  code?: string;
+  /** Desktop app: the computer's name and its host, if one runs. */
+  name?: string;
+  host?: HostStatus | null;
+}
+
+/** The session the app runs in the native window. */
+export interface SessionState {
+  active: boolean;
+  deviceId?: string | null;
+  deviceName?: string | null;
+  stats?: SessionStats | null;
+  /** Why it ended, if it failed. */
+  error?: string | null;
+}
+
 export const devicesQuery = queryOptions({
   queryKey: ["devices"],
   queryFn: async (): Promise<Device[]> => {
+    if (inApp()) return invoke<Device[]>("devices");
     await delay(150);
     return demoDevices;
   },
+  // Hosts come and go in the LAN.
+  refetchInterval: () => (inApp() ? 5000 : false),
 });
 
 export const deviceQuery = (id: string) =>
@@ -42,14 +79,43 @@ export const deviceQuery = (id: string) =>
 
 export const thisMachineQuery = queryOptions({
   queryKey: ["this-machine"],
-  queryFn: async () => demoThisMachine,
-  staleTime: Infinity,
+  queryFn: async (): Promise<ThisMachine> =>
+    inApp() ? invoke<ThisMachine>("this_machine") : demoThisMachine,
+  staleTime: () => (inApp() ? 0 : Infinity),
+  refetchInterval: () => (inApp() ? 3000 : false),
 });
 
-/** Overlay stats of the running session, refreshed once per second. */
-export const sessionStatsQuery = (deviceId: string) =>
+/** The running session with its overlay, refreshed once per second. */
+export const sessionQuery = (deviceId: string) =>
   queryOptions({
-    queryKey: ["session-stats", deviceId],
-    queryFn: async (): Promise<SessionStats> => demoStats(Date.now() / 1000),
+    queryKey: ["session", deviceId],
+    queryFn: async (): Promise<SessionState> =>
+      inApp()
+        ? invoke<SessionState>("session")
+        : { active: true, deviceId, stats: demoStats(Date.now() / 1000) },
     refetchInterval: 1000,
   });
+
+/** What the app can do (desktop app only). */
+export const actions = {
+  pair: (address: string, pin: string) => invoke<Device>("pair", { address, pin }),
+  connect: (id: string) => invoke<SessionState>("connect", { id }),
+  disconnect: async () => {
+    if (inApp()) await invoke("disconnect");
+  },
+  openPairing: () => invoke<{ pin: string; expires_in_s: number }>("open_pairing"),
+};
+
+/** The backend's (English) errors in the UI's words. */
+export function errorText(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const known: [string, string][] = [
+    ["wrong PIN", "Falsche PIN."],
+    ["too many wrong PINs", "Zu viele falsche PINs. Kopplung am Host neu öffnen."],
+    ["not in pairing mode", "Am Host ist keine Kopplung offen."],
+    ["no answer from", "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?"],
+    ["not paired with the host", "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln."],
+    ["no packets from", "Der Host antwortet nicht. Läuft er noch?"],
+  ];
+  return known.find(([needle]) => raw.includes(needle))?.[1] ?? raw;
+}

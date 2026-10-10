@@ -6,8 +6,9 @@ use std::time::Duration;
 use clap::Parser;
 use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
-    AudioOutput, ClientConfig, ClientSecurity, DEFAULT_PORT, DecoderChoice, Identity, Trusted,
-    default_state_dir, find_host, pair, refresh_addresses, run, with_default_port,
+    AudioOutput, ClientConfig, ClientSecurity, DEFAULT_PORT, DecoderChoice, Identity,
+    OverlayOutput, Trusted, default_state_dir, find_host, pair, refresh_addresses, run,
+    with_default_port,
 };
 use fernsicht_render::overlay::ms;
 
@@ -67,6 +68,10 @@ struct Args {
     /// No window: decode only and print the overlay.
     #[arg(long)]
     headless: bool,
+    /// Run for the desktop app: the overlay as JSON lines on stdout, and
+    /// stop when stdin closes (the app quit or ended the session).
+    #[arg(long, hide = true)]
+    app: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -259,7 +264,11 @@ fn main() -> anyhow::Result<()> {
         bitrate_kbps: args.bitrate,
         loss: args.loss,
         duration: args.duration.map(Duration::from_secs),
-        print_overlay: true,
+        print_overlay: if args.app {
+            OverlayOutput::Json
+        } else {
+            OverlayOutput::Text
+        },
         render_node: args.render_node,
         decoder: match args.decoder {
             DecoderArg::Auto => DecoderChoice::Auto,
@@ -274,15 +283,24 @@ fn main() -> anyhow::Result<()> {
         },
         ..ClientConfig::default()
     };
+    let stop = Arc::new(AtomicBool::new(false));
+    if args.app {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            // Nothing comes on stdin; it ends when the app lets go of it.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
     let s = if args.headless || !cfg!(feature = "window") {
         if !args.headless {
             log::info!("built without the \"window\" feature: running headless");
         }
-        run(cfg, Arc::new(AtomicBool::new(false)))?
+        run(cfg, stop)?
     } else {
         #[cfg(feature = "window")]
         {
-            window::run(cfg, !args.view_only)?
+            window::run(cfg, !args.view_only, stop)?
         }
         #[cfg(not(feature = "window"))]
         unreachable!()
@@ -544,13 +562,19 @@ mod window {
         }
     }
 
-    pub fn run(mut cfg: ClientConfig, send_input: bool) -> anyhow::Result<RunSummary> {
+    /// Runs the client in a window until it is closed, the client ends or
+    /// `stop` is set.
+    pub fn run(
+        mut cfg: ClientConfig,
+        send_input: bool,
+        stop: Arc<AtomicBool>,
+    ) -> anyhow::Result<RunSummary> {
         let input = send_input.then(|| Arc::new(InputHandle::default()));
         cfg.input = input.clone();
         let event_loop = EventLoop::<Done>::with_user_event().build()?;
         let mut app = App {
             cfg: Some(cfg),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop,
             proxy: event_loop.create_proxy(),
             window: None,
             client: None,

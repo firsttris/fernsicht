@@ -179,6 +179,41 @@ jobs:
       - run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - run: cargo test -p fernsicht-e2e --release --test soak -- --ignored
 
+  # ── Desktop app ───────────────────────────────────────────────────────
+  # Its own Cargo workspace (WebKitGTK, the built UI); its test drives a real
+  # host and the real client program through the app's logic.
+  desktop:
+    name: Desktop app · fmt, clippy, tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @fernsicht/client-ui build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop
+            .
+      - name: WebKitGTK (Tauri)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets
+      - run: cargo test
+
   # ── Web ───────────────────────────────────────────────────────────────
   web-lint:
     name: Web · format, typecheck, build

@@ -1,7 +1,14 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 
-import { deviceQuery, devicesQuery, sessionStatsQuery, thisMachineQuery } from "./api";
+import {
+  actions,
+  deviceQuery,
+  devicesQuery,
+  errorText,
+  sessionQuery,
+  thisMachineQuery,
+} from "./api";
 
 const client = () => new QueryClient();
 
@@ -21,8 +28,21 @@ describe("api", () => {
   it("loads this machine and session stats", async () => {
     const qc = client();
     expect(await qc.fetchQuery(thisMachineQuery)).toEqual({ id: "482913057", code: "k7f-2qx" });
-    const stats = await qc.fetchQuery(sessionStatsQuery("214776390"));
-    expect(stats.codec).toBe("AV1 · VAAPI");
-    expect(sessionStatsQuery("x").refetchInterval).toBe(1000);
+    const session = await qc.fetchQuery(sessionQuery("214776390"));
+    expect(session.active).toBe(true);
+    expect(session.stats?.codec).toBe("AV1 · VAAPI");
+    expect(sessionQuery("x").refetchInterval).toBe(1000);
+  });
+
+  it("does nothing on disconnect outside the app", async () => {
+    await expect(actions.disconnect()).resolves.toBeUndefined();
+  });
+
+  it("puts the backend's errors in the UI's words", () => {
+    expect(errorText(new Error("wrong PIN"))).toBe("Falsche PIN.");
+    expect(errorText("192.0.2.1:47800: this device is not paired with the host (…)")).toBe(
+      "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
+    );
+    expect(errorText("something else")).toBe("something else");
   });
 });

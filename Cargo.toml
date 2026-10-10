@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "apps/host-agent", "apps/client", "tests/e2e"]
-# Fuzz targets need nightly and cargo-fuzz; see fuzz/README.md.
-exclude = ["fuzz"]
+# Fuzz targets need nightly and cargo-fuzz (fuzz/README.md); the desktop app
+# needs WebKitGTK and the built UI (apps/desktop/Cargo.toml).
+exclude = ["fuzz", "apps/desktop"]
 
 [workspace.package]
 version = "0.1.0"

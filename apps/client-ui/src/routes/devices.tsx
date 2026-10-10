@@ -8,12 +8,12 @@ import {
   type SessionMode,
   formatDeviceId,
 } from "@fernsicht/ui";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, Monitor } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
-import { devicesQuery } from "../lib/api";
+import { actions, devicesQuery, errorText, inApp } from "../lib/api";
 
 type Filter = "all" | "online" | "favorites";
 
@@ -22,6 +22,13 @@ export function DevicesPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const connectDialog = useRef<HTMLDialogElement>(null);
+  const pairDialog = useRef<HTMLDialogElement>(null);
+  const [pairAddress, setPairAddress] = useState("");
+  const app = inApp();
+  const openPairing = (address: string) => {
+    setPairAddress(address);
+    pairDialog.current?.showModal();
+  };
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -30,7 +37,11 @@ export function DevicesPage() {
       if (filter === "online" && !d.online) return false;
       if (filter === "favorites" && !d.favorite) return false;
       if (!q) return true;
-      return d.name.toLowerCase().includes(q) || (qDigits !== "" && d.id.includes(qDigits));
+      return (
+        d.name.toLowerCase().includes(q) ||
+        (d.address ?? "").includes(q) ||
+        (qDigits !== "" && d.id.includes(qDigits))
+      );
     });
   }, [devices, search, filter]);
 
@@ -39,17 +50,27 @@ export function DevicesPage() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-col gap-1">
           <h1 className="m-0 text-2xl font-semibold tracking-tight">Geräte</h1>
-          <span className="text-muted-foreground">Deine Rechner und freigegebenen Geräte</span>
+          <span className="text-muted-foreground">
+            {app ? "Rechner in deinem Netzwerk" : "Deine Rechner und freigegebenen Geräte"}
+          </span>
         </div>
         <div className="flex gap-2">
-          {/* Pairing needs the rendezvous server (phase 3). */}
-          <Button variant="outline" disabled title="Pairing kommt mit dem Rendezvous-Server">
-            Gerät hinzufügen
-          </Button>
-          <Button onClick={() => connectDialog.current?.showModal()}>
-            <ArrowRight size={14} strokeWidth={2.2} />
-            Verbinden
-          </Button>
+          {app ? (
+            <Button variant="outline" onClick={() => openPairing("")}>
+              Gerät hinzufügen
+            </Button>
+          ) : (
+            // Outside the LAN, pairing needs the rendezvous server.
+            <Button variant="outline" disabled title="Pairing kommt mit dem Rendezvous-Server">
+              Gerät hinzufügen
+            </Button>
+          )}
+          {!app && (
+            <Button onClick={() => connectDialog.current?.showModal()}>
+              <ArrowRight size={14} strokeWidth={2.2} />
+              Verbinden
+            </Button>
+          )}
         </div>
       </div>
 
@@ -60,7 +81,7 @@ export function DevicesPage() {
         <Input
           id="search"
           type="search"
-          placeholder="ID oder Name suchen …"
+          placeholder={app ? "Name oder Adresse suchen …" : "ID oder Name suchen …"}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-[360px] flex-[1_1_280px]"
@@ -77,28 +98,43 @@ export function DevicesPage() {
         />
       </div>
 
-      {isPending && <p className="text-muted-foreground">Lade Geräte …</p>}
+      {isPending && (
+        <p className="text-muted-foreground">
+          {app ? "Suche Rechner im Netzwerk …" : "Lade Geräte …"}
+        </p>
+      )}
       {isError && <p className="text-muted-foreground">Geräte konnten nicht geladen werden.</p>}
       {devices && visible.length === 0 && (
-        <p className="text-muted-foreground">Keine Geräte gefunden.</p>
+        <p className="text-muted-foreground">
+          {app && devices.length === 0
+            ? "Kein Fernsicht-Host im Netzwerk gefunden. Läuft er auf dem anderen Rechner?"
+            : "Keine Geräte gefunden."}
+        </p>
       )}
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
         {visible.map((d) => (
-          <DeviceCard key={d.id} device={d} />
+          <DeviceCard key={d.id} device={d} onPair={() => openPairing(d.address ?? "")} />
         ))}
       </div>
 
       <ConnectDialog ref={connectDialog} />
+      {app && <PairDialog ref={pairDialog} address={pairAddress} />}
     </>
   );
 }
 
-function DeviceCard({ device: d }: { device: Device }) {
-  const modes: { mode: SessionMode; label: string; primary: boolean }[] = [
-    { mode: "desktop", label: "Desktop", primary: true },
-    { mode: "gaming", label: "Gaming", primary: false },
-  ];
+const MODES: { mode: SessionMode; label: string; primary: boolean }[] = [
+  { mode: "desktop", label: "Desktop", primary: true },
+  { mode: "gaming", label: "Gaming", primary: false },
+];
+
+/** "192.168.178.87:47800" without the default port. */
+const hostOnly = (address: string) => address.replace(/:47800$/, "");
+
+function DeviceCard({ device: d, onPair }: { device: Device; onPair: () => void }) {
+  const app = inApp();
+  const unpaired = d.paired === false;
   return (
     <article className="flex flex-col gap-4 rounded-[10px] border border-border p-[18px]">
       <div className="flex items-start justify-between gap-3">
@@ -108,7 +144,9 @@ function DeviceCard({ device: d }: { device: Device }) {
           </div>
           <div className="flex flex-col gap-0.5">
             <h2 className="m-0 text-sm font-semibold">{d.name}</h2>
-            <span className="font-mono text-xs text-muted-foreground">{formatDeviceId(d.id)}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {d.address ? hostOnly(d.address) : formatDeviceId(d.id)}
+            </span>
           </div>
         </div>
         <Badge variant={d.online ? "online" : "offline"}>{d.online ? "Online" : "Offline"}</Badge>
@@ -116,36 +154,176 @@ function DeviceCard({ device: d }: { device: Device }) {
       <div className="flex flex-wrap gap-1.5">
         {d.os && <Badge>{d.os}</Badge>}
         {d.gpu && <Badge>{d.gpu}</Badge>}
+        {unpaired && <Badge>Nicht gekoppelt</Badge>}
+        {unpaired && d.pairing && <Badge variant="online">Kopplung offen</Badge>}
+        {d.busy && <Badge>In Benutzung</Badge>}
       </div>
-      <div className="flex gap-2">
-        {modes.map(({ mode, label, primary }) =>
-          d.online ? (
-            <Button
-              key={mode}
-              asChild
-              size="sm"
-              variant={primary ? "default" : "outline"}
-              className="flex-1"
-            >
-              <Link to="/session/$deviceId" params={{ deviceId: d.id }} search={{ mode }}>
-                {label}
-              </Link>
-            </Button>
-          ) : (
-            <Button
-              key={mode}
-              size="sm"
-              variant={primary ? "default" : "outline"}
-              className="flex-1"
-              disabled
-              title={`${d.name} ist offline`}
-            >
-              {label}
-            </Button>
-          ),
-        )}
-      </div>
+      {unpaired ? (
+        <Button size="sm" onClick={onPair}>
+          Koppeln
+        </Button>
+      ) : app ? (
+        <ConnectButtons device={d} />
+      ) : (
+        <LinkButtons device={d} />
+      )}
     </article>
+  );
+}
+
+/** Desktop app: start the session in the native window, then show it. */
+function ConnectButtons({ device: d }: { device: Device }) {
+  const navigate = useNavigate();
+  const connect = useMutation({
+    mutationFn: ({ mode }: { mode: SessionMode }) => actions.connect(d.id).then(() => mode),
+    onSuccess: (mode) =>
+      navigate({ to: "/session/$deviceId", params: { deviceId: d.id }, search: { mode } }),
+  });
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2">
+        {MODES.map(({ mode, label, primary }) => (
+          <Button
+            key={mode}
+            size="sm"
+            variant={primary ? "default" : "outline"}
+            className="flex-1"
+            disabled={!d.online || connect.isPending}
+            title={d.online ? undefined : `${d.name} ist offline`}
+            onClick={() => connect.mutate({ mode })}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      {connect.isError && (
+        <p role="alert" className="m-0 text-xs text-muted-foreground">
+          {errorText(connect.error)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LinkButtons({ device: d }: { device: Device }) {
+  return (
+    <div className="flex gap-2">
+      {MODES.map(({ mode, label, primary }) =>
+        d.online ? (
+          <Button
+            key={mode}
+            asChild
+            size="sm"
+            variant={primary ? "default" : "outline"}
+            className="flex-1"
+          >
+            <Link to="/session/$deviceId" params={{ deviceId: d.id }} search={{ mode }}>
+              {label}
+            </Link>
+          </Button>
+        ) : (
+          <Button
+            key={mode}
+            size="sm"
+            variant={primary ? "default" : "outline"}
+            className="flex-1"
+            disabled
+            title={`${d.name} ist offline`}
+          >
+            {label}
+          </Button>
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Pairing with a host in the LAN: its address and the PIN it shows. */
+function PairDialog({ ref, address }: { ref: React.Ref<HTMLDialogElement>; address: string }) {
+  const queryClient = useQueryClient();
+  const [host, setHost] = useState(address);
+  const [pin, setPin] = useState("");
+  const [shownFor, setShownFor] = useState(address);
+  // A new device to pair with: start over.
+  if (shownFor !== address) {
+    setShownFor(address);
+    setHost(address);
+    setPin("");
+  }
+  const pair = useMutation({
+    mutationFn: () => actions.pair(host.trim(), pin),
+    onSuccess: async () => {
+      setPin("");
+      await queryClient.invalidateQueries({ queryKey: ["devices"] });
+    },
+  });
+  const valid = host.trim() !== "" && /^\d{6}$/.test(pin);
+
+  return (
+    <dialog
+      ref={ref}
+      aria-labelledby="pair-title"
+      className="m-auto w-full max-w-[400px] rounded-xl border border-border bg-background p-7 text-foreground backdrop:bg-black/60"
+      onClose={() => pair.reset()}
+    >
+      <form
+        className="flex flex-col gap-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const dialog = e.currentTarget.closest("dialog");
+          if (valid) pair.mutate(undefined, { onSuccess: () => dialog?.close() });
+        }}
+      >
+        <div className="flex flex-col gap-1.5">
+          <h2 id="pair-title" className="m-0 text-xl font-semibold tracking-tight">
+            Gerät koppeln
+          </h2>
+          <span className="leading-normal text-muted-foreground">
+            Auf dem Host unter „Dieser Rechner“ auf „Gerät koppeln“ klicken (oder dort{" "}
+            <code>fernsicht-host-agent pair</code> ausführen) und die PIN hier eingeben.
+          </span>
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="pair-host">Host</Label>
+          <Input
+            id="pair-host"
+            autoComplete="off"
+            placeholder="192.168.178.87"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="pair-pin">PIN</Label>
+          <Input
+            id="pair-pin"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="000000"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+            className="h-11 font-mono text-base tracking-[0.3em]"
+          />
+        </div>
+        {pair.isError && (
+          <p role="alert" className="m-0 text-muted-foreground">
+            {errorText(pair.error)}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={(e) => e.currentTarget.closest("dialog")?.close()}
+          >
+            Abbrechen
+          </Button>
+          <Button type="submit" disabled={!valid || pair.isPending}>
+            {pair.isPending ? "Kopple …" : "Koppeln"}
+          </Button>
+        </div>
+      </form>
+    </dialog>
   );
 }
 

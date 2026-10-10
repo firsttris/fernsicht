@@ -54,6 +54,17 @@ pub fn default_path() -> PathBuf {
     runtime.join("fernsicht/control.sock")
 }
 
+/// The control socket of the host running on this machine: the system
+/// service's if it runs, else the one a host started by this user uses.
+pub fn running_host_path() -> PathBuf {
+    let service = PathBuf::from("/run/fernsicht/control.sock");
+    if service.exists() {
+        service
+    } else {
+        default_path()
+    }
+}
+
 /// Answers one request from a caller with `uid`.
 pub fn handle(
     request: &str,

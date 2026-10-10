@@ -352,3 +352,64 @@ fn an_unpaired_host_is_refused_with_a_hint() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("wrong PIN"));
 }
+
+#[test]
+fn for_the_app_the_client_prints_json_and_stops_when_stdin_closes() {
+    let host = spawn_host(&state_dir("app-host"));
+    let client_dir = state_dir("app-client");
+    let out = bin("fernsicht-client")
+        .args(["pair", &host.addr, &host.pin, "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let mut child = bin("fernsicht-client")
+        .args([
+            &host.addr,
+            "--app",
+            "--headless",
+            "--no-audio",
+            "--width",
+            "640",
+            "--height",
+            "360",
+            "--duration",
+            "60",
+            "--state-dir",
+        ])
+        .arg(&client_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .collect::<Vec<_>>()
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    let started = Instant::now();
+    drop(child.stdin.take());
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "stopped when stdin closed, not after 60 s"
+    );
+    let stats: Vec<String> = lines
+        .join()
+        .unwrap()
+        .into_iter()
+        .filter(|l| l.starts_with('{'))
+        .collect();
+    assert!(!stats.is_empty(), "one JSON line per second");
+    for l in &stats {
+        assert!(
+            l.contains("\"glassToGlassUs\"") && l.contains("\"stagesUs\""),
+            "{l}"
+        );
+    }
+}

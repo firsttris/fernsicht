@@ -13,6 +13,17 @@ export interface Device {
   os: string;
   /** GPU and best available encoder, e.g. "RX 7800 XT · AV1". */
   gpu: string;
+  /**
+   * Hosts in the LAN (desktop app): paired with this machine. Devices
+   * from the account (demo, later the rendezvous server) leave it out.
+   */
+  paired?: boolean;
+  /** Pairing is open on the host: it shows a PIN. */
+  pairing?: boolean;
+  /** Someone is connected to it. */
+  busy?: boolean;
+  /** Where it answered, e.g. "192.168.178.87:47800". */
+  address?: string | null;
 }
 
 /** Mirrors `fernsicht_core::latency::Stage`, in pipeline order. */

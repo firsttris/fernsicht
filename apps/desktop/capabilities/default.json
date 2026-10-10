@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The main window: the app's own commands and Tauri's defaults.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -91,23 +91,11 @@ enum Command {
     Unpair { device: String },
 }
 
-/// The control socket: the given one, else the service's, else ours.
-fn control_path(given: Option<std::path::PathBuf>) -> std::path::PathBuf {
-    given.unwrap_or_else(|| {
-        let service = std::path::PathBuf::from("/run/fernsicht/control.sock");
-        if service.exists() {
-            service
-        } else {
-            fernsicht_host_agent::control::default_path()
-        }
-    })
-}
-
 /// Commands for a running host.
 fn command(cmd: Command, control: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     use fernsicht_host_agent::control::request;
     use serde_json::json;
-    let path = control_path(control);
+    let path = control.unwrap_or_else(fernsicht_host_agent::control::running_host_path);
     match cmd {
         Command::Pair => {
             let r = request(&path, &json!({"cmd": "pair"}))?;

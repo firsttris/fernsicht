@@ -86,6 +86,39 @@ pub fn lines(stats: &LatencyStats, info: &StreamInfo) -> Vec<String> {
     out
 }
 
+/// The same values as one JSON object, for the desktop app (the shape of
+/// its `SessionStats`, plus glass-to-glass and RTT).
+pub fn json(stats: &LatencyStats, info: &StreamInfo) -> String {
+    let total = stats.total();
+    let mut stages = String::new();
+    for (i, stage) in Stage::ALL.iter().enumerate() {
+        let key = match stage {
+            Stage::Capture => "capture",
+            Stage::Encode => "encode",
+            Stage::Network => "network",
+            Stage::Decode => "decode",
+            Stage::Present => "present",
+        };
+        let sep = if i > 0 { "," } else { "" };
+        let _ = write!(stages, "{sep}\"{key}\":{}", stats.stage(*stage).avg);
+    }
+    let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+    format!(
+        "{{\"glassToGlassUs\":{{\"avg\":{},\"p95\":{},\"max\":{}}},\"stagesUs\":{{{stages}}},\
+         \"codec\":\"{}\",\"fps\":{},\"bitrateBps\":{},\"lossBeforeFec\":{},\
+         \"lossAfterFec\":{},\"rttUs\":{}}}",
+        total.avg,
+        total.p95,
+        total.max,
+        codec_label(info.codec),
+        finite(info.fps),
+        info.bitrate_bps,
+        finite(info.loss_before_fec),
+        finite(info.loss_after_fec),
+        info.rtt_us.map_or("null".into(), |r| r.to_string()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +163,24 @@ mod tests {
             l[2],
             "Codec AV1 · Bildrate 120 fps · Bitrate 38 Mbit/s · Verlust (FEC) 0,4 % → 0"
         );
+
+        let j: serde_json::Value = serde_json::from_str(&json(&stats, &info)).unwrap();
+        assert_eq!(j["glassToGlassUs"]["avg"], 14_000);
+        assert_eq!(j["stagesUs"]["capture"], 1_000);
+        assert_eq!(j["stagesUs"]["network"], 3_000);
+        assert_eq!(j["stagesUs"]["present"], 4_000);
+        assert_eq!(j["codec"], "AV1");
+        assert_eq!(j["fps"], 120.0);
+        assert_eq!(j["bitrateBps"], 38_000_000);
+        assert!((j["lossBeforeFec"].as_f64().unwrap() - 0.004).abs() < 1e-6);
+        assert_eq!(j["rttUs"], serde_json::Value::Null);
+        let with_rtt = StreamInfo {
+            rtt_us: Some(1_250),
+            fps: f32::NAN,
+            ..info
+        };
+        let j: serde_json::Value = serde_json::from_str(&json(&stats, &with_rtt)).unwrap();
+        assert_eq!(j["rttUs"], 1_250);
+        assert_eq!(j["fps"], 0.0, "never NaN, which JSON cannot carry");
     }
 }

@@ -1061,6 +1061,7 @@ dependencies = [
  "naga",
  "proptest",
  "raw-window-handle",
+ "serde_json",
  "winit",
 ]
 
