@@ -5,7 +5,10 @@
 //! - a keyboard (all Linux key codes),
 //! - an absolute pointer (like a VM's "tablet": position 0..=65535 across
 //!   the screen, buttons, wheel) for desktop use,
-//! - a relative mouse (motion, buttons, wheel) for games.
+//! - a relative mouse (motion, buttons, wheel) for games,
+//! - per client gamepad, created when it is first used: an Xbox 360 pad
+//!   (its USB ids and the `xpad` driver's layout), which Steam, SDL and
+//!   games know without configuration.
 //!
 //! Compositors spread an absolute pointer over the whole desktop (all
 //! monitors). Positions arrive relative to the streamed monitor, so they
@@ -15,14 +18,14 @@
 //! access to `/dev/uinput`: root, or the ACL desktops give the logged-in
 //! user (Bazzite does, for Steam Input).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use fernsicht_proto::{BTN_MOUSE_FIRST, BTN_MOUSE_LAST, InputEvent, KEY_MAX};
+use fernsicht_proto::{BTN_MOUSE_FIRST, BTN_MOUSE_LAST, InputEvent, KEY_MAX, MAX_PADS, PadAxis};
 
 use crate::InputSink;
 
@@ -41,6 +44,14 @@ const REL_HWHEEL_HI_RES: u16 = 0x0c;
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 const BUS_VIRTUAL: u16 = 0x06;
+const BUS_USB: u16 = 0x03;
+const BTN_NORTH: u16 = 0x133;
+const BTN_WEST: u16 = 0x134;
+/// The buttons of an Xbox 360 pad: A B X Y, bumpers, back, start, guide,
+/// stick clicks.
+const PAD_BUTTONS: [u16; 11] = [
+    0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e,
+];
 
 // linux/uinput.h ioctls (x86_64 / aarch64 encoding).
 const UI_DEV_CREATE: libc::c_ulong = 0x5501;
@@ -87,12 +98,53 @@ fn input_event(kind: u16, code: u16, value: i32) -> [u8; 24] {
     e
 }
 
+/// An absolute axis and its range.
+#[derive(Clone, Copy)]
+struct Abs {
+    code: u16,
+    min: i32,
+    max: i32,
+    flat: i32,
+}
+
+impl Abs {
+    /// A pointer axis: 0..=[`ABS_MAX`].
+    fn pointer(code: u16) -> Self {
+        Self {
+            code,
+            min: 0,
+            max: ABS_MAX,
+            flat: 0,
+        }
+    }
+}
+
 /// What a device can do.
 #[derive(Default)]
 struct Caps {
     keys: Vec<u16>,
     rel: Vec<u16>,
-    abs: Vec<u16>,
+    abs: Vec<Abs>,
+}
+
+/// How a device introduces itself.
+struct Id {
+    bustype: u16,
+    vendor: u16,
+    product: u16,
+    version: u16,
+}
+
+impl Id {
+    /// Our own devices: not a registered vendor; stable ids for udev rules.
+    fn own(product: u16) -> Self {
+        Self {
+            bustype: BUS_VIRTUAL,
+            vendor: 0xf5f5,
+            product,
+            version: 1,
+        }
+    }
 }
 
 /// A created uinput device; destroyed on drop.
@@ -114,7 +166,7 @@ fn ioctl(file: &File, request: libc::c_ulong, arg: libc::c_ulong) -> Result<(), 
 }
 
 impl Device {
-    fn create(path: &Path, name: &str, product: u16, caps: &Caps) -> Result<Self, String> {
+    fn create(path: &Path, name: &str, id: Id, caps: &Caps) -> Result<Self, String> {
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK)
@@ -137,27 +189,27 @@ impl Device {
         }
         if !caps.abs.is_empty() {
             set(UI_SET_EVBIT, &[EV_ABS])?;
-            set(UI_SET_ABSBIT, &caps.abs)?;
-            for &code in &caps.abs {
+            let codes: Vec<u16> = caps.abs.iter().map(|a| a.code).collect();
+            set(UI_SET_ABSBIT, &codes)?;
+            for a in &caps.abs {
                 let abs = UinputAbsSetup {
-                    code,
+                    code: a.code,
                     _pad: 0,
                     value: 0,
-                    minimum: 0,
-                    maximum: ABS_MAX,
+                    minimum: a.min,
+                    maximum: a.max,
                     fuzz: 0,
-                    flat: 0,
+                    flat: a.flat,
                     resolution: 0,
                 };
                 ioctl(&file, UI_ABS_SETUP, &abs as *const _ as libc::c_ulong)?;
             }
         }
         let mut setup = UinputSetup {
-            bustype: BUS_VIRTUAL,
-            // Not a registered vendor; just stable ids for udev rules.
-            vendor: 0xf5f5,
-            product,
-            version: 1,
+            bustype: id.bustype,
+            vendor: id.vendor,
+            product: id.product,
+            version: id.version,
             name: [0; 80],
             ff_effects_max: 0,
         };
@@ -230,14 +282,72 @@ enum Pointer {
     Relative,
 }
 
-/// Keyboard and the two pointers.
+/// Keyboard, the two pointers and the gamepads.
 pub struct Uinput {
+    path: PathBuf,
     keyboard: Device,
     absolute: Device,
     relative: Device,
     pointer: Pointer,
     held: BTreeSet<u16>,
     area: AbsArea,
+    pads: Vec<Option<Device>>,
+    pad_held: BTreeSet<(u8, u16)>,
+    pad_axes: BTreeMap<(u8, PadAxis), i32>,
+}
+
+/// A virtual Xbox 360 pad.
+fn create_pad(path: &Path, n: u8) -> Result<Device, String> {
+    let stick = |code| Abs {
+        code,
+        min: -32768,
+        max: 32767,
+        flat: 128,
+    };
+    let abs = PadAxis::ALL
+        .iter()
+        .map(|&a| {
+            let r = a.range();
+            match a {
+                PadAxis::LeftX | PadAxis::LeftY | PadAxis::RightX | PadAxis::RightY => {
+                    stick(a as u16)
+                }
+                _ => Abs {
+                    code: a as u16,
+                    min: *r.start(),
+                    max: *r.end(),
+                    flat: 0,
+                },
+            }
+        })
+        .collect();
+    Device::create(
+        path,
+        &format!("Fernsicht X-Box 360 pad {}", n + 1),
+        // Microsoft Xbox 360 controller, as the xpad driver reports it.
+        Id {
+            bustype: BUS_USB,
+            vendor: 0x045e,
+            product: 0x028e,
+            version: 0x0110,
+        },
+        &Caps {
+            keys: PAD_BUTTONS.to_vec(),
+            rel: Vec::new(),
+            abs,
+        },
+    )
+}
+
+/// The protocol's buttons are meant by position; an Xbox pad (xpad) has
+/// X (left, `BTN_WEST` by position) as `BTN_X` = 0x133 and Y (top) as
+/// `BTN_Y` = 0x134.
+fn xpad_button(code: u16) -> u16 {
+    match code {
+        BTN_NORTH => BTN_WEST,
+        BTN_WEST => BTN_NORTH,
+        c => c,
+    }
 }
 
 /// Every key code a keyboard may send (no mouse or joystick buttons, or
@@ -264,7 +374,7 @@ impl Uinput {
         let keyboard = Device::create(
             path,
             "Fernsicht keyboard",
-            1,
+            Id::own(1),
             &Caps {
                 keys: keyboard_keys(),
                 ..Caps::default()
@@ -273,17 +383,17 @@ impl Uinput {
         let absolute = Device::create(
             path,
             "Fernsicht pointer",
-            2,
+            Id::own(2),
             &Caps {
                 keys: mouse_buttons(),
                 rel: WHEELS.to_vec(),
-                abs: vec![ABS_X, ABS_Y],
+                abs: vec![Abs::pointer(ABS_X), Abs::pointer(ABS_Y)],
             },
         )?;
         let relative = Device::create(
             path,
             "Fernsicht mouse",
-            3,
+            Id::own(3),
             &Caps {
                 keys: mouse_buttons(),
                 rel: [REL_X, REL_Y].into_iter().chain(WHEELS).collect(),
@@ -291,13 +401,30 @@ impl Uinput {
             },
         )?;
         Ok(Self {
+            path: path.to_owned(),
             keyboard,
             absolute,
             relative,
             pointer: Pointer::Absolute,
             held: BTreeSet::new(),
             area,
+            pads: (0..MAX_PADS).map(|_| None).collect(),
+            pad_held: BTreeSet::new(),
+            pad_axes: BTreeMap::new(),
         })
+    }
+
+    /// Gamepad `n`, created on first use.
+    fn pad(&mut self, n: u8) -> Result<&mut Device, String> {
+        let slot = self
+            .pads
+            .get_mut(usize::from(n))
+            .ok_or_else(|| format!("no gamepad {n}"))?;
+        if slot.is_none() {
+            *slot = Some(create_pad(&self.path, n)?);
+            log::info!("gamepad {} connected", n + 1);
+        }
+        Ok(slot.as_mut().expect("just created"))
     }
 
     fn pointer_device(&mut self) -> &mut Device {
@@ -345,6 +472,13 @@ fn translate(event: &InputEvent, area: &AbsArea) -> (Target, Vec<(u16, u16, i32)
         InputEvent::Key { code, pressed } => {
             (Target::Keyboard, vec![(EV_KEY, code, i32::from(pressed))])
         }
+        InputEvent::PadButton { pad, code, pressed } => (
+            Target::Pad(pad),
+            vec![(EV_KEY, xpad_button(code), i32::from(pressed))],
+        ),
+        InputEvent::PadAxis { pad, axis, value } => {
+            (Target::Pad(pad), vec![(EV_ABS, axis as u16, value)])
+        }
     }
 }
 
@@ -355,16 +489,34 @@ enum Target {
     Relative,
     /// Whichever pointer moved last.
     Pointer,
+    Pad(u8),
 }
 
 impl InputSink for Uinput {
     fn inject(&mut self, event: &InputEvent) -> Result<(), String> {
-        if let InputEvent::Key { code, pressed } | InputEvent::Button { code, pressed } = *event {
-            if pressed {
-                self.held.insert(code);
-            } else {
-                self.held.remove(&code);
+        match *event {
+            InputEvent::Key { code, pressed } | InputEvent::Button { code, pressed } => {
+                if pressed {
+                    self.held.insert(code);
+                } else {
+                    self.held.remove(&code);
+                }
             }
+            InputEvent::PadButton { pad, code, pressed } => {
+                if pressed {
+                    self.pad_held.insert((pad, code));
+                } else {
+                    self.pad_held.remove(&(pad, code));
+                }
+            }
+            InputEvent::PadAxis { pad, axis, value } => {
+                if value == 0 {
+                    self.pad_axes.remove(&(pad, axis));
+                } else {
+                    self.pad_axes.insert((pad, axis), value);
+                }
+            }
+            _ => {}
         }
         let (target, events) = translate(event, &self.area);
         if events.is_empty() {
@@ -381,6 +533,7 @@ impl InputSink for Uinput {
                 &mut self.relative
             }
             Target::Pointer => self.pointer_device(),
+            Target::Pad(n) => self.pad(n)?,
         };
         device.emit(&events)
     }
@@ -395,6 +548,20 @@ impl InputSink for Uinput {
             };
             if let Err(e) = device.emit(&up) {
                 log::warn!("releasing {code:#x}: {e}");
+            }
+        }
+        // Gamepads: buttons up, sticks and triggers at rest.
+        let buttons = std::mem::take(&mut self.pad_held)
+            .into_iter()
+            .map(|(pad, code)| (pad, (EV_KEY, xpad_button(code), 0)));
+        let axes = std::mem::take(&mut self.pad_axes)
+            .into_keys()
+            .map(|(pad, axis)| (pad, (EV_ABS, axis as u16, 0)));
+        for (pad, event) in buttons.chain(axes).collect::<Vec<_>>() {
+            if let Some(Some(d)) = self.pads.get_mut(usize::from(pad))
+                && let Err(e) = d.emit(&[event])
+            {
+                log::warn!("releasing gamepad {}: {e}", pad + 1);
             }
         }
     }
@@ -481,6 +648,30 @@ mod tests {
         assert_eq!(e, vec![(EV_REL, REL_HWHEEL_HI_RES, 30)]);
         let (_, e) = translate_whole(&InputEvent::Scroll { dx: 0, dy: 0 });
         assert!(e.is_empty());
+    }
+
+    #[test]
+    fn gamepads_look_like_xbox_pads() {
+        // A by position is A; top (Y) and left (X) swap into xpad's codes.
+        let (t, e) = translate_whole(&InputEvent::PadButton {
+            pad: 2,
+            code: 0x130,
+            pressed: true,
+        });
+        assert_eq!((t, e), (Target::Pad(2), vec![(EV_KEY, 0x130, 1)]));
+        let (_, e) = translate_whole(&InputEvent::PadButton {
+            pad: 0,
+            code: BTN_NORTH,
+            pressed: false,
+        });
+        assert_eq!(e, vec![(EV_KEY, BTN_WEST, 0)]);
+        assert_eq!(xpad_button(BTN_WEST), BTN_NORTH);
+        let (t, e) = translate_whole(&InputEvent::PadAxis {
+            pad: 1,
+            axis: PadAxis::RightTrigger,
+            value: 200,
+        });
+        assert_eq!((t, e), (Target::Pad(1), vec![(EV_ABS, 0x05, 200)]));
     }
 
     #[test]

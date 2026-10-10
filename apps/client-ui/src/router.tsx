@@ -11,6 +11,7 @@ import { AppLayout } from "./routes/app-layout";
 import { DevicesPage } from "./routes/devices";
 import { PlaceholderPage } from "./routes/placeholder";
 import { SessionPage } from "./routes/session";
+import { SettingsPage } from "./routes/settings";
 
 const rootRoute = createRootRoute({ component: Outlet });
 
@@ -61,13 +62,7 @@ const accessRoute = createRoute({
 const settingsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/settings",
-  component: () => (
-    <PlaceholderPage
-      title="Einstellungen"
-      description="Auflösung, Bildrate, Bitrate, Codec und Tastenkürzel."
-      phase="Kommt mit der Produkt-Hülle in Phase 4."
-    />
-  ),
+  component: SettingsPage,
 });
 
 export type SessionSearch = { mode: "desktop" | "gaming" };

@@ -39,6 +39,12 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "connect":
         backend.session = { active: true, deviceId: "k1", deviceName: "zentrale", stats: null };
         return backend.session;
+      case "forget":
+        backend.devices = backend.devices.filter((d) => d.id !== (args as { id: string }).id);
+        return null;
+      case "set_muted":
+      case "set_mode":
+        return null;
       case "disconnect":
         backend.session = { ...backend.session, active: false };
         return null;
@@ -162,11 +168,58 @@ describe("Desktop-App", () => {
     await user.click(within(card).getByRole("button", { name: "Gaming" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/session/k1"));
     expect(router.state.location.search).toEqual({ mode: "gaming" });
-    expect(called("connect")).toEqual([["connect", { id: "k1" }]]);
+    expect(called("connect")).toEqual([
+      [
+        "connect",
+        { id: "k1", settings: { width: 0, height: 0, fps: 60, bitrateMbit: 0, gaming: true } },
+      ],
+    ]);
     expect(await screen.findByText(/läuft in einem eigenen Fenster/)).toBeInTheDocument();
+    // The session's controls reach the client.
+    await user.click(screen.getByRole("button", { name: "Ton ausschalten" }));
+    expect(called("set_muted")).toEqual([["set_muted", { muted: true }]]);
+    await user.click(screen.getByRole("button", { name: "Desktop" }));
+    expect(called("set_mode")).toEqual([["set_mode", { gaming: false }]]);
     await user.click(screen.getByRole("button", { name: "Trennen" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/devices"));
     expect(called("disconnect")).toHaveLength(1);
+  });
+
+  it("forgets a paired device after asking", async () => {
+    backend.devices = [zentrale()];
+    const { user } = await renderApp("/devices");
+    const card = (await screen.findByText("zentrale")).closest("article")!;
+    await user.click(within(card).getByRole("button", { name: "Gerät vergessen" }));
+    expect(within(card).getByText("zentrale vergessen?")).toBeInTheDocument();
+    await user.click(within(card).getByRole("button", { name: "Nein" }));
+    expect(called("forget")).toEqual([]);
+    await user.click(within(card).getByRole("button", { name: "Gerät vergessen" }));
+    await user.click(within(card).getByRole("button", { name: "Vergessen" }));
+    expect(called("forget")).toEqual([["forget", { id: "k1" }]]);
+    expect(await screen.findByText(/Kein Fernsicht-Host im Netzwerk gefunden/)).toBeInTheDocument();
+  });
+
+  it("uses the settings for new sessions", async () => {
+    backend.devices = [zentrale()];
+    const { user } = await renderApp("/settings");
+    await user.click(await screen.findByRole("radio", { name: "1080p" }));
+    await user.click(screen.getByRole("radio", { name: "120 fps" }));
+    await user.click(screen.getByRole("radio", { name: "20 Mbit/s" }));
+    await user.click(screen.getByRole("link", { name: "Geräte" }));
+    const card = (await screen.findByText("zentrale")).closest("article")!;
+    await user.click(within(card).getByRole("button", { name: "Desktop" }));
+    await waitFor(() =>
+      expect(called("connect")).toEqual([
+        [
+          "connect",
+          {
+            id: "k1",
+            settings: { width: 1920, height: 1080, fps: 120, bitrateMbit: 20, gaming: false },
+          },
+        ],
+      ]),
+    );
+    localStorage.clear();
   });
 
   it("shows why a connection failed", async () => {

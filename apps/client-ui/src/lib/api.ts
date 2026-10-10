@@ -96,12 +96,52 @@ export const sessionQuery = (deviceId: string) =>
     refetchInterval: 1000,
   });
 
+/** How sessions look (settings page); kept in this browser profile. */
+export interface StreamSettings {
+  /** Stream size; 0 × 0 = the host's screen. */
+  width: number;
+  height: number;
+  fps: number;
+  /** 0 = the host's choice for the size. */
+  bitrateMbit: number;
+}
+
+export const DEFAULT_SETTINGS: StreamSettings = { width: 0, height: 0, fps: 60, bitrateMbit: 0 };
+const SETTINGS_KEY = "fernsicht.settings";
+
+export function loadSettings(): StreamSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw
+      ? { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<StreamSettings>) }
+      : DEFAULT_SETTINGS;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+export function saveSettings(s: StreamSettings) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch {
+    // Storage unavailable: the defaults stay.
+  }
+}
+
 /** What the app can do (desktop app only). */
 export const actions = {
   pair: (address: string, pin: string) => invoke<Device>("pair", { address, pin }),
-  connect: (id: string) => invoke<SessionState>("connect", { id }),
+  connect: (id: string, gaming = false) =>
+    invoke<SessionState>("connect", { id, settings: { ...loadSettings(), gaming } }),
+  forget: (id: string) => invoke<void>("forget", { id }),
   disconnect: async () => {
     if (inApp()) await invoke("disconnect");
+  },
+  setMuted: async (muted: boolean) => {
+    if (inApp()) await invoke("set_muted", { muted });
+  },
+  setMode: async (gaming: boolean) => {
+    if (inApp()) await invoke("set_mode", { gaming });
   },
   openPairing: () => invoke<{ pin: string; expires_in_s: number }>("open_pairing"),
 };

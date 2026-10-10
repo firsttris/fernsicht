@@ -7,7 +7,7 @@
 //! round.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -18,7 +18,7 @@ use anyhow::Context;
 use fernsicht_client::discover::{FoundHost, broadcast_targets, discover};
 use fernsicht_client::{DEFAULT_PORT, Identity, Trusted, pair, refresh_addresses};
 use fernsicht_host_agent::control;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// A device as the UI's `Device` type has it.
@@ -38,6 +38,49 @@ pub struct Device {
     /// Someone is connected.
     pub busy: bool,
     pub address: Option<String>,
+}
+
+/// How a session should look, from the settings page.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StreamSettings {
+    /// Stream size; 0 = the host's screen.
+    pub width: u16,
+    pub height: u16,
+    /// Frames per second; 0 = 60.
+    pub fps: u16,
+    /// Mbit/s; 0 = the host's choice for the size.
+    pub bitrate_mbit: u32,
+    /// Start in gaming mode (a click captures the pointer).
+    pub gaming: bool,
+}
+
+impl StreamSettings {
+    /// The client's arguments for these settings.
+    pub fn args(&self) -> Vec<String> {
+        let mut a = Vec::new();
+        if self.width > 0 && self.height > 0 {
+            a.extend([
+                "--width".into(),
+                self.width.to_string(),
+                "--height".into(),
+                self.height.to_string(),
+            ]);
+        }
+        if self.fps > 0 {
+            a.extend(["--fps".into(), self.fps.to_string()]);
+        }
+        if self.bitrate_mbit > 0 {
+            a.extend([
+                "--bitrate".into(),
+                (self.bitrate_mbit.saturating_mul(1000)).to_string(),
+            ]);
+        }
+        if self.gaming {
+            a.push("--gaming".into());
+        }
+        a
+    }
 }
 
 /// The session as the UI polls it.
@@ -240,7 +283,7 @@ impl Backend {
 
     /// Starts a session with a paired host: the client's window opens.
     /// A running session ends first.
-    pub fn connect(&self, id: &str) -> anyhow::Result<SessionState> {
+    pub fn connect(&self, id: &str, settings: &StreamSettings) -> anyhow::Result<SessionState> {
         let trusted = self.trusted()?;
         let peer = trusted
             .peers
@@ -257,6 +300,7 @@ impl Backend {
             .arg("--app")
             .arg("--state-dir")
             .arg(&self.dir)
+            .args(settings.args())
             .args(&self.client_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -313,6 +357,19 @@ impl Backend {
             stats: r.stats.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             error: exited.filter(|s| !s.success()).map(|_| r.error()),
         }
+    }
+
+    /// Tells the running client something (a line on its stdin): "mute",
+    /// "unmute", "gaming", "desktop".
+    pub fn command(&self, line: &str) -> anyhow::Result<()> {
+        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let stdin = session
+            .as_mut()
+            .and_then(|r| r.stdin.as_mut())
+            .context("no session")?;
+        writeln!(stdin, "{line}")?;
+        stdin.flush()?;
+        Ok(())
     }
 
     /// Ends the session (the client's window closes).
@@ -448,6 +505,40 @@ mod tests {
         assert_eq!(list[1].address.as_deref(), Some("192.168.178.50:47800"));
         assert!(list[2].online && !list[2].paired && list[2].pairing);
         assert_eq!(list[2].id, PublicKey([3; 32]).fingerprint());
+    }
+
+    #[test]
+    fn settings_become_client_arguments() {
+        assert!(StreamSettings::default().args().is_empty());
+        let s = StreamSettings {
+            width: 1920,
+            height: 1080,
+            fps: 120,
+            bitrate_mbit: 50,
+            gaming: true,
+        };
+        assert_eq!(
+            s.args(),
+            [
+                "--width",
+                "1920",
+                "--height",
+                "1080",
+                "--fps",
+                "120",
+                "--bitrate",
+                "50000",
+                "--gaming"
+            ]
+        );
+        // Half a size is no size.
+        let odd = StreamSettings {
+            width: 1920,
+            ..StreamSettings::default()
+        };
+        assert!(odd.args().is_empty());
+        let parsed: StreamSettings = serde_json::from_str(r#"{"fps":30,"bitrateMbit":8}"#).unwrap();
+        assert_eq!(parsed.args(), ["--fps", "30", "--bitrate", "8000"]);
     }
 
     #[test]

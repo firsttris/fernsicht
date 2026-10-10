@@ -35,7 +35,9 @@ use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock, now_us};
 use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
-use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
+use fernsicht_net::{
+    FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer, RateController,
+};
 use fernsicht_proto::{Announce, Discover, MAX_ANNOUNCE_INFO, MAX_ANNOUNCE_NAME, clip};
 use fernsicht_proto::{
     AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Handshake,
@@ -275,6 +277,8 @@ struct Shared {
     cursor_requested: AtomicBool,
     /// Loss rate FEC is sized for, as `f32` bits.
     fec_loss: AtomicU32,
+    /// The bitrate the encoder should use now, kbit/s.
+    target_kbps: AtomicU32,
 }
 
 struct Session {
@@ -293,6 +297,10 @@ struct Session {
     last_seen: Instant,
     shared: Arc<Shared>,
     loss: LossEstimator,
+    /// Adapts the bitrate to the loss the client reports.
+    rate: RateController,
+    /// Sender overflows counted at the last report.
+    overflows_seen: u64,
     threads: Vec<JoinHandle<()>>,
     frame_slot: Arc<Slot<Frame>>,
     /// Released (all keys up) when the session ends.
@@ -1110,6 +1118,7 @@ impl HostAgent {
             keyframe_requested: AtomicBool::new(true),
             cursor_requested: AtomicBool::new(false),
             fec_loss: AtomicU32::new(loss.estimate().to_bits()),
+            target_kbps: AtomicU32::new(0),
         });
         // Source and encoder come first: if the screen or the GPU is
         // unavailable the session fails before any thread starts. The
@@ -1124,6 +1133,23 @@ impl HostAgent {
         };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
+        shared
+            .target_kbps
+            .store(params.bitrate_kbps, Ordering::Relaxed);
+        // A new encoder at another bitrate, for encoders that cannot change
+        // it while running.
+        let rebuild: Rebuild = {
+            let kind = self.cfg.encoder.clone();
+            Box::new(move |kbps| {
+                make_encoder(
+                    &kind,
+                    &SessionParams {
+                        bitrate_kbps: kbps,
+                        ..params
+                    },
+                )
+            })
+        };
         let mut input = make_input(&self.cfg.input, source.screen());
         let (crypto, handshake_reply) = match secure {
             None => (None, None),
@@ -1176,6 +1202,8 @@ impl HostAgent {
             spawn_hot("encode", move || {
                 encode_loop(
                     encoder,
+                    rebuild,
+                    params.bitrate_kbps,
                     &shared,
                     &in_slot,
                     &send_tx,
@@ -1241,6 +1269,8 @@ impl HostAgent {
             last_seen: Instant::now(),
             shared,
             loss,
+            rate: RateController::new(params.bitrate_kbps, Instant::now()),
+            overflows_seen: 0,
             threads: [Some(capture), Some(encode), Some(send), audio, webrtc]
                 .into_iter()
                 .flatten()
@@ -1286,6 +1316,23 @@ fn on_feedback(s: &mut Session, fb: &Feedback) {
     s.shared
         .fec_loss
         .store(estimate.to_bits(), Ordering::Relaxed);
+    let overflows = HostStats::get(&s.shared.stats.send_overflows);
+    let overflow = overflows > s.overflows_seen;
+    s.overflows_seen = overflows;
+    if let Some(kbps) = s
+        .rate
+        .report(fb.loss_ratio(), fb.frames_dropped, overflow, Instant::now())
+    {
+        log::info!(
+            "session {:08x}: bitrate {:.1} Mbit/s (loss {:.1} %, {} frames lost{})",
+            s.params.session_id,
+            f64::from(kbps) / 1000.0,
+            s.rate.loss() * 100.0,
+            fb.frames_dropped,
+            if overflow { ", sender behind" } else { "" }
+        );
+        s.shared.target_kbps.store(kbps, Ordering::Relaxed);
+    }
     if fb.request_keyframe {
         s.shared.keyframe_requested.store(true, Ordering::Relaxed);
     }
@@ -1671,8 +1718,14 @@ impl RepeatedError {
     }
 }
 
+/// Makes an encoder for another bitrate (kbit/s).
+type Rebuild = Box<dyn FnMut(u32) -> anyhow::Result<Box<dyn Encoder>> + Send>;
+
+#[allow(clippy::too_many_arguments)]
 fn encode_loop(
     mut encoder: Box<dyn Encoder>,
+    mut rebuild: Rebuild,
+    mut kbps: u32,
     shared: &Shared,
     in_slot: &Slot<Frame>,
     send_tx: &Sender<EncodedFrame>,
@@ -1685,6 +1738,19 @@ fn encode_loop(
     while let Some(frame) = in_slot.take() {
         if !shared.running.load(Ordering::Acquire) {
             break;
+        }
+        let target = shared.target_kbps.load(Ordering::Relaxed);
+        if target != kbps && target > 0 {
+            if encoder.adjusts_bitrate() {
+                encoder.set_bitrate(target);
+            } else {
+                match rebuild(target) {
+                    // A fresh encoder starts with a keyframe.
+                    Ok(e) => encoder = e,
+                    Err(e) => log::warn!("bitrate {target} kbit/s: {e:#}"),
+                }
+            }
+            kbps = target;
         }
         if shared.keyframe_requested.swap(false, Ordering::Relaxed) {
             encoder.request_keyframe();

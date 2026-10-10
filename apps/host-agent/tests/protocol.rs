@@ -396,6 +396,49 @@ fn reported_loss_raises_fec_redundancy() {
 }
 
 #[test]
+fn congestion_lowers_the_bitrate() {
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(640, 360, 60, 8_000);
+    let ack = peer.ack();
+    // Median frame size over the next ~30 frames.
+    let frame_size = |peer: &mut Peer| {
+        let mut sizes = Vec::new();
+        while sizes.len() < 30 {
+            if let Some(h) = peer.next_video(Duration::from_secs(2))
+                && !h.keyframe
+                && h.shard_index == 0
+            {
+                sizes.push(h.frame_len);
+            }
+        }
+        sizes.sort_unstable();
+        sizes[sizes.len() / 2]
+    };
+    let before = frame_size(&mut peer);
+    // Congestion for three seconds: heavy loss, frames lost despite FEC.
+    for _ in 0..30 {
+        peer.send(|b| {
+            Feedback {
+                session_id: ack.session_id,
+                packets_received: 70,
+                packets_lost: 30,
+                frames_dropped: 1,
+                ..Feedback::default()
+            }
+            .encode(b)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let after = frame_size(&mut peer);
+    assert!(
+        f64::from(after) < f64::from(before) * 0.6,
+        "{before} → {after} bytes per frame"
+    );
+    host.shutdown();
+}
+
+#[test]
 fn shutdown_sends_bye_to_the_peer() {
     let host = Host::default();
     let mut peer = Peer::new(host.addr);

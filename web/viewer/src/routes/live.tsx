@@ -14,6 +14,7 @@ import {
   decodeCursorPacket,
 } from "../lib/cursor";
 import { type HostStats, type LiveSession, type StatsSample, summarize } from "../lib/host";
+import { PadTracker } from "../lib/gamepad";
 import { WheelAccumulator, contentRect, linuxButton, toAbsolute } from "../lib/input";
 import { linuxKeyCode } from "../lib/keys";
 
@@ -148,6 +149,25 @@ export function RemoteScreen({ session, mode }: { session: LiveSession; mode: Se
     c.height = image.height;
     ctx.putImageData(new ImageData(image.rgba, image.width, image.height), 0, 0);
   }, [image]);
+
+  // Gamepads: polled once per frame (the API has no events for changes).
+  // Some browsers keep them from plain-http pages; then there are none.
+  useEffect(() => {
+    const tracker = new PadTracker();
+    let frame = 0;
+    const poll = () => {
+      let pads: (Gamepad | null)[] = [];
+      try {
+        pads = navigator.getGamepads?.() ?? [];
+      } catch {
+        // Not allowed here.
+      }
+      for (const msg of tracker.update(pads)) session.send(msg);
+      frame = requestAnimationFrame(poll);
+    };
+    frame = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(frame);
+  }, [session]);
 
   // Mouse and keyboard.
   useEffect(() => {

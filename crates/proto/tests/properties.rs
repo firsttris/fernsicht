@@ -138,7 +138,7 @@ proptest! {
     #[test]
     fn input_roundtrip(session_id: u32, first_seq: u32,
                        raw in proptest::collection::vec(
-                           (0u8..5, any::<u16>(), any::<i32>(), any::<i32>(), any::<bool>()),
+                           (0u8..7, any::<u16>(), any::<i32>(), any::<i32>(), any::<bool>()),
                            1..=MAX_INPUT_EVENTS)) {
         let events: Vec<(u32, InputEvent)> = raw.iter().enumerate().map(|(i, &(k, c, a, b, p))| {
             let e = match k {
@@ -146,7 +146,19 @@ proptest! {
                 1 => InputEvent::MouseRel { dx: a, dy: b },
                 2 => InputEvent::Button { code: BTN_MOUSE_FIRST + c % 8, pressed: p },
                 3 => InputEvent::Scroll { dx: a, dy: b },
-                _ => InputEvent::Key { code: 1 + c % 0xff, pressed: p },
+                4 => InputEvent::Key { code: 1 + c % 0xff, pressed: p },
+                5 => InputEvent::PadButton {
+                    pad: (c % 4) as u8,
+                    code: BTN_PAD_FIRST + c % (BTN_PAD_LAST - BTN_PAD_FIRST + 1),
+                    pressed: p,
+                },
+                _ => {
+                    let axis = PadAxis::ALL[usize::from(c) % PadAxis::ALL.len()];
+                    let r = axis.range();
+                    let span = i64::from(*r.end()) - i64::from(*r.start()) + 1;
+                    let value = (i64::from(*r.start()) + i64::from(a).rem_euclid(span)) as i32;
+                    InputEvent::PadAxis { pad: (c % 4) as u8, axis, value }
+                }
             };
             (first_seq.wrapping_add(i as u32), e)
         }).collect();

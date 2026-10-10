@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use fernsicht_desktop::backend::{Backend, Device, SessionState, ThisMachine, default_dir};
+use fernsicht_desktop::backend::{
+    Backend, Device, SessionState, StreamSettings, ThisMachine, default_dir,
+};
 use serde_json::Value;
 use tauri::State;
 
@@ -40,8 +42,31 @@ async fn forget(backend: Shared<'_>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn connect(backend: Shared<'_>, id: String) -> Result<SessionState, String> {
-    blocking(&backend, move |b| b.connect(&id)).await
+async fn connect(
+    backend: Shared<'_>,
+    id: String,
+    settings: Option<StreamSettings>,
+) -> Result<SessionState, String> {
+    blocking(&backend, move |b| {
+        b.connect(&id, &settings.unwrap_or_default())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_muted(backend: Shared<'_>, muted: bool) -> Result<(), String> {
+    blocking(&backend, move |b| {
+        b.command(if muted { "mute" } else { "unmute" })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_mode(backend: Shared<'_>, gaming: bool) -> Result<(), String> {
+    blocking(&backend, move |b| {
+        b.command(if gaming { "gaming" } else { "desktop" })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -93,6 +118,8 @@ fn main() {
             pair,
             forget,
             connect,
+            set_muted,
+            set_mode,
             session,
             disconnect,
             this_machine,

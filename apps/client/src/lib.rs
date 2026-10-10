@@ -72,6 +72,8 @@ pub struct ClientConfig {
     pub input: Option<Arc<InputHandle>>,
     /// Where the host's sound is played.
     pub audio: AudioOutput,
+    /// Sound muted (silence is played instead, so the timing stays).
+    pub muted: Arc<AtomicBool>,
     /// Our key and the paired host's: the session is authenticated and
     /// encrypted. `None` (the library default) talks plain, for tests; the
     /// program always sets it.
@@ -98,6 +100,7 @@ impl Default for ClientConfig {
             decoder: DecoderChoice::Auto,
             input: None,
             audio: AudioOutput::Off,
+            muted: Arc::default(),
             security: None,
             record: None,
         }
@@ -554,7 +557,12 @@ pub fn run_with(
     let (audio_tx, audio_rx) = bounded::<AudioPacket>(64);
     let audio = match cfg.audio.clone() {
         AudioOutput::Off => None,
-        out => Some(spawn_hot("audio", move || audio_loop(&audio_rx, &out))?),
+        out => {
+            let muted = cfg.muted.clone();
+            Some(spawn_hot("audio", move || {
+                audio_loop(&audio_rx, &out, &muted)
+            })?)
+        }
     };
     let pipe = Pipe {
         audio_tx: audio.as_ref().map(|_| &audio_tx),
@@ -1173,7 +1181,7 @@ fn audio_sink(out: &AudioOutput) -> Option<Box<dyn fernsicht_audio::AudioSink>> 
 /// of lost frames, and a sink whose blocking writes pace the loop. The
 /// output opens with the first sound from the host. Ends when the network
 /// thread hangs up.
-fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput) -> AudioSummary {
+fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool) -> AudioSummary {
     use fernsicht_audio::jitter::{Jitter, Next};
     let mut summary = AudioSummary::default();
     let Ok(first) = rx.recv() else {
@@ -1240,6 +1248,9 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput) -> AudioSummary {
         };
         if let Err(e) = result {
             log::debug!("audio decode: {e}");
+            pcm.fill(0);
+        }
+        if muted.load(Ordering::Relaxed) {
             pcm.fill(0);
         }
         started = true;

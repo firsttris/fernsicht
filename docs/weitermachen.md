@@ -75,6 +75,24 @@ Danach kam dazu:
      mit VAAPI-Testbild, 1920×1080 bei 60 fps, Glass-to-Glass laut
      Overlay ≈ 15 ms auf localhost.
 
+7. **Gaming-Modus, Gamepads, Bitratenanpassung, App-Einstellungen.**
+   - Nativer Client: `--gaming` (Klick fängt den Zeiger, relative
+     Bewegung), Strg+Alt+Shift+M fängt und lässt los.
+   - Gamepads: Der Client liest Controller direkt über evdev
+     (`crates/input/src/gamepad.rs`). Der Browser nutzt die Gamepad-API.
+     Der Host legt pro Spieler einen virtuellen Xbox-360-Controller an
+     (`crates/input/src/uinput.rs`). Tasten gehen nach Position (A
+     unten, Y oben); die X/Y-Vertauschung des `xpad`-Treibers wird auf
+     beiden Seiten ausgeglichen.
+   - Bitrate: `crates/net/src/rate.rs`. Runter bei Frames, die trotz
+     FEC verloren gehen, bei überlastetem Sender oder mehr als 20 %
+     Verlust. Hoch nach 5 s sauberem Netz. VAAPI/NVENC bekommen dafür
+     einen neuen Encoder (ein Keyframe). Getestet mit VAAPI und 10 %
+     künstlichem Verlust.
+   - App: Seite „Einstellungen“ (Auflösung, Bildrate, Bitrate),
+     „Gerät vergessen“, Ton und Modus in der Sitzung gehen über stdin an
+     den Client (`mute`, `unmute`, `gaming`, `desktop`).
+
 Gemessene Latenz (frühere Sitzungen):
 
 | Strecke | Glass-to-Glass |
@@ -119,7 +137,17 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
    von einem anderen Gerät `http://192.168.178.87:47800` öffnen, PIN, dann
    KMS-Bild, Ton, Maus und Tastatur prüfen. Auch mit Firefox und einem
    Handy.
-5. **Gerätesuche über WLAN.** Kommt der Broadcast von der bazzite bei
+5. **Gaming-Modus und Gamepad.** In der App „Gaming“ wählen. Ein Klick
+   ins Fenster fängt den Zeiger, Strg+Alt+Shift+M gibt ihn frei. Ein
+   Spiel mit Maussteuerung prüfen. Ein Controller am Client erscheint
+   auf dem Host als „Fernsicht X-Box 360 pad 1“: in Steam oder
+   `evtest` prüfen, ob A unten und Y oben liegt. Bei Xbox- und
+   PlayStation-Controllern.
+6. **Bitratenanpassung über WLAN.** Auf der bazzite verbinden, im Log
+   des Hosts nach `bitrate … Mbit/s` sehen. Normale WLAN-Verluste
+   lassen die Bitrate stehen. Nur Frames, die trotz FEC verloren gehen,
+   oder ein überlasteter Sender senken sie.
+7. **Gerätesuche über WLAN.** Kommt der Broadcast von der bazzite bei
    der zentrale an, und die Antwort zurück? Die Antwort geht an einen
    kurzlebigen Port des Clients. Fedoras Zone `FedoraWorkstation`
    erlaubt UDP 1025–65535; auf der bazzite prüfen
@@ -139,10 +167,9 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
    Keyframe-Qualität.
 4. **Referenzmessung mit Sunshine/Moonlight**
    ([latency-baseline.md](latency-baseline.md)).
-5. **Spiele:**
-   - Zeigerfang (relative Maus, Cursor sperren) im Gaming-Modus. Der
-     Modus-Schalter in der App ändert noch nichts.
-   - Gamepad.
+5. **Spiele, Rest:** Rumble (Force Feedback zurück zum Controller),
+   mehr als 4 Controller, Tastatur-Sperre im Vollbild (Alt+Tab und die
+   Windows-Taste gehen an den Host).
 6. **NVIDIA als Host: live prüfen.** Die Bildschirmaufnahme mit NVENC ist
    gebaut. Der Weg: KMS-DMA-BUF → Vulkan-Compute (RGB → NV12, BT.709,
    skaliert) → von CUDA importierter Speicher → NVENC. Code:
@@ -153,14 +180,11 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
      Benutzer startet
      `sudo ./target/release/fernsicht-host-agent --capture kms --encoder nvenc --pair`
      auf der bazzite, die zentrale verbindet sich als Client.
-7. **Kleinigkeiten in der App:**
-   - Gerät in der App vergessen (Backend `forget` gibt es, UI fehlt).
-   - Auflösung und Bitrate wählen (Seite „Einstellungen“ ist ein
-     Platzhalter).
-   - Die Toolbar-Knöpfe in der Sitzung (Bildschirm, Zwischenablage,
-     Dateien, Ton) tun noch nichts.
-8. **Später:** Internet (NAT, Rendezvous-Server), Bitratenanpassung,
-   PipeWire-Capture. Web-Viewer über das Internet (Rendezvous, TURN),
+7. **Kleinigkeiten in der App:** Die Toolbar-Knöpfe Bildschirm,
+   Zwischenablage und Dateien tun noch nichts (Ton und Modus schon).
+8. **Bitratenanpassung im Web-Viewer:** WebRTC liefert Bandbreitenschätzung
+   (TWCC), der Host nutzt sie noch nicht; dort bleibt die Bitrate fest.
+9. **Später:** Internet (NAT, Rendezvous-Server), PipeWire-Capture. Web-Viewer über das Internet (Rendezvous, TURN),
    Browser merken statt jedes Mal eine PIN, Test mit echtem Chrome in der
    CI.
 

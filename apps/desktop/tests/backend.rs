@@ -110,10 +110,19 @@ fn find_pair_connect_and_forget() {
     assert!(list[0].id == id && list[0].paired && list[0].online);
 
     // A session: the overlay comes in, the host shows it, then it ends.
-    let s = app.connect(&id).unwrap();
+    assert!(app.command("mute").is_err(), "no session yet");
+    let settings = fernsicht_desktop::backend::StreamSettings {
+        fps: 30,
+        ..Default::default()
+    };
+    let s = app.connect(&id, &settings).unwrap();
     assert!(s.active);
     assert_eq!(s.device_name.as_deref(), Some("zentrale"));
     wait_for("overlay stats", || app.session().stats.is_some());
+    // The session's controls reach the client.
+    app.command("mute").unwrap();
+    app.command("gaming").unwrap();
+    assert!(app.session().active, "commands do not end the session");
     let stats = app.session().stats.unwrap();
     assert!(
         stats["glassToGlassUs"]["avg"].as_u64().unwrap() > 0,
@@ -127,7 +136,7 @@ fn find_pair_connect_and_forget() {
     // The host forgets this device: it is turned away, and the app says why.
     let device_name = sec.paired()[0].name.clone();
     app.unpair_from_host(&device_name).unwrap();
-    app.connect(&id).unwrap();
+    app.connect(&id, &Default::default()).unwrap();
     wait_for("the client to give up", || !app.session().active);
     let err = app.session().error.unwrap();
     assert!(err.contains("not paired"), "{err}");
@@ -141,7 +150,7 @@ fn find_pair_connect_and_forget() {
             .iter()
             .any(|d| d.id == id && !d.paired)
     );
-    assert!(app.connect(&id).is_err(), "not paired");
+    assert!(app.connect(&id, &Default::default()).is_err(), "not paired");
 
     stop.store(true, Ordering::Relaxed);
     host.join().unwrap().unwrap();

@@ -22,9 +22,10 @@ Wo es weitergeht (offene Live-Tests, Aufgaben, Regeln):
 | | PipeWire-Capture | ⏳ offen |
 | 2 – Steuerung | Maus und Tastatur | ✅ zuverlässig über UDP (Wiederholung bis zur Bestätigung, jedes Ereignis genau einmal, getestet bei 30 % Verlust), Host über `uinput` (`--input`, ohne root), absolute Zeigerposition auf den aufgenommenen Monitor umgerechnet (KDE-Monitoranordnung) |
 | | Ton | ✅ was der Host abspielt (PipeWire), Opus 5 ms, jedes Paket trägt den Vorgänger mit (ein Verlust hinterlässt keine Lücke), Jitter-Puffer 15 ms mit Verlustverschleierung und Uhrdrift-Ausgleich; im Test 15 ms Verzögerung, bei 20 % Verlust 2,5 % überbrückt |
-| | Gamepad, Zeigerfang für Spiele | ⏳ offen |
+| | Gamepad, Zeigerfang für Spiele | ✅ Gaming-Modus: Klick fängt den Zeiger (relative Maus), Strg+Alt+Shift+M lässt los. Bis zu 4 Controller (evdev im Client, Gamepad-API im Browser) werden auf dem Host zu virtuellen Xbox-360-Controllern, die Steam und Spiele ohne Einrichtung kennen |
 | 3 – Sicherheit | Kopplung und Verschlüsselung | ✅ einmalig koppeln per 6-stelliger PIN (SPAKE2: kein Offline-Raten, Kopplung schließt nach 3 Fehlversuchen), jede Sitzung mit Noise-IK-Handshake (wie WireGuard), danach alles mit ChaCha20-Poly1305 versiegelt, Wiederholungen werden verworfen; nur gekoppelte Geräte kommen herein |
-| | Internet (NAT), Bitratenanpassung | ⏳ offen |
+| | Bitratenanpassung | ✅ der Host senkt die Bitrate, wenn Frames trotz FEC verloren gehen oder sein Sender nicht nachkommt, und hebt sie nach 5 s sauberem Netz wieder an. Zufällige WLAN-Verluste bleiben Sache der FEC |
+| | Internet (NAT) | ⏳ offen |
 | 4–5 | Host als Dienst | ✅ systemd-Dienst mit Installationsskript, Encoder passend zur Grafikkarte, Koppeln/Status/Entfernen über einen lokalen Steuer-Socket ([Anleitung](docs/install.md)) |
 | | Gerätesuche | ✅ `fernsicht-client discover`: Broadcast über den Stream-Port (keine Firewall-Änderung), Hosts nennen Name, Schlüssel, OS, GPU und ob Kopplung offen ist; neue Adressen gekoppelter Hosts werden übernommen |
 | | Desktop-App | ✅ Tauri um die Client-UI: Rechner im Netz, Koppeln per PIN, Sitzung starten (Bild im nativen Vulkan-Fenster, Latenz-Overlay in der App), „Dieser Rechner" öffnet die Kopplung am eigenen Host ([apps/desktop](apps/desktop)) |

@@ -604,6 +604,58 @@ pub const KEY_MAX: u16 = 0x2ff;
 pub const BTN_MOUSE_FIRST: u16 = 0x110;
 pub const BTN_MOUSE_LAST: u16 = 0x117;
 
+/// Gamepad buttons are Linux codes `BTN_SOUTH` (0x130) to `BTN_THUMBR`
+/// (0x13e), meant by position as in the kernel's gamepad documentation:
+/// `BTN_SOUTH` the bottom face button (Xbox A), `BTN_EAST` the right (B),
+/// `BTN_NORTH` (0x133) the top (Y), `BTN_WEST` (0x134) the left (X).
+pub const BTN_PAD_FIRST: u16 = 0x130;
+pub const BTN_PAD_LAST: u16 = 0x13e;
+/// Gamepads one session may use.
+pub const MAX_PADS: u8 = 4;
+
+/// A gamepad's axes, with the Linux `ABS_*` codes they travel as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum PadAxis {
+    /// Sticks: -32768..=32767, negative = left / up.
+    LeftX = 0x00,
+    LeftY = 0x01,
+    RightX = 0x03,
+    RightY = 0x04,
+    /// Triggers: 0..=255 (released..=fully pressed).
+    LeftTrigger = 0x02,
+    RightTrigger = 0x05,
+    /// D-pad: -1, 0, 1 (left/up = -1).
+    DpadX = 0x10,
+    DpadY = 0x11,
+}
+
+impl PadAxis {
+    pub const ALL: [PadAxis; 8] = [
+        PadAxis::LeftX,
+        PadAxis::LeftY,
+        PadAxis::RightX,
+        PadAxis::RightY,
+        PadAxis::LeftTrigger,
+        PadAxis::RightTrigger,
+        PadAxis::DpadX,
+        PadAxis::DpadY,
+    ];
+
+    pub fn from_code(code: u16) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| *a as u16 == code)
+    }
+
+    /// The values the axis takes.
+    pub fn range(self) -> std::ops::RangeInclusive<i32> {
+        match self {
+            PadAxis::LeftTrigger | PadAxis::RightTrigger => 0..=255,
+            PadAxis::DpadX | PadAxis::DpadY => -1..=1,
+            _ => -32768..=32767,
+        }
+    }
+}
+
 /// One input event from the client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputEvent {
@@ -618,6 +670,11 @@ pub enum InputEvent {
     Scroll { dx: i32, dy: i32 },
     /// Linux key code (`KEY_*`): the physical key, layout-independent.
     Key { code: u16, pressed: bool },
+    /// A gamepad button ([`BTN_PAD_FIRST`]..=[`BTN_PAD_LAST`]) of gamepad
+    /// `pad` (0..[`MAX_PADS`]).
+    PadButton { pad: u8, code: u16, pressed: bool },
+    /// A gamepad axis at `value` (in [`PadAxis::range`]).
+    PadAxis { pad: u8, axis: PadAxis, value: i32 },
 }
 
 const INPUT_EVENT_LEN: usize = 16;
@@ -632,6 +689,10 @@ impl InputEvent {
             InputEvent::Button { code, pressed } => (3, u8::from(pressed), code, 0, 0),
             InputEvent::Scroll { dx, dy } => (4, 0, 0, dx, dy),
             InputEvent::Key { code, pressed } => (5, u8::from(pressed), code, 0, 0),
+            InputEvent::PadButton { pad, code, pressed } => {
+                (6, u8::from(pressed), code, i32::from(pad), 0)
+            }
+            InputEvent::PadAxis { pad, axis, value } => (7, 0, axis as u16, i32::from(pad), value),
         };
         w.u32(seq);
         w.u8(kind);
@@ -654,6 +715,8 @@ impl InputEvent {
         let unused_ok = match kind {
             1 | 2 | 4 => flags == 0 && code == 0,
             3 | 5 => flags & !FLAG_PRESSED == 0 && a == 0 && b == 0,
+            6 => flags & !FLAG_PRESSED == 0 && b == 0,
+            7 => flags == 0,
             _ => true,
         };
         if !unused_ok {
@@ -676,6 +739,23 @@ impl InputEvent {
                 InputEvent::Key { code, pressed }
             }
             5 => return Err(DecodeError::Invalid("key code")),
+            6 | 7 if !(0..i32::from(MAX_PADS)).contains(&a) => {
+                return Err(DecodeError::Invalid("gamepad number"));
+            }
+            6 if (BTN_PAD_FIRST..=BTN_PAD_LAST).contains(&code) => InputEvent::PadButton {
+                pad: a as u8,
+                code,
+                pressed,
+            },
+            6 => return Err(DecodeError::Invalid("gamepad button code")),
+            7 => match PadAxis::from_code(code) {
+                Some(axis) if axis.range().contains(&b) => InputEvent::PadAxis {
+                    pad: a as u8,
+                    axis,
+                    value: b,
+                },
+                _ => return Err(DecodeError::Invalid("gamepad axis")),
+            },
             _ => return Err(DecodeError::Invalid("unknown input event")),
         };
         Ok((seq, event))
@@ -1718,6 +1798,95 @@ mod tests {
         wide[InputHeader::LEN + 4] = 1;
         wide[InputHeader::LEN + 8..InputHeader::LEN + 12].copy_from_slice(&70_000u32.to_le_bytes());
         assert!(Packet::decode(&wide).is_err());
+    }
+
+    #[test]
+    fn gamepads_roundtrip_and_are_checked() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let good = [
+            InputEvent::PadButton {
+                pad: 0,
+                code: BTN_PAD_FIRST,
+                pressed: true,
+            },
+            InputEvent::PadButton {
+                pad: 3,
+                code: BTN_PAD_LAST,
+                pressed: false,
+            },
+            InputEvent::PadAxis {
+                pad: 1,
+                axis: PadAxis::LeftY,
+                value: -32768,
+            },
+            InputEvent::PadAxis {
+                pad: 2,
+                axis: PadAxis::RightTrigger,
+                value: 255,
+            },
+            InputEvent::PadAxis {
+                pad: 0,
+                axis: PadAxis::DpadX,
+                value: -1,
+            },
+        ];
+        let events: Vec<_> = good
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i as u32, *e))
+            .collect();
+        let n = InputHeader::encode(1, &events, &mut buf);
+        let Ok(Packet::Input(_, body)) = Packet::decode(&buf[..n]) else {
+            panic!("did not parse");
+        };
+        assert_eq!(InputHeader::events(body).collect::<Vec<_>>(), events);
+        for bad in [
+            InputEvent::PadButton {
+                pad: MAX_PADS,
+                code: BTN_PAD_FIRST,
+                pressed: true,
+            },
+            InputEvent::PadButton {
+                pad: 0,
+                code: 0x110,
+                pressed: true,
+            },
+            InputEvent::PadAxis {
+                pad: 0,
+                axis: PadAxis::LeftTrigger,
+                value: 256,
+            },
+            InputEvent::PadAxis {
+                pad: 0,
+                axis: PadAxis::DpadY,
+                value: 2,
+            },
+            InputEvent::PadAxis {
+                pad: 0,
+                axis: PadAxis::RightX,
+                value: 40_000,
+            },
+        ] {
+            let n = InputHeader::encode(1, &[(0, bad)], &mut buf);
+            assert!(Packet::decode(&buf[..n]).is_err(), "{bad:?}");
+        }
+        // An axis code that is no gamepad axis.
+        let n = InputHeader::encode(
+            1,
+            &[(
+                0,
+                InputEvent::PadAxis {
+                    pad: 0,
+                    axis: PadAxis::LeftX,
+                    value: 0,
+                },
+            )],
+            &mut buf,
+        );
+        buf[InputHeader::LEN + 6] = 0x09;
+        assert!(Packet::decode(&buf[..n]).is_err());
+        assert_eq!(PadAxis::from_code(0x10), Some(PadAxis::DpadX));
+        assert_eq!(PadAxis::from_code(0x06), None);
     }
 
     #[test]

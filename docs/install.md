@@ -93,6 +93,8 @@ So funktioniert es:
   über WebRTC.
 - **Eingabe:** Im Modus **Desktop** steuert die Maus direkt. Im Modus
   **Gaming** fängt ein Klick ins Bild den Mauszeiger, Esc gibt ihn frei.
+  Controller gehen über die Gamepad-API; manche Browser geben sie nur auf
+  HTTPS-Seiten heraus.
 - **Was nicht geht:** Tasten, die der Browser selbst behält (z. B.
   Strg+W), kommen nicht beim Host an. Dafür ist die App da.
 
@@ -105,6 +107,19 @@ Grenzen:
   `install-host.sh` öffnet 47800.
 - **Browser:** Getestet mit Chrome. Firefox spielt H.264 nur mit
   passendem Decoder; noch nicht ausprobiert.
+
+## Spielen
+
+In der App bei einem Gerät **Gaming** wählen:
+
+- **Mauszeiger:** Ein Klick ins Fenster fängt den Zeiger. Er bewegt sich
+  dann relativ, wie Spiele es brauchen. <kbd>Strg</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd>
+  fängt den Zeiger und gibt ihn wieder frei, auch im Desktop-Modus.
+- **Controller** am Client-Rechner gehen automatisch mit, bis zu vier.
+  Auf dem Host erscheinen sie als Xbox-360-Controller.
+- **Einstellungen** (Seite „Einstellungen“): Auflösung, Bildrate (bis 144)
+  und eine Bitrate-Obergrenze. Der Host senkt die Bitrate selbst, wenn
+  das Netz nicht mitkommt.
 
 ## Hosts im Netz finden
 

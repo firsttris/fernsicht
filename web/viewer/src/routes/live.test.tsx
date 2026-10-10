@@ -148,6 +148,23 @@ describe("Web-Viewer am Host", () => {
     expect(sent().at(-1)).toEqual({ t: "release" });
   });
 
+  it("sends gamepads", async () => {
+    let pressed = false;
+    const buttons = () =>
+      Array.from({ length: 17 }, (_, i) => ({ pressed: pressed && i === 0, value: 0 }));
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      getGamepads: () => [
+        { index: 0, mapping: "standard", buttons: buttons(), axes: [0, 0, 0, 0] },
+      ],
+    });
+    const { pc } = await connected();
+    pressed = true;
+    await waitFor(() =>
+      expect(pc.channel.sent).toContainEqual({ t: "pb", n: 0, c: 0x130, p: true }),
+    );
+  });
+
   it("captures the pointer in gaming mode", async () => {
     const { pc, screenEl } = await connected("gaming");
     const lock = vi.fn();

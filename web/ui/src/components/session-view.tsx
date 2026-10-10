@@ -19,6 +19,8 @@ export interface SessionViewProps {
   stats: SessionStats | undefined;
   mode: SessionMode;
   onModeChange: (mode: SessionMode) => void;
+  /** The sound button was pressed (muted = true). */
+  onMuteChange?: (muted: boolean) => void;
   onDisconnect: () => void;
   /** The video surface. Defaults to a placeholder frame. */
   children?: ReactNode;
@@ -33,6 +35,7 @@ export function SessionView({
   stats,
   mode,
   onModeChange,
+  onMuteChange,
   onDisconnect,
   children,
 }: SessionViewProps) {
@@ -101,7 +104,10 @@ export function SessionView({
                 variant="ghost"
                 aria-label={muted ? "Ton einschalten" : "Ton ausschalten"}
                 aria-pressed={muted}
-                onClick={() => setMuted((v) => !v)}
+                onClick={() => {
+                  onMuteChange?.(!muted);
+                  setMuted(!muted);
+                }}
               >
                 {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
               </Button>

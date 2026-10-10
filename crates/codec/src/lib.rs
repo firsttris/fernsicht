@@ -68,6 +68,12 @@ pub trait Encoder: Send {
     fn request_keyframe(&mut self);
 
     fn set_bitrate(&mut self, kbps: u32);
+
+    /// Whether [`Self::set_bitrate`] takes effect on the running encoder.
+    /// If not, a new encoder with the new rate replaces it (a keyframe).
+    fn adjusts_bitrate(&self) -> bool {
+        false
+    }
 }
 
 /// The picture of the last decoded frame, for the presenter.

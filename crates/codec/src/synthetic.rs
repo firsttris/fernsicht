@@ -86,6 +86,10 @@ impl Encoder for SyntheticEncoder {
     fn set_bitrate(&mut self, kbps: u32) {
         self.bitrate_kbps = kbps.max(100);
     }
+
+    fn adjusts_bitrate(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Default)]

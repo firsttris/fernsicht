@@ -11,6 +11,7 @@ pub mod clock_sync;
 pub mod fec;
 pub mod loss;
 pub mod pacer;
+pub mod rate;
 pub mod reassembly;
 pub mod socket;
 
@@ -18,6 +19,7 @@ pub use clock_sync::ClockSync;
 pub use fec::{FecConfig, FrameMeta, LossEstimator, Packetizer};
 pub use loss::LossSim;
 pub use pacer::Pacer;
+pub use rate::RateController;
 pub use reassembly::{CompletedFrame, Reassembler, ReceiverStats};
 
 /// Compares wrapping frame ids: `true` if `a` is newer than `b`.

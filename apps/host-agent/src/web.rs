@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, bounded, select};
 use fernsicht_codec::EncodedFrame;
 use fernsicht_input::InputSink;
-use fernsicht_proto::InputEvent;
+use fernsicht_proto::{BTN_PAD_FIRST, BTN_PAD_LAST, InputEvent, MAX_PADS, PadAxis};
 use serde_json::{Value, json};
 use str0m::change::{SdpAnswer, SdpOffer};
 use str0m::channel::ChannelId;
@@ -446,6 +446,8 @@ pub(crate) enum Command {
 /// {"t":"b","c":272,"p":true}            button (Linux BTN_* code)
 /// {"t":"w","dx":0,"dy":120}             wheel, 120 per notch
 /// {"t":"k","c":30,"p":true}             key (Linux KEY_* code)
+/// {"t":"pb","n":0,"c":304,"p":true}     gamepad n's button (BTN_SOUTH..)
+/// {"t":"pa","n":0,"a":0,"v":-32768}     gamepad n's axis (ABS_* code)
 /// {"t":"release"}  {"t":"keyframe"}  {"t":"bye"}
 /// ```
 ///
@@ -477,6 +479,20 @@ pub(crate) fn parse_input(data: &[u8]) -> Option<Command> {
             code: int("c", 1, 0x2ff)? as u16,
             pressed: pressed()?,
         },
+        "pb" => InputEvent::PadButton {
+            pad: int("n", 0, i64::from(MAX_PADS) - 1)? as u8,
+            code: int("c", i64::from(BTN_PAD_FIRST), i64::from(BTN_PAD_LAST))? as u16,
+            pressed: pressed()?,
+        },
+        "pa" => {
+            let axis = PadAxis::from_code(int("a", 0, 0xff)? as u16)?;
+            let r = axis.range();
+            InputEvent::PadAxis {
+                pad: int("n", 0, i64::from(MAX_PADS) - 1)? as u8,
+                axis,
+                value: int("v", i64::from(*r.start()), i64::from(*r.end()))? as i32,
+            }
+        }
         "release" => return Some(Command::ReleaseAll),
         "keyframe" => return Some(Command::Keyframe),
         "bye" => return Some(Command::Bye),
@@ -796,6 +812,30 @@ mod tests {
                 pressed: false
             }))
         );
+        assert_eq!(
+            p(r#"{"t":"pb","n":1,"c":304,"p":true}"#),
+            Some(Command::Event(InputEvent::PadButton {
+                pad: 1,
+                code: 304,
+                pressed: true
+            }))
+        );
+        assert_eq!(
+            p(r#"{"t":"pa","n":0,"a":5,"v":255}"#),
+            Some(Command::Event(InputEvent::PadAxis {
+                pad: 0,
+                axis: PadAxis::RightTrigger,
+                value: 255
+            }))
+        );
+        for bad in [
+            r#"{"t":"pb","n":4,"c":304,"p":true}"#,
+            r#"{"t":"pb","n":0,"c":272,"p":true}"#,
+            r#"{"t":"pa","n":0,"a":5,"v":256}"#,
+            r#"{"t":"pa","n":0,"a":9,"v":0}"#,
+        ] {
+            assert_eq!(p(bad), None, "{bad}");
+        }
         assert_eq!(p(r#"{"t":"release"}"#), Some(Command::ReleaseAll));
         assert_eq!(p(r#"{"t":"keyframe"}"#), Some(Command::Keyframe));
         assert_eq!(p(r#"{"t":"bye"}"#), Some(Command::Bye));

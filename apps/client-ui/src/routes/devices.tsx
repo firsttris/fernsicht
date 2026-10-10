@@ -175,7 +175,8 @@ function DeviceCard({ device: d, onPair }: { device: Device; onPair: () => void 
 function ConnectButtons({ device: d }: { device: Device }) {
   const navigate = useNavigate();
   const connect = useMutation({
-    mutationFn: ({ mode }: { mode: SessionMode }) => actions.connect(d.id).then(() => mode),
+    mutationFn: ({ mode }: { mode: SessionMode }) =>
+      actions.connect(d.id, mode === "gaming").then(() => mode),
     onSuccess: (mode) =>
       navigate({ to: "/session/$deviceId", params: { deviceId: d.id }, search: { mode } }),
   });
@@ -201,6 +202,7 @@ function ConnectButtons({ device: d }: { device: Device }) {
           {errorText(connect.error)}
         </p>
       )}
+      <ForgetButton device={d} />
     </div>
   );
 }
@@ -233,6 +235,40 @@ function LinkButtons({ device: d }: { device: Device }) {
             {label}
           </Button>
         ),
+      )}
+    </div>
+  );
+}
+
+/** Forgets a paired host here (it has to be paired again). Asks once. */
+function ForgetButton({ device: d }: { device: Device }) {
+  const queryClient = useQueryClient();
+  const [sure, setSure] = useState(false);
+  const forget = useMutation({
+    mutationFn: () => actions.forget(d.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["devices"] }),
+  });
+  return (
+    <div className="flex items-center justify-end gap-2 text-xs">
+      {forget.isError && <span role="alert">{errorText(forget.error)}</span>}
+      {sure ? (
+        <>
+          <span className="text-muted-foreground">{d.name} vergessen?</span>
+          <Button size="sm" variant="outline" onClick={() => setSure(false)}>
+            Nein
+          </Button>
+          <Button size="sm" variant="destructive" onClick={() => forget.mutate()}>
+            Vergessen
+          </Button>
+        </>
+      ) : (
+        <button
+          type="button"
+          className="cursor-pointer border-0 bg-transparent p-0 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          onClick={() => setSure(true)}
+        >
+          Gerät vergessen
+        </button>
       )}
     </div>
   );

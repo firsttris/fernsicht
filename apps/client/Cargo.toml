@@ -28,7 +28,7 @@ fernsicht-audio.workspace = true
 fernsicht-capture.workspace = true
 fernsicht-codec.workspace = true
 fernsicht-core.workspace = true
-fernsicht-input.workspace = true
+fernsicht-input = { workspace = true, features = ["gamepad"] }
 fernsicht-net.workspace = true
 libc.workspace = true
 fernsicht-proto.workspace = true

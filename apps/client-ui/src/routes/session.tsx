@@ -45,7 +45,11 @@ export function SessionPage() {
       }}
       stats={session?.stats ?? undefined}
       mode={mode}
-      onModeChange={(m) => void navigate({ to: ".", search: { mode: m }, replace: true })}
+      onModeChange={(m) => {
+        void actions.setMode(m === "gaming");
+        void navigate({ to: ".", search: { mode: m }, replace: true });
+      }}
+      onMuteChange={(muted) => void actions.setMuted(muted)}
       onDisconnect={() => void actions.disconnect().then(back)}
     >
       {app ? <NativeWindowNotice name={name} /> : undefined}

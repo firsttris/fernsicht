@@ -75,3 +75,64 @@ fn devices_are_created_take_every_event_and_go_away() {
         "devices removed on drop"
     );
 }
+
+/// The host's virtual pad, read back by the client's gamepad reader: what
+/// goes in by position comes out by position.
+#[cfg(feature = "gamepad")]
+#[test]
+fn a_virtual_pad_reads_back_through_evdev() {
+    use fernsicht_input::gamepad::Gamepads;
+    use fernsicht_proto::PadAxis;
+    use std::sync::{Arc, Mutex};
+    if !enabled() {
+        return;
+    }
+    let mut u = Uinput::open(AbsArea::default()).expect("open /dev/uinput");
+    let north = InputEvent::PadButton {
+        pad: 0,
+        code: 0x133,
+        pressed: true,
+    };
+    // The pad appears on first use.
+    u.inject(&north).unwrap();
+    assert!(devices().contains("Fernsicht X-Box 360 pad 1"));
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let sink = got.clone();
+    let reader = Gamepads::start("/dev/input".into(), false, move |e| {
+        sink.lock().unwrap().push(e)
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let stick = InputEvent::PadAxis {
+        pad: 0,
+        axis: PadAxis::LeftX,
+        value: -20000,
+    };
+    u.inject(&stick).unwrap();
+    u.inject(&InputEvent::PadButton {
+        pad: 0,
+        code: 0x133,
+        pressed: false,
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    drop(reader);
+    let got = got.lock().unwrap().clone();
+    assert!(
+        got.iter()
+            .any(|e| matches!(e, InputEvent::PadAxis { axis: PadAxis::LeftX, value, .. } if (*value - -20000).abs() < 2)),
+        "{got:?}"
+    );
+    assert!(
+        got.iter().any(|e| matches!(
+            e,
+            InputEvent::PadButton {
+                code: 0x133,
+                pressed: false,
+                ..
+            }
+        )),
+        "the top button stays the top button: {got:?}"
+    );
+    u.release_all();
+}

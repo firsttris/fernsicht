@@ -9,6 +9,8 @@ publish.workspace = true
 [features]
 # Virtual keyboard and mice through /dev/uinput (host side).
 uinput = ["dep:libc", "dep:log"]
+# The client's gamepads, read from evdev (client side).
+gamepad = ["dep:libc", "dep:log"]
 
 [dependencies]
 fernsicht-proto.workspace = true

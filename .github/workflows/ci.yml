@@ -58,7 +58,11 @@ jobs:
           sudo apt-get install -y -q pulseaudio
           pulseaudio --start --exit-idle-time=-1
           sudo chmod 666 /dev/uinput
-      - run: cargo test --workspace --exclude fernsicht-e2e --features fernsicht-input/uinput
+          # The gamepad test reads its virtual pad back from /dev/input.
+          echo 'SUBSYSTEM=="input", KERNEL=="event*", MODE="0666"' |
+            sudo tee /etc/udev/rules.d/99-fernsicht-test.rules
+          sudo udevadm control --reload-rules
+      - run: cargo test --workspace --exclude fernsicht-e2e --features fernsicht-input/uinput,fernsicht-input/gamepad
         env:
           PROPTEST_CASES: "1024"
           # libopus is loaded at runtime; the audio tests must not skip.
@@ -128,6 +132,10 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q libopus0 pulseaudio
           pulseaudio --start --exit-idle-time=-1
           sudo chmod 666 /dev/uinput
+          # The gamepad test reads its virtual pad back from /dev/input.
+          echo 'SUBSYSTEM=="input", KERNEL=="event*", MODE="0666"' |
+            sudo tee /etc/udev/rules.d/99-fernsicht-test.rules
+          sudo udevadm control --reload-rules
       # CLI entry points are exercised by the binary E2E tests but run as
       # separate processes, so they are excluded from the measurement. So
       # is the Vulkan code in crates/gpu (like the renderer's, which is

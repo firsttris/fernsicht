@@ -5,8 +5,12 @@
 //! - [`Dedup`] (host): applies each sequence number once.
 //! - [`uinput`] (feature `uinput`, host): virtual keyboard and mice at
 //!   kernel level; works under every compositor and on the login screen.
+//! - [`gamepad`] (feature `gamepad`, client): the machine's gamepads,
+//!   read from evdev.
 //! - [`Recorder`]: a sink that only records, for tests.
 
+#[cfg(feature = "gamepad")]
+pub mod gamepad;
 mod queue;
 #[cfg(feature = "uinput")]
 pub mod uinput;

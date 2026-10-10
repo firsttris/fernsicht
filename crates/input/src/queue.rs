@@ -1,9 +1,9 @@
 //! The client's side of reliable input over UDP.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use fernsicht_proto::{InputEvent, MAX_INPUT_EVENTS};
+use fernsicht_proto::{InputEvent, MAX_INPUT_EVENTS, PadAxis};
 
 /// How often unacknowledged events are sent again.
 pub const RESEND_AFTER: Duration = Duration::from_millis(15);
@@ -30,6 +30,9 @@ pub struct InputQueue {
     last_sent: Option<Instant>,
     /// Keys and buttons currently held, by Linux code.
     held: BTreeSet<u16>,
+    /// Gamepad buttons held, and axes away from rest, per pad.
+    pad_held: BTreeSet<(u8, u16)>,
+    pad_axes: BTreeMap<(u8, PadAxis), i32>,
 }
 
 impl Default for InputQueue {
@@ -39,6 +42,8 @@ impl Default for InputQueue {
             entries: VecDeque::new(),
             last_sent: None,
             held: BTreeSet::new(),
+            pad_held: BTreeSet::new(),
+            pad_axes: BTreeMap::new(),
         }
     }
 }
@@ -56,6 +61,38 @@ impl InputQueue {
                     self.held.insert(code);
                 } else {
                     self.held.remove(&code);
+                }
+            }
+            InputEvent::PadButton { pad, code, pressed } => {
+                if pressed == self.pad_held.contains(&(pad, code)) {
+                    return;
+                }
+                if pressed {
+                    self.pad_held.insert((pad, code));
+                } else {
+                    self.pad_held.remove(&(pad, code));
+                }
+            }
+            InputEvent::PadAxis { pad, axis, value } => {
+                let rest = 0;
+                let old = self.pad_axes.get(&(pad, axis)).copied().unwrap_or(rest);
+                if old == value {
+                    return;
+                }
+                if value == rest {
+                    self.pad_axes.remove(&(pad, axis));
+                } else {
+                    self.pad_axes.insert((pad, axis), value);
+                }
+                // Only the newest value of an axis matters: replace an
+                // unsent one anywhere in the queue (sticks move at 1 kHz).
+                if let Some(e) = self.entries.iter_mut().rev().find(|e| {
+                    !e.sent
+                        && matches!(e.event, InputEvent::PadAxis { pad: p, axis: a, .. }
+                            if p == pad && a == axis)
+                }) {
+                    e.event = event;
+                    return;
                 }
             }
             _ => {}
@@ -87,8 +124,24 @@ impl InputQueue {
         });
     }
 
-    /// Releases every held key and button.
+    /// Releases every held key and button, and centers the gamepads.
     pub fn release_all(&mut self) {
+        let pad_held: Vec<(u8, u16)> = self.pad_held.iter().copied().collect();
+        for (pad, code) in pad_held {
+            self.push(InputEvent::PadButton {
+                pad,
+                code,
+                pressed: false,
+            });
+        }
+        let axes: Vec<(u8, PadAxis)> = self.pad_axes.keys().copied().collect();
+        for (pad, axis) in axes {
+            self.push(InputEvent::PadAxis {
+                pad,
+                axis,
+                value: 0,
+            });
+        }
         let held: Vec<u16> = self.held.iter().copied().collect();
         for code in held {
             let event = if (fernsicht_proto::BTN_MOUSE_FIRST..=fernsicht_proto::BTN_MOUSE_LAST)
@@ -289,5 +342,48 @@ mod tests {
         // Acknowledging across the wrap drops the right ones.
         q.ack(1);
         assert_eq!(q.due(Instant::now() + RESEND_AFTER).unwrap()[0].0, 2);
+    }
+
+    #[test]
+    fn gamepads_send_the_newest_axis_value_and_release() {
+        let mut q = InputQueue::default();
+        let t0 = Instant::now();
+        let axis = |value| InputEvent::PadAxis {
+            pad: 0,
+            axis: PadAxis::LeftX,
+            value,
+        };
+        let button = |pressed| InputEvent::PadButton {
+            pad: 1,
+            code: 0x130,
+            pressed,
+        };
+        q.push(axis(100));
+        q.push(button(true));
+        q.push(axis(200));
+        q.push(axis(200));
+        q.push(button(true));
+        assert_eq!(
+            q.due(t0).unwrap(),
+            vec![(1, axis(200)), (2, button(true))],
+            "one value per axis, repeats dropped"
+        );
+        // Sent ones are not changed afterwards.
+        q.push(axis(300));
+        q.release_all();
+        let events: Vec<InputEvent> = q
+            .due(t0 + RESEND_AFTER)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        // Centering replaces the unsent 300: only the newest value counts.
+        assert_eq!(&events[2..], [axis(0), button(false)], "{events:?}");
+        q.push(axis(0));
+        assert_eq!(
+            q.due(t0 + RESEND_AFTER * 3).unwrap().len(),
+            4,
+            "at rest already"
+        );
     }
 }

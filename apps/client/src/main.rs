@@ -68,10 +68,19 @@ struct Args {
     /// No window: decode only and print the overlay.
     #[arg(long)]
     headless: bool,
-    /// Run for the desktop app: the overlay as JSON lines on stdout, and
-    /// stop when stdin closes (the app quit or ended the session).
+    /// Run for the desktop app: the overlay as JSON lines on stdout,
+    /// commands on stdin ("gaming", "desktop", "mute", "unmute"), and stop
+    /// when stdin closes (the app quit or ended the session).
     #[arg(long, hide = true)]
     app: bool,
+    /// Gaming mode: a click into the window captures the pointer, which
+    /// then moves relatively (as games want it). Ctrl+Alt+Shift+M captures
+    /// and lets go in either mode.
+    #[arg(long)]
+    gaming: bool,
+    /// Leave this machine's gamepads out.
+    #[arg(long)]
+    no_gamepad: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -284,14 +293,32 @@ fn main() -> anyhow::Result<()> {
         ..ClientConfig::default()
     };
     let stop = Arc::new(AtomicBool::new(false));
+    let (commands_tx, commands) = crossbeam_channel::unbounded();
     if args.app {
-        let stop = stop.clone();
+        let (stop, muted) = (stop.clone(), cfg.muted.clone());
         std::thread::spawn(move || {
-            // Nothing comes on stdin; it ends when the app lets go of it.
-            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            use std::io::BufRead;
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                match line.trim() {
+                    "mute" => muted.store(true, std::sync::atomic::Ordering::Relaxed),
+                    "unmute" => muted.store(false, std::sync::atomic::Ordering::Relaxed),
+                    "gaming" => {
+                        let _ = commands_tx.send(true);
+                    }
+                    "desktop" => {
+                        let _ = commands_tx.send(false);
+                    }
+                    other => log::debug!("unknown command {other:?}"),
+                }
+            }
+            // The app let go of stdin: the session is over.
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
         });
+    } else {
+        drop(commands_tx);
     }
+    #[cfg(not(feature = "window"))]
+    let _ = commands;
     let s = if args.headless || !cfg!(feature = "window") {
         if !args.headless {
             log::info!("built without the \"window\" feature: running headless");
@@ -300,7 +327,16 @@ fn main() -> anyhow::Result<()> {
     } else {
         #[cfg(feature = "window")]
         {
-            window::run(cfg, !args.view_only, stop)?
+            window::run(
+                cfg,
+                window::Options {
+                    send_input: !args.view_only,
+                    gaming: args.gaming,
+                    gamepads: !args.view_only && !args.no_gamepad,
+                    commands,
+                },
+                stop,
+            )?
         }
         #[cfg(not(feature = "window"))]
         unreachable!()
@@ -367,14 +403,32 @@ mod window {
     use fernsicht_render::vulkan::window::WindowPresenter;
     use winit::application::ApplicationHandler;
     use winit::dpi::LogicalSize;
-    use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+    use winit::event::{
+        DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent,
+    };
     use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
     use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
     use winit::platform::scancode::PhysicalKeyExtScancode;
-    use winit::window::{Fullscreen, Window, WindowId};
+    use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-    /// The client thread has ended (duration over, host gone, error).
-    struct Done;
+    enum UserEvent {
+        /// The client thread has ended (duration over, host gone, error).
+        Done,
+        /// The app switched between gaming (true) and desktop mode.
+        Gaming(bool),
+    }
+
+    /// How the window behaves.
+    pub struct Options {
+        /// Mouse, keyboard and gamepads go to the host (not view-only).
+        pub send_input: bool,
+        /// A click captures the pointer (relative motion for games).
+        pub gaming: bool,
+        /// This machine's gamepads go to the host.
+        pub gamepads: bool,
+        /// Mode switches from the app.
+        pub commands: crossbeam_channel::Receiver<bool>,
+    }
 
     /// Wheel units (120 per notch) per pixel of touchpad scrolling.
     const WHEEL_PER_PIXEL: f64 = 8.0;
@@ -382,7 +436,7 @@ mod window {
     struct App {
         cfg: Option<ClientConfig>,
         stop: Arc<AtomicBool>,
-        proxy: EventLoopProxy<Done>,
+        proxy: EventLoopProxy<UserEvent>,
         window: Option<Arc<Window>>,
         client: Option<JoinHandle<anyhow::Result<RunSummary>>>,
         error: Option<anyhow::Error>,
@@ -391,6 +445,11 @@ mod window {
         modifiers: ModifiersState,
         /// Fractions of wheel units from touchpads, carried over.
         scroll_rest: (f64, f64),
+        gaming: bool,
+        /// The pointer is captured: motion goes to the host relatively.
+        captured: bool,
+        /// Fractions of pixels of relative motion, carried over.
+        motion_rest: (f64, f64),
     }
 
     fn mouse_button(b: MouseButton) -> Option<u16> {
@@ -411,6 +470,29 @@ mod window {
             }
             self.stop.store(true, Ordering::Relaxed);
             event_loop.exit();
+        }
+
+        /// Captures the pointer (locked in place, relative motion) or lets
+        /// it go.
+        fn capture(&mut self, on: bool) {
+            let Some(w) = &self.window else { return };
+            if self.input.is_none() || on == self.captured {
+                return;
+            }
+            if on {
+                let grabbed = w
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| w.set_cursor_grab(CursorGrabMode::Confined));
+                if let Err(e) = grabbed {
+                    log::warn!("cannot capture the pointer: {e}");
+                    return;
+                }
+                log::info!("pointer captured; Ctrl+Alt+Shift+M lets go");
+            } else {
+                let _ = w.set_cursor_grab(CursorGrabMode::None);
+            }
+            self.captured = on;
+            self.motion_rest = (0.0, 0.0);
         }
 
         fn toggle_fullscreen(&self) {
@@ -443,6 +525,10 @@ mod window {
                     self.toggle_fullscreen();
                     true
                 }
+                (true, true, KeyCode::KeyM) => {
+                    self.capture(!self.captured);
+                    true
+                }
                 _ => false,
             }
         }
@@ -464,7 +550,7 @@ mod window {
         }
     }
 
-    impl ApplicationHandler<Done> for App {
+    impl ApplicationHandler<UserEvent> for App {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
             let Some(cfg) = self.cfg.take() else { return };
             let title = format!("Fernsicht – {}", cfg.host);
@@ -495,7 +581,7 @@ mod window {
             let (stop, proxy) = (self.stop.clone(), self.proxy.clone());
             self.client = Some(std::thread::spawn(move || {
                 let r = run_with(cfg, stop, factory);
-                let _ = proxy.send_event(Done);
+                let _ = proxy.send_event(UserEvent::Done);
                 r
             }));
             self.window = Some(window);
@@ -511,6 +597,7 @@ mod window {
                     if let Some(input) = &self.input {
                         input.release_all();
                     }
+                    self.capture(false);
                 }
                 WindowEvent::KeyboardInput { event: key, .. } => {
                     if self.command(event_loop, &key) {
@@ -527,7 +614,7 @@ mod window {
                         });
                     }
                 }
-                WindowEvent::CursorMoved { position, .. } => {
+                WindowEvent::CursorMoved { position, .. } if !self.captured => {
                     if let (Some(input), Some(w)) = (&self.input, &self.window) {
                         let size = w.inner_size();
                         if let Some(e) =
@@ -538,6 +625,14 @@ mod window {
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
+                    // In gaming mode the first click captures the pointer
+                    // and stays here.
+                    if self.gaming && !self.captured && self.input.is_some() {
+                        if state == ElementState::Pressed {
+                            self.capture(true);
+                        }
+                        return;
+                    }
                     if let (Some(input), Some(code)) = (&self.input, mouse_button(button)) {
                         input.push(InputEvent::Button {
                             code,
@@ -557,8 +652,32 @@ mod window {
             }
         }
 
-        fn user_event(&mut self, event_loop: &ActiveEventLoop, _: Done) {
-            event_loop.exit();
+        fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+            if let (true, Some(input), DeviceEvent::MouseMotion { delta }) =
+                (self.captured, &self.input, event)
+            {
+                let (rx, ry) = (self.motion_rest.0 + delta.0, self.motion_rest.1 + delta.1);
+                let (dx, dy) = (rx.trunc(), ry.trunc());
+                self.motion_rest = (rx - dx, ry - dy);
+                if dx != 0.0 || dy != 0.0 {
+                    input.push(InputEvent::MouseRel {
+                        dx: dx as i32,
+                        dy: dy as i32,
+                    });
+                }
+            }
+        }
+
+        fn user_event(&mut self, event_loop: &ActiveEventLoop, e: UserEvent) {
+            match e {
+                UserEvent::Done => event_loop.exit(),
+                UserEvent::Gaming(on) => {
+                    self.gaming = on;
+                    if !on {
+                        self.capture(false);
+                    }
+                }
+            }
         }
     }
 
@@ -566,12 +685,33 @@ mod window {
     /// `stop` is set.
     pub fn run(
         mut cfg: ClientConfig,
-        send_input: bool,
+        options: Options,
         stop: Arc<AtomicBool>,
     ) -> anyhow::Result<RunSummary> {
-        let input = send_input.then(|| Arc::new(InputHandle::default()));
+        let input = options.send_input.then(|| Arc::new(InputHandle::default()));
         cfg.input = input.clone();
-        let event_loop = EventLoop::<Done>::with_user_event().build()?;
+        let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+        // Mode switches from the app arrive on another thread.
+        let proxy = event_loop.create_proxy();
+        let commands = options.commands;
+        std::thread::spawn(move || {
+            for gaming in commands {
+                if proxy.send_event(UserEvent::Gaming(gaming)).is_err() {
+                    return;
+                }
+            }
+        });
+        let _gamepads = match (&input, options.gamepads) {
+            (Some(input), true) => {
+                let input = input.clone();
+                fernsicht_input::gamepad::Gamepads::start("/dev/input".into(), true, move |e| {
+                    input.push(e)
+                })
+                .map_err(|e| log::warn!("no gamepads: {e}"))
+                .ok()
+            }
+            _ => None,
+        };
         let mut app = App {
             cfg: Some(cfg),
             stop,
@@ -582,6 +722,9 @@ mod window {
             input,
             modifiers: ModifiersState::empty(),
             scroll_rest: (0.0, 0.0),
+            gaming: options.gaming,
+            captured: false,
+            motion_rest: (0.0, 0.0),
         };
         event_loop.run_app(&mut app)?;
         app.stop.store(true, Ordering::Relaxed);
