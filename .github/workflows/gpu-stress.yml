@@ -41,6 +41,7 @@ jobs:
           FERNSICHT_REQUIRE_VULKAN: "1"
           RUST_LOG: fernsicht_render=debug
           VK_LOADER_DEBUG: error,warn
+          DEBUGINFOD_URLS: ""
           RUNS: ${{ inputs.runs }}
           GDB: ${{ inputs.gdb }}
         run: |
@@ -48,10 +49,12 @@ jobs:
             | jq -r 'select(.profile.test == true and .target.name == "vulkan") | .executable')
           run() {
             if [ "$GDB" = true ]; then
-              gdb -q -batch -return-child-result -ex run -ex "thread apply all bt 15" \
+              # No symbol downloads (debuginfod would fetch every library's).
+              timeout 120 gdb -q -batch -return-child-result \
+                -iex "set debuginfod enabled off" -ex run -ex "thread apply all bt 15" \
                 --args "$bin" --test-threads=1 --nocapture
             else
-              "$bin" --test-threads=1 --nocapture
+              timeout 60 "$bin" --test-threads=1 --nocapture
             fi
           }
           failed=0
@@ -64,6 +67,7 @@ jobs:
               echo "::endgroup::"
             fi
             retried=$((retried + $(grep -c "retrying" run.log || true)))
+            if [ $((i % 10)) -eq 0 ]; then echo "$i runs, $failed failed, $retried retries"; fi
           done
           echo "### Vulkan renderer: $failed of $RUNS runs failed, device creation retried $retried times" >> "$GITHUB_STEP_SUMMARY"
           echo "$failed of $RUNS runs failed, device creation retried $retried times"
