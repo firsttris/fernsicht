@@ -1,0 +1,35 @@
+# The Fernsicht host as a system service: streams the screen to paired
+# devices. Installed by packaging/install-host.sh; see docs/install.md.
+#
+# Runs as root for KMS screen capture (CAP_SYS_ADMIN) and /dev/uinput. The
+# desktop's sound and monitor layout are found through the logged-in user.
+# Pair a device with: fernsicht-host-agent pair
+
+[Unit]
+Description=Fernsicht host (screen streaming to paired devices)
+Documentation=https://github.com/firsttris/fernsicht/blob/main/docs/install.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fernsicht-host-agent --capture kms --encoder auto --input
+Environment=RUST_LOG=info
+Restart=on-failure
+RestartSec=3
+# Key and paired devices in /var/lib/fernsicht, the control socket in
+# /run/fernsicht (reachable for the desktop's user, who may pair devices).
+StateDirectory=fernsicht
+StateDirectoryMode=0700
+RuntimeDirectory=fernsicht
+RuntimeDirectoryMode=0755
+# Hardening that leaves KMS, uinput and the desktop's sound working.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

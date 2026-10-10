@@ -69,7 +69,8 @@ struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
-    /// Pair with a host: start it with --pair, then enter the PIN it shows.
+    /// Pair with a host: run "fernsicht-host-agent pair" there (or start it
+    /// with --pair), then enter the PIN it shows.
     Pair {
         /// The host's address, e.g. 192.168.1.20.
         host: String,
@@ -158,8 +159,8 @@ fn main() -> anyhow::Result<()> {
     let hosts = Trusted::load(&dir.join("hosts.json")).map_err(anyhow::Error::msg)?;
     let Some(host) = find_host(&hosts, &wanted).cloned() else {
         anyhow::bail!(
-            "not paired with {wanted}. Start the host with --pair and run: \
-             fernsicht-client pair {wanted} PIN"
+            "not paired with {wanted}. On the host run \"fernsicht-host-agent pair\", \
+             then here: fernsicht-client pair {wanted} PIN"
         );
     };
     let identity =

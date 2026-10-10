@@ -99,17 +99,23 @@ fn error(lib: &Lib, what: &str, code: c_int) -> String {
     format!("{what}: {msg} ({code})")
 }
 
-/// The sound server to use. Started with sudo (for KMS capture), the host
-/// runs as root but the sound belongs to the user's session: connect to
-/// that user's server.
+/// The sound server to use. As root (sudo for KMS capture, or a system
+/// service) the sound still belongs to the desktop's user: connect to that
+/// user's server.
 fn server() -> Option<CString> {
     if let Ok(s) = std::env::var("PULSE_SERVER") {
         return CString::new(s).ok();
     }
     // SAFETY: geteuid has no preconditions.
-    let root = unsafe { libc::geteuid() } == 0;
-    let uid = std::env::var("SUDO_UID").ok()?;
-    root.then(|| CString::new(format!("unix:/run/user/{uid}/pulse/native")).ok())?
+    if unsafe { libc::geteuid() } != 0 {
+        return None; // our own session's default
+    }
+    let user = fernsicht_core::desktop::desktop_user()?;
+    CString::new(format!(
+        "unix:{}/pulse/native",
+        user.runtime_dir().display()
+    ))
+    .ok()
 }
 
 struct Stream {

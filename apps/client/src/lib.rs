@@ -192,7 +192,9 @@ pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::R
     let mut last_sent: Option<Instant> = None;
     loop {
         if Instant::now() >= deadline {
-            anyhow::bail!("no answer from {host} (is pairing open there, with --pair?)");
+            anyhow::bail!(
+                "no answer from {host} (is the host running, and pairing open: \"fernsicht-host-agent pair\"?)"
+            );
         }
         if last_sent.is_none_or(|t| t.elapsed() >= HELLO_INTERVAL) {
             let n = PairMsg {
@@ -230,9 +232,11 @@ pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::R
 pub fn reject_text(r: RejectReason) -> &'static str {
     match r {
         RejectReason::NotPaired => {
-            "this device is not paired with the host (pair it: host with --pair, then \"fernsicht-client pair HOST PIN\")"
+            "this device is not paired with the host (on the host: \"fernsicht-host-agent pair\" shows a PIN; here: \"fernsicht-client pair HOST PIN\")"
         }
-        RejectReason::PairingClosed => "the host is not in pairing mode (start it with --pair)",
+        RejectReason::PairingClosed => {
+            "the host is not in pairing mode (on the host: \"fernsicht-host-agent pair\")"
+        }
         RejectReason::TooManyAttempts => "too many wrong PINs: pairing mode closed; open it again",
     }
 }

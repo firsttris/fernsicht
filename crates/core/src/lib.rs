@@ -4,6 +4,7 @@
 //! construction.
 
 pub mod clock;
+pub mod desktop;
 pub mod latency;
 pub mod slot;
 pub mod thread;

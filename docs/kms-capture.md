@@ -47,8 +47,12 @@ angenommen. Gekoppelt wird einmal pro Client-Rechner, wie bei Bluetooth:
    Gekoppelt mit zentrale (192.168.178.87:47800, Schlüssel 3f2a-…).
    ```
 
-Nach drei falschen PINs schließt der Host die Kopplung; dann einfach neu
-mit `--pair` starten. `fernsicht-client hosts` listet die gekoppelten Hosts,
+Läuft der Host schon (etwa als Dienst, siehe [install.md](install.md)),
+öffnet `fernsicht-host-agent pair` in einem zweiten Terminal die Kopplung,
+ohne ihn neu zu starten.
+
+Nach drei falschen PINs schließt der Host die Kopplung. Dann einfach neu
+öffnen (`fernsicht-host-agent pair` oder Neustart mit `--pair`). `fernsicht-client hosts` listet die gekoppelten Hosts,
 `fernsicht-client forget zentrale` vergisst einen.
 
 Die Schlüssel liegen beim Host in `/var/lib/fernsicht` (als root

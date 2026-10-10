@@ -11,6 +11,7 @@
 //! are only dropped when it overflows; that forces a keyframe. Buffers
 //! circulate through small free lists, so steady state does not allocate.
 
+pub mod control;
 mod layout;
 
 use std::collections::HashMap;
@@ -71,6 +72,9 @@ pub struct HostConfig {
     /// Pairing and encryption. `None` (the library default) accepts anyone
     /// unencrypted: for tests only; the program always sets it.
     pub security: Option<Arc<HostSecurity>>,
+    /// Local control socket (pairing, status) while running; needs
+    /// `security`. See [`control`].
+    pub control: Option<PathBuf>,
 }
 
 /// Where the sound comes from.
@@ -146,6 +150,7 @@ impl Default for HostConfig {
             input: InputKind::default(),
             audio: AudioKind::default(),
             security: None,
+            control: None,
         }
     }
 }
@@ -377,8 +382,40 @@ impl HostSecurity {
         }
     }
 
-    fn close_pairing(&self) {
+    pub fn close_pairing(&self) {
         *self.pairing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// How long pairing stays open, if it is.
+    pub fn pairing_remaining(&self) -> Option<Duration> {
+        let w = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
+        w.as_ref()
+            .filter(|p| p.attempts_left > 0)
+            .and_then(|p| p.until.checked_duration_since(Instant::now()))
+    }
+
+    /// Forgets a paired device, by name or key fingerprint.
+    pub fn unpair(&self, device: &str) -> bool {
+        let mut t = self.trusted.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(key) = t
+            .peers
+            .iter()
+            .find(|p| p.name == device || p.key.fingerprint() == device)
+            .map(|p| p.key)
+        else {
+            return false;
+        };
+        t.remove(&key);
+        if let Some(path) = &self.trusted_path
+            && let Err(e) = t.save(path)
+        {
+            log::error!("saving the paired clients: {e}");
+        }
+        true
     }
 }
 
@@ -397,6 +434,8 @@ pub struct HostAgent {
     cfg: HostConfig,
     socket: Arc<UdpSocket>,
     stats: Arc<HostStats>,
+    /// The current session, for the control socket.
+    status: control::StatusCell,
 }
 
 impl HostAgent {
@@ -408,6 +447,7 @@ impl HostAgent {
             cfg,
             socket: Arc::new(socket),
             stats: Arc::default(),
+            status: Arc::default(),
         })
     }
 
@@ -429,6 +469,17 @@ impl HostAgent {
         let mut pairing: Option<PairingExchange> = None;
         // Newest handshake per client (its clock, ms): older ones are replays.
         let mut handshake_times: HashMap<PublicKey, u64> = HashMap::new();
+        let control_stop = Arc::new(AtomicBool::new(false));
+        let control = match (&self.cfg.control, &self.cfg.security) {
+            (Some(path), Some(sec)) => {
+                let t =
+                    control::serve(path, sec.clone(), self.status.clone(), control_stop.clone())
+                        .with_context(|| format!("control socket {}", path.display()))?;
+                log::info!("control socket {}", path.display());
+                Some(t)
+            }
+            _ => None,
+        };
 
         while !stop.load(Ordering::Relaxed) {
             if session
@@ -438,6 +489,7 @@ impl HostAgent {
                 let s = session.take().unwrap();
                 log::info!("session {:08x}: client timed out", s.params.session_id);
                 s.stop();
+                self.set_status(None, "");
             }
             let (len, from) = match self.socket.recv_from(&mut buf) {
                 Ok(r) => r,
@@ -504,6 +556,7 @@ impl HostAgent {
                         match self.start_session(params, from, None) {
                             Ok((s, _)) => {
                                 log_session(&s, &from.to_string());
+                                self.set_status(Some(&s), &from.to_string());
                                 session = Some(s);
                             }
                             Err(e) => {
@@ -566,6 +619,7 @@ impl HostAgent {
                         if bye.session_id == s.params.session_id {
                             log::info!("session {:08x}: closed by client", s.params.session_id);
                             s.stop();
+                            self.set_status(None, "");
                         } else {
                             session = Some(s);
                         }
@@ -582,7 +636,29 @@ impl HostAgent {
             let _ = s.link.send(&out[..n]);
             s.stop();
         }
+        control_stop.store(true, Ordering::Relaxed);
+        if let Some(t) = control {
+            let _ = t.join();
+        }
         Ok(())
+    }
+
+    /// What the control socket reports; `None` when no session runs.
+    fn set_status(&self, s: Option<&Session>, client: &str) {
+        let status = s.map(|s| control::SessionStatus {
+            client: client.to_owned(),
+            address: s.peer.to_string(),
+            width: s.params.width,
+            height: s.params.height,
+            fps: s.params.fps,
+            encrypted: s.link.crypto.is_some(),
+            since: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        });
+        if let Ok(mut cell) = self.status.lock() {
+            *cell = status;
+        }
     }
 
     /// A client's first handshake message: a paired client gets a session
@@ -644,6 +720,7 @@ impl HostAgent {
         match self.start_session(params, from, Some(responder)) {
             Ok((mut s, Some(reply))) => {
                 log_session(&s, &format!("{} ({from})", client.name));
+                self.set_status(Some(&s), &client.name);
                 let n = Handshake {
                     reply: true,
                     message: &reply,
@@ -1188,6 +1265,47 @@ fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn 
     }
 }
 
+const NVIDIA: u32 = 0x10de;
+
+/// The hardware encoder for the GPUs found (render node, PCI vendor), in
+/// order: VAAPI on AMD/Intel, NVENC on NVIDIA, as far as this build
+/// supports them (`vaapi`, `nvenc`).
+pub fn choose_encoder(gpus: &[(String, u32)], vaapi: bool, nvenc: bool) -> Option<EncoderKind> {
+    gpus.iter().find_map(|(node, vendor)| match *vendor {
+        NVIDIA if nvenc => Some(EncoderKind::Nvenc { gpu: 0 }),
+        NVIDIA => None,
+        _ if vaapi => Some(EncoderKind::Vaapi {
+            render_node: node.clone(),
+        }),
+        _ => None,
+    })
+}
+
+/// [`choose_encoder`] for this machine's GPUs.
+pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
+    let mut gpus: Vec<(String, u32)> = std::fs::read_dir("/sys/class/drm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if !name.starts_with("renderD") {
+                return None;
+            }
+            let vendor = std::fs::read_to_string(e.path().join("device/vendor")).ok()?;
+            let vendor = u32::from_str_radix(vendor.trim().trim_start_matches("0x"), 16).ok()?;
+            Some((format!("/dev/dri/{name}"), vendor))
+        })
+        .collect();
+    gpus.sort();
+    let kind = choose_encoder(&gpus, cfg!(feature = "vaapi"), cfg!(feature = "nvidia"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("no GPU this build can encode with (found {gpus:x?}); pick --encoder")
+        })?;
+    log::info!("encoder: {kind:?}");
+    Ok(kind)
+}
+
 fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn Encoder>> {
     match kind {
         EncoderKind::Synthetic => Ok(Box::new(SyntheticEncoder::new(
@@ -1390,6 +1508,38 @@ mod tests {
         assert_eq!(fit((1366, 768), (3840, 2160)), (1366, 768));
         assert_eq!(fit((1365, 767), (3840, 2160)), (1364, 766));
         assert_eq!(fit((0, 0), (640, 480)), (2, 2));
+    }
+
+    #[test]
+    fn the_encoder_follows_the_gpu() {
+        let amd = ("/dev/dri/renderD128".to_owned(), 0x1002);
+        let nv = ("/dev/dri/renderD129".to_owned(), NVIDIA);
+        let vaapi = |n: &str| {
+            Some(EncoderKind::Vaapi {
+                render_node: n.into(),
+            })
+        };
+        assert_eq!(
+            choose_encoder(std::slice::from_ref(&amd), true, true),
+            vaapi("/dev/dri/renderD128")
+        );
+        assert_eq!(
+            choose_encoder(std::slice::from_ref(&nv), true, true),
+            Some(EncoderKind::Nvenc { gpu: 0 })
+        );
+        // The first GPU the build can use.
+        assert_eq!(
+            choose_encoder(&[nv.clone(), amd.clone()], true, false),
+            vaapi("/dev/dri/renderD128")
+        );
+        assert_eq!(choose_encoder(&[amd], false, true), None);
+        assert_eq!(choose_encoder(&[], true, true), None);
+        // This machine: whatever GPUs it has, a build without hardware
+        // encoders finds none to use.
+        let here = auto_encoder();
+        if !cfg!(any(feature = "vaapi", feature = "nvidia")) {
+            assert!(here.unwrap_err().to_string().contains("--encoder"));
+        }
     }
 
     #[test]

@@ -4,8 +4,8 @@
 //!
 //! KMS knows the monitors but not how the compositor arranges them. KDE
 //! Plasma stores the arrangement in `~/.config/kwinoutputconfig.json`; it
-//! is read from the home of the user who started the host (`SUDO_USER`
-//! when started with sudo). Elsewhere, or if that fails, the captured
+//! is read from the home of the desktop's user (see
+//! `fernsicht_core::desktop`). Elsewhere, or if that fails, the captured
 //! monitor is taken as the whole desktop (right for a single monitor).
 
 use std::collections::BTreeSet;
@@ -148,17 +148,11 @@ pub fn from_kwin(json: &str, captured: &str, active: &[String]) -> Result<AbsAre
     })
 }
 
-/// KWin's output config of the user who started the host.
+/// KWin's output config of the desktop's user (also when the host runs as
+/// root: sudo, or a system service).
 fn kwin_config_path() -> Option<PathBuf> {
-    if let Ok(user) = std::env::var("SUDO_USER")
-        && !user.is_empty()
-        && user != "root"
-    {
-        return Some(PathBuf::from(format!(
-            "/home/{user}/.config/kwinoutputconfig.json"
-        )));
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/kwinoutputconfig.json"))
+    let user = fernsicht_core::desktop::desktop_user()?;
+    Some(user.home.join(".config/kwinoutputconfig.json"))
 }
 
 /// The captured monitor's area in the desktop, or the whole desktop when

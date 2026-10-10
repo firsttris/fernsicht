@@ -7,11 +7,18 @@ use fernsicht_host_agent::{
     PAIRING_OPEN_FOR,
 };
 
-/// Fernsicht host agent (phase 1: test pattern or KMS capture, synthetic or
-/// VAAPI H.264 over UDP).
+/// Fernsicht host: streams this computer's screen to paired clients.
+/// Without a command it runs the host; the commands talk to a running host
+/// (e.g. the system service).
 #[derive(Parser, Debug)]
-#[command(version)]
+#[command(version, args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+    /// The running host's control socket (default: /run/fernsicht/control.sock
+    /// for the service, else in the user's runtime directory).
+    #[arg(long, global = true)]
+    control: Option<std::path::PathBuf>,
     /// UDP address to listen on.
     #[arg(long, default_value = "0.0.0.0:47800")]
     bind: String,
@@ -33,11 +40,12 @@ struct Args {
     /// Pacing rate in Mbit/s.
     #[arg(long, default_value_t = 400)]
     pace_mbit: u64,
-    /// Video encoder: "synthetic" (no GPU), "vaapi" (AMD/Intel) or "nvenc"
-    /// (NVIDIA); the hardware ones need the build features "vaapi"/"nvidia".
+    /// Video encoder: "auto" (the GPU's: VAAPI on AMD/Intel, NVENC on
+    /// NVIDIA), "vaapi", "nvenc" or "synthetic" (no GPU, no real picture);
+    /// the hardware ones need the build features "vaapi"/"nvidia".
     #[arg(long, value_enum, default_value_t = EncoderArg::Synthetic)]
     encoder: EncoderArg,
-    /// GPU render node for VAAPI.
+    /// GPU render node for --encoder vaapi.
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: String,
     /// Picture source: "test-pattern" or "kms" (the monitor; needs a build
@@ -57,9 +65,8 @@ struct Args {
     /// /var/lib/fernsicht as root, else ~/.config/fernsicht/host).
     #[arg(long)]
     state_dir: Option<std::path::PathBuf>,
-    /// Accept mouse and keyboard from the client (virtual devices through
-    /// /dev/uinput). There is no authentication yet: anyone who reaches the
-    /// port can then type on this machine. Only in a trusted LAN.
+    /// Accept mouse and keyboard from paired clients (virtual devices
+    /// through /dev/uinput).
     #[arg(long)]
     input: bool,
     /// NVENC: CUDA device index of the NVIDIA GPU.
@@ -71,6 +78,88 @@ struct Args {
     /// KMS: connector, e.g. DP-1 (default: first active display).
     #[arg(long)]
     kms_connector: Option<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Open pairing on the running host and show the PIN to enter on the
+    /// new device (fernsicht-client pair HOST PIN).
+    Pair,
+    /// Show the running host: its key, paired devices, the session.
+    Status,
+    /// Forget a paired device (its name or key).
+    Unpair { device: String },
+}
+
+/// The control socket: the given one, else the service's, else ours.
+fn control_path(given: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    given.unwrap_or_else(|| {
+        let service = std::path::PathBuf::from("/run/fernsicht/control.sock");
+        if service.exists() {
+            service
+        } else {
+            fernsicht_host_agent::control::default_path()
+        }
+    })
+}
+
+/// Commands for a running host.
+fn command(cmd: Command, control: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+    use fernsicht_host_agent::control::request;
+    use serde_json::json;
+    let path = control_path(control);
+    match cmd {
+        Command::Pair => {
+            let r = request(&path, &json!({"cmd": "pair"}))?;
+            println!(
+                "Kopplung offen für {} Minuten. PIN: {}",
+                r["expires_in_s"].as_u64().unwrap_or(300) / 60,
+                r["pin"].as_str().unwrap_or("?")
+            );
+            println!("Auf dem neuen Gerät: fernsicht-client pair <diese Adresse> <PIN>");
+        }
+        Command::Status => {
+            let r = request(&path, &json!({"cmd": "status"}))?;
+            println!(
+                "Host {} (Schlüssel {})",
+                r["name"].as_str().unwrap_or("?"),
+                r["key"].as_str().unwrap_or("?")
+            );
+            match r["session"].as_object() {
+                Some(s) => println!(
+                    "Verbunden: {} ({}), {}×{} bei {} fps{}",
+                    s["client"].as_str().unwrap_or("?"),
+                    s["address"].as_str().unwrap_or("?"),
+                    s["width"],
+                    s["height"],
+                    s["fps"],
+                    if s["encrypted"] == true {
+                        ", verschlüsselt"
+                    } else {
+                        ""
+                    }
+                ),
+                None => println!("Keine Verbindung."),
+            }
+            if let Some(secs) = r["pairing"].as_u64() {
+                println!("Kopplung offen, noch {secs} s.");
+            }
+            let paired = r["paired"].as_array().cloned().unwrap_or_default();
+            println!("Gekoppelte Geräte: {}", paired.len());
+            for p in paired {
+                println!(
+                    "  {}  {}",
+                    p["name"].as_str().unwrap_or("?"),
+                    p["key"].as_str().unwrap_or("?")
+                );
+            }
+        }
+        Command::Unpair { device } => {
+            request(&path, &json!({"cmd": "unpair", "device": device}))?;
+            println!("{device} entfernt.");
+        }
+    }
+    Ok(())
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -88,6 +177,7 @@ enum CaptureArg {
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum EncoderArg {
+    Auto,
     Synthetic,
     Vaapi,
     Nvenc,
@@ -121,7 +211,14 @@ fn default_state_dir() -> std::path::PathBuf {
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    if let Some(cmd) = args.command {
+        return command(cmd, args.control);
+    }
     let cfg = HostConfig {
+        control: Some(
+            args.control
+                .unwrap_or_else(fernsicht_host_agent::control::default_path),
+        ),
         bind: args.bind,
         max_width: args.max_width,
         max_height: args.max_height,
@@ -142,12 +239,12 @@ fn main() -> anyhow::Result<()> {
             (Some(AudioArg::Off), _) | (None, CaptureArg::TestPattern) => AudioKind::Off,
         },
         input: if args.input {
-            log::warn!("input enabled without authentication: use only in a trusted LAN");
             InputKind::Uinput
         } else {
             InputKind::Off
         },
         encoder: match args.encoder {
+            EncoderArg::Auto => fernsicht_host_agent::auto_encoder()?,
             EncoderArg::Synthetic => EncoderKind::Synthetic,
             EncoderArg::Vaapi => EncoderKind::Vaapi {
                 render_node: args.render_node,

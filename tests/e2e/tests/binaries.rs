@@ -29,8 +29,10 @@ fn bin(name: &str) -> Command {
 struct HostProcess {
     child: Child,
     addr: String,
-    /// The pairing PIN it showed.
+    /// The pairing PIN it showed (with `--pair`).
     pin: String,
+    /// Its control socket.
+    control: std::path::PathBuf,
 }
 
 impl Drop for HostProcess {
@@ -47,31 +49,47 @@ fn state_dir(name: &str) -> std::path::PathBuf {
     d
 }
 
+/// The PIN in "Kopplung offen für 5 Minuten. PIN: 123456".
+fn pin_in(line: &str) -> String {
+    line.split("PIN: ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no PIN in {line:?}"))
+        .trim()
+        .to_string()
+}
+
 /// Starts the host binary on an ephemeral port, in pairing mode.
 fn spawn_host(dir: &std::path::Path) -> HostProcess {
+    spawn_host_with(dir, true)
+}
+
+fn spawn_host_with(dir: &std::path::Path, pair: bool) -> HostProcess {
+    let control = dir.join("control.sock");
     let mut child = bin("fernsicht-host-agent")
-        .args(["--bind", "127.0.0.1:0", "--pair", "--state-dir"])
+        .args(["--bind", "127.0.0.1:0", "--state-dir"])
         .arg(dir)
+        .arg("--control")
+        .arg(&control)
+        .args(pair.then_some("--pair"))
         .env("RUST_LOG", "info")
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    // "Kopplung offen für 5 Minuten. PIN: 123456" comes first on stdout.
     let stdout = child.stdout.take().unwrap();
     let mut out_lines = BufReader::new(stdout).lines();
-    let pin_line = out_lines.next().expect("host exited").unwrap();
-    let pin = pin_line
-        .split("PIN: ")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no PIN in {pin_line:?}"))
-        .trim()
-        .to_string();
+    let pin = if pair {
+        // The PIN comes first on stdout.
+        pin_in(&out_lines.next().expect("host exited").unwrap())
+    } else {
+        String::new()
+    };
     std::thread::spawn(move || out_lines.for_each(drop));
     let mut host = HostProcess {
         child,
         addr: String::new(),
         pin,
+        control,
     };
     let stderr = host.child.stderr.take().unwrap();
     let mut lines = BufReader::new(stderr).lines();
@@ -80,12 +98,79 @@ fn spawn_host(dir: &std::path::Path) -> HostProcess {
         let line = lines.next().expect("host exited").unwrap();
         if let Some(addr) = line.split("listening on ").nth(1) {
             host.addr = addr.trim().to_string();
+        }
+        // The control socket is up after the address.
+        if line.contains("control socket") {
             // Keep draining stderr so the host never blocks on a full pipe.
             std::thread::spawn(move || lines.for_each(drop));
             return host;
         }
     }
-    panic!("host did not report its address");
+    panic!("host did not start");
+}
+
+/// Runs a command against the host's control socket; its stdout.
+fn host_command(host: &HostProcess, args: &[&str]) -> String {
+    let out = bin("fernsicht-host-agent")
+        .args(args)
+        .arg("--control")
+        .arg(&host.control)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{args:?}: {stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout
+}
+
+#[test]
+fn a_running_host_pairs_through_its_control_socket() {
+    let host = spawn_host_with(&state_dir("control-host"), false);
+    let client_dir = state_dir("control-client");
+    let status = host_command(&host, &["status"]);
+    assert!(status.contains("Gekoppelte Geräte: 0"), "{status}");
+    assert!(status.contains("Keine Verbindung"), "{status}");
+
+    let pin = pin_in(host_command(&host, &["pair"]).lines().next().unwrap());
+    assert!(host_command(&host, &["status"]).contains("Kopplung offen"));
+    let out = bin("fernsicht-client")
+        .args(["pair", &host.addr, &pin, "--name", "sofa", "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status = host_command(&host, &["status"]);
+    assert!(status.contains("Gekoppelte Geräte: 1"), "{status}");
+    assert!(status.contains("sofa"), "{status}");
+    assert!(!status.contains("Kopplung offen"), "closed after pairing");
+
+    host_command(&host, &["unpair", "sofa"]);
+    assert!(host_command(&host, &["status"]).contains("Gekoppelte Geräte: 0"));
+    // The forgotten device is turned away.
+    let out = bin("fernsicht-client")
+        .args([&host.addr, "--duration", "1", "--no-audio", "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not paired"), "{err}");
+
+    // No host there: a plain error, not a hang.
+    let out = bin("fernsicht-host-agent")
+        .args(["status", "--control"])
+        .arg(state_dir("nobody").join("control.sock"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is the host running"));
 }
 
 #[test]

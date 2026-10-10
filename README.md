@@ -22,7 +22,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | | Gamepad, Zeigerfang für Spiele | ⏳ offen |
 | 3 – Sicherheit | Kopplung und Verschlüsselung | ✅ einmalig koppeln per 6-stelliger PIN (SPAKE2: kein Offline-Raten, Kopplung schließt nach 3 Fehlversuchen), jede Sitzung mit Noise-IK-Handshake (wie WireGuard), danach alles mit ChaCha20-Poly1305 versiegelt, Wiederholungen werden verworfen; nur gekoppelte Geräte kommen herein |
 | | Internet (NAT), Bitratenanpassung | ⏳ offen |
-| 4–5 | Produkt-Hülle (App, Dienst, Gerätesuche), Web-Viewer | ⏳ in Arbeit |
+| 4–5 | Host als Dienst | ✅ systemd-Dienst mit Installationsskript, Encoder passend zur Grafikkarte, Koppeln/Status/Entfernen über einen lokalen Steuer-Socket ([Anleitung](docs/install.md)) |
+| | Gerätesuche, App, Web-Viewer | ⏳ in Arbeit |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
@@ -46,6 +47,12 @@ cargo build --release
 ./target/release/fernsicht-client <host-name> --fps 60
 # mit 1 % künstlichem Paketverlust
 ./target/release/fernsicht-client <host-name> --loss 0.01 --duration 10
+
+# Als Dienst, der mit dem Rechner startet (docs/install.md)
+cargo build --release -p fernsicht-host-agent --features vaapi,kms,nvidia
+sudo ./packaging/install-host.sh
+fernsicht-host-agent pair      # PIN für ein neues Gerät
+fernsicht-host-agent status    # Verbindung, gekoppelte Geräte
 
 # Echtes H.264 vom Monitor (AMD/Intel, als root: docs/kms-capture.md)
 cargo build --release -p fernsicht-host-agent --features vaapi,kms
