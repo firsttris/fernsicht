@@ -76,6 +76,36 @@ Der Dienst läuft so:
 Gekoppelt wird nur einmal pro Gerätepaar. Dasselbe geht auch im
 Terminal, wie die folgenden Abschnitte zeigen.
 
+## Im Browser
+
+Ohne Installation, von jedem Rechner, Tablet oder Handy im selben Netz:
+
+1. Im Browser die Adresse des Hosts öffnen: `http://192.168.178.87:47800`
+   (das Installationsskript nennt sie am Ende).
+2. Am Host „Gerät koppeln“ wählen (App, oder `fernsicht-host-agent pair`).
+3. Die PIN im Browser eingeben und auf **Verbinden** klicken.
+
+So funktioniert es:
+
+- **Zugang:** Die PIN gilt für eine Sitzung. Der Browser wird nicht
+  gekoppelt und braucht beim nächsten Mal eine neue PIN.
+- **Übertragung:** Bild (H.264), Ton und Eingaben laufen verschlüsselt
+  über WebRTC.
+- **Eingabe:** Im Modus **Desktop** steuert die Maus direkt. Im Modus
+  **Gaming** fängt ein Klick ins Bild den Mauszeiger, Esc gibt ihn frei.
+- **Was nicht geht:** Tasten, die der Browser selbst behält (z. B.
+  Strg+W), kommen nicht beim Host an. Dafür ist die App da.
+
+Grenzen:
+
+- **Unverschlüsselt im LAN:** Die Seite und die PIN gehen unverschlüsselt
+  durchs LAN (`http://`). Die PIN gilt nur einmal und nur 5 Minuten.
+- **Firewall:** Der Host braucht TCP 47800 für die Seite und einen freien
+  UDP-Port über 1024 für WebRTC. Fedora und Bazzite lassen beides zu;
+  `install-host.sh` öffnet 47800.
+- **Browser:** Getestet mit Chrome. Firefox spielt H.264 nur mit
+  passendem Decoder; noch nicht ausprobiert.
+
 ## Hosts im Netz finden
 
 Auf einem Client-Rechner:

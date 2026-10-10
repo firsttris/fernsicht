@@ -69,6 +69,16 @@ struct Args {
     /// through /dev/uinput).
     #[arg(long)]
     input: bool,
+    /// TCP address of the web viewer (page and API for browsers).
+    #[arg(long, default_value = "0.0.0.0:47800")]
+    web: String,
+    /// No web viewer.
+    #[arg(long)]
+    no_web: bool,
+    /// The built web viewer (web/viewer/dist). Default:
+    /// ../share/fernsicht/viewer next to this program, if it exists.
+    #[arg(long)]
+    web_root: Option<std::path::PathBuf>,
     /// NVENC: CUDA device index of the NVIDIA GPU.
     #[arg(long, default_value_t = 0)]
     cuda_device: u32,
@@ -196,6 +206,13 @@ fn default_state_dir() -> std::path::PathBuf {
     base.join("fernsicht").join("host")
 }
 
+/// The viewer installed next to this program (packaging/install-host.sh).
+fn installed_viewer() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.parent()?.join("share/fernsicht/viewer");
+    dir.join("index.html").is_file().then_some(dir)
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
@@ -242,6 +259,8 @@ fn main() -> anyhow::Result<()> {
             InputKind::Off
         },
         description: HostDescription::of_this_machine(&encoder),
+        web: (!args.no_web).then(|| args.web.clone()),
+        web_root: args.web_root.clone().or_else(installed_viewer),
         encoder,
         ..HostConfig::default()
     };
@@ -267,5 +286,8 @@ fn main() -> anyhow::Result<()> {
     };
     let agent = HostAgent::bind(cfg)?;
     log::info!("listening on {}", agent.local_addr()?);
+    if let Some(web) = agent.web_addr() {
+        log::info!("web viewer on http://{web}");
+    }
     agent.run(Arc::new(AtomicBool::new(false)))
 }

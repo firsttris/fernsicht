@@ -1,15 +1,46 @@
 import { SessionView, demoDevices, demoStats, formatDeviceId } from "@fernsicht/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+
+import { currentSession } from "../lib/host";
+import { LiveSessionPage } from "./live";
 
 /**
- * Browser session. Phase 5 replaces the placeholder with a <video> fed by
- * WebRTC (str0m on the host), plus the Pointer Lock and Gamepad APIs in
- * gaming mode; the stats then come from getStats().
+ * Browser session: live with the host that served the page (WebRTC), or
+ * the demo. A reload loses the live session (the PIN was used once), so
+ * it goes back to the connect page.
  */
 export function ViewerSessionPage() {
   const { deviceId } = useParams({ from: "/session/$deviceId" });
   const { mode } = useSearch({ from: "/session/$deviceId" });
+  const navigate = useNavigate();
+  const live = currentSession();
+  const setMode = (m: typeof mode) =>
+    void navigate({ to: ".", search: { mode: m }, replace: true });
+
+  if (live) {
+    return (
+      <LiveSessionPage
+        session={live}
+        mode={mode}
+        onModeChange={setMode}
+        onEnd={() => void navigate({ to: "/" })}
+      />
+    );
+  }
+  if (deviceId === "host") return <Navigate to="/" />;
+  return <DemoSession deviceId={deviceId} mode={mode} onModeChange={setMode} />;
+}
+
+function DemoSession({
+  deviceId,
+  mode,
+  onModeChange,
+}: {
+  deviceId: string;
+  mode: "desktop" | "gaming";
+  onModeChange: (m: "desktop" | "gaming") => void;
+}) {
   const navigate = useNavigate();
   const { data: stats } = useQuery({
     queryKey: ["stats", deviceId],
@@ -23,7 +54,7 @@ export function ViewerSessionPage() {
       session={{ deviceName: name, width: 2560, height: 1440, path: "P2P", encrypted: true }}
       stats={stats}
       mode={mode}
-      onModeChange={(m) => void navigate({ to: ".", search: { mode: m }, replace: true })}
+      onModeChange={onModeChange}
       onDisconnect={() => void navigate({ to: "/", search: { id: deviceId } })}
     />
   );

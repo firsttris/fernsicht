@@ -45,6 +45,9 @@ reed-solomon-simd = "3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 snow = "0.10"
+# WebRTC for the web viewer; pure-Rust crypto (no C toolchain for aws-lc).
+str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+tiny_http = "0.12"
 spake2 = "0.4"
 socket2 = "0.6"
 thiserror = "2"

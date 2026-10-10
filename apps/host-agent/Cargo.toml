@@ -35,6 +35,8 @@ libc.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+str0m.workspace = true
+tiny_http.workspace = true
 
 [dev-dependencies]
 fernsicht-input.workspace = true

@@ -13,6 +13,7 @@
 
 pub mod control;
 mod layout;
+mod web;
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -79,6 +80,11 @@ pub struct HostConfig {
     /// What the host says about itself when clients look for hosts in the
     /// LAN (it answers only with `security`, which gives name and key).
     pub description: HostDescription,
+    /// TCP address for the web viewer (page and API; needs `security`).
+    /// `None`: no web viewer.
+    pub web: Option<String>,
+    /// The built viewer (`web/viewer/dist`) the web server serves.
+    pub web_root: Option<PathBuf>,
 }
 
 /// OS and GPU as shown in clients' host lists.
@@ -222,6 +228,8 @@ impl Default for HostConfig {
             security: None,
             control: None,
             description: HostDescription::default(),
+            web: None,
+            web_root: None,
         }
     }
 }
@@ -272,7 +280,11 @@ struct Shared {
 struct Session {
     params: SessionParams,
     codec: Codec,
+    /// The client's address (for a browser: its HTTP address; its packets
+    /// never come to our socket).
     peer: SocketAddr,
+    /// A browser over WebRTC: it ends itself when the browser goes.
+    web: bool,
     /// Sends to the client (sealed for secure sessions).
     link: Link,
     /// The handshake that started it (first message and our answer), to
@@ -317,17 +329,45 @@ impl Session {
     }
 }
 
-/// Sends a session's packets to its client, sealed when the session is
-/// secure. Shared by the session's threads.
+/// Sends a session's packets to its client: over our UDP protocol, or to
+/// a browser's data channel. Shared by the session's threads.
 #[derive(Clone)]
-struct Link {
+enum Link {
+    Udp(UdpLink),
+    Web(Sender<web::WebOut>),
+}
+
+impl Link {
+    fn send(&self, packet: &[u8]) -> std::io::Result<()> {
+        match self {
+            Link::Udp(l) => l.send(packet),
+            Link::Web(tx) => {
+                // A full queue drops the packet (pointer updates repeat).
+                let _ = tx.try_send(web::WebOut::Packet(packet.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    fn encrypted(&self) -> bool {
+        match self {
+            Link::Udp(l) => l.crypto.is_some(),
+            // DTLS-SRTP.
+            Link::Web(_) => true,
+        }
+    }
+}
+
+/// Our UDP protocol, sealed when the session is secure.
+#[derive(Clone)]
+struct UdpLink {
     socket: Arc<UdpSocket>,
     peer: SocketAddr,
     session_id: u32,
     crypto: Option<Arc<Transport>>,
 }
 
-impl Link {
+impl UdpLink {
     fn send(&self, packet: &[u8]) -> std::io::Result<()> {
         let Some(crypto) = &self.crypto else {
             return self.socket.send_to(packet, self.peer).map(|_| ());
@@ -507,6 +547,15 @@ pub struct HostAgent {
     stats: Arc<HostStats>,
     /// The current session, for the control socket.
     status: control::StatusCell,
+    web: Option<WebServer>,
+}
+
+/// The web viewer's server: browsers' session requests come in here.
+struct WebServer {
+    addr: SocketAddr,
+    requests: Receiver<web::WebRequest>,
+    thread: JoinHandle<()>,
+    stop: Arc<AtomicBool>,
 }
 
 impl HostAgent {
@@ -514,12 +563,36 @@ impl HostAgent {
         let socket = fernsicht_net::socket::bind_udp(&cfg.bind)
             .with_context(|| format!("bind {}", cfg.bind))?;
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let web = match (&cfg.web, &cfg.security) {
+            (Some(addr), Some(sec)) => {
+                let (tx, requests) = bounded(4);
+                let stop = Arc::new(AtomicBool::new(false));
+                let (thread, addr) =
+                    web::serve(addr, cfg.web_root.clone(), sec.clone(), tx, stop.clone())?;
+                if cfg.web_root.is_none() {
+                    log::info!("web viewer API on {addr} (no page: --web-root not set)");
+                }
+                Some(WebServer {
+                    addr,
+                    requests,
+                    thread,
+                    stop,
+                })
+            }
+            _ => None,
+        };
         Ok(Self {
             cfg,
             socket: Arc::new(socket),
             stats: Arc::default(),
             status: Arc::default(),
+            web,
         })
+    }
+
+    /// Where the web viewer is served, if it is.
+    pub fn web_addr(&self) -> Option<SocketAddr> {
+        self.web.as_ref().map(|w| w.addr)
     }
 
     /// Counters that stay readable while and after [`run`](Self::run) runs.
@@ -532,7 +605,7 @@ impl HostAgent {
     }
 
     /// Serves sessions until `stop` is set.
-    pub fn run(self, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+    pub fn run(mut self, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         let mut buf = [0u8; 2048];
         let mut opened = [0u8; MAX_DATAGRAM];
         let mut out = [0u8; MAX_DATAGRAM];
@@ -556,12 +629,27 @@ impl HostAgent {
         while !stop.load(Ordering::Relaxed) {
             if session
                 .as_ref()
-                .is_some_and(|s| s.last_seen.elapsed() > self.cfg.client_timeout)
+                .is_some_and(|s| !s.web && s.last_seen.elapsed() > self.cfg.client_timeout)
             {
                 let s = session.take().unwrap();
                 log::info!("session {:08x}: client timed out", s.params.session_id);
                 s.stop();
                 self.set_status(None, "");
+            }
+            // A browser that left ends its session itself.
+            if session
+                .as_ref()
+                .is_some_and(|s| s.web && !s.shared.running.load(Ordering::Acquire))
+            {
+                let s = session.take().unwrap();
+                log::info!("session {:08x}: browser left", s.params.session_id);
+                s.stop();
+                self.set_status(None, "");
+            }
+            if let Some(w) = &self.web {
+                while let Ok(req) = w.requests.try_recv() {
+                    self.on_web_request(req, &mut session);
+                }
             }
             let (len, from) = match self.socket.recv_from(&mut buf) {
                 Ok(r) => r,
@@ -593,7 +681,11 @@ impl HostAgent {
             let (packet, authentic) = match outer {
                 Packet::Sealed(h, sealed) => {
                     let Some(s) = session.as_ref() else { continue };
-                    let Some(crypto) = s.link.crypto.as_ref() else {
+                    let Link::Udp(UdpLink {
+                        crypto: Some(crypto),
+                        ..
+                    }) = &s.link
+                    else {
                         continue;
                     };
                     if !from_peer || h.session_id != s.params.session_id {
@@ -625,7 +717,7 @@ impl HostAgent {
                             old.stop();
                         }
                         let params = self.negotiate(&hello);
-                        match self.start_session(params, from, None) {
+                        match self.start_session(params, from, None, None) {
                             Ok((s, _)) => {
                                 log_session(&s, &from.to_string());
                                 self.set_status(Some(&s), &from.to_string());
@@ -717,7 +809,66 @@ impl HostAgent {
         if let Some(t) = control {
             let _ = t.join();
         }
+        if let Some(w) = self.web.take() {
+            w.stop.store(true, Ordering::Relaxed);
+            let _ = w.thread.join();
+        }
         Ok(())
+    }
+
+    /// A browser asks for a session with a PIN: on a right PIN it replaces
+    /// the running session.
+    fn on_web_request(&self, req: web::WebRequest, session: &mut Option<Session>) {
+        let Some(sec) = &self.cfg.security else {
+            let _ = req.reply.send(Err(web::WebError::Failed));
+            return;
+        };
+        if let Err(e) = web::check_pin(sec, &req.pin) {
+            log::info!("web: {} turned away ({e:?})", req.browser.ip());
+            let _ = req.reply.send(Err(e));
+            return;
+        }
+        let (setup, answer) = match web::accept(req.offer, req.local_ip) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("web: {}: {e:#}", req.browser.ip());
+                let _ = req.reply.send(Err(web::WebError::Failed));
+                return;
+            }
+        };
+        if let Some(old) = session.take() {
+            log::info!(
+                "session {:08x}: replaced by a browser at {}",
+                old.params.session_id,
+                req.browser.ip()
+            );
+            old.stop();
+            self.set_status(None, "");
+        }
+        let params = SessionParams {
+            session_id: new_session_id(),
+            // The screen's own size (fitted into the limits), 60 fps.
+            width: 0,
+            height: 0,
+            fps: 60.min(self.cfg.max_fps),
+            bitrate_kbps: 0,
+        };
+        let who = format!("Browser {}", req.browser.ip());
+        match self.start_session(params, req.browser, None, Some(setup)) {
+            Ok((s, _)) => {
+                log_session(&s, &who);
+                self.set_status(Some(&s), &who);
+                let _ = req.reply.send(Ok(web::WebAccepted {
+                    answer,
+                    params: s.params,
+                }));
+                *session = Some(s);
+            }
+            Err(e) => {
+                log::error!("session {:08x}: {e:#}", params.session_id);
+                let _ = req.reply.send(Err(web::WebError::Failed));
+            }
+        }
     }
 
     /// What the control socket reports; `None` when no session runs.
@@ -728,7 +879,7 @@ impl HostAgent {
             width: s.params.width,
             height: s.params.height,
             fps: s.params.fps,
-            encrypted: s.link.crypto.is_some(),
+            encrypted: s.link.encrypted(),
             since: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
@@ -794,7 +945,7 @@ impl HostAgent {
             old.stop();
         }
         let params = self.negotiate(&hello);
-        match self.start_session(params, from, Some(responder)) {
+        match self.start_session(params, from, Some(responder), None) {
             Ok((mut s, Some(reply))) => {
                 log_session(&s, &format!("{} ({from})", client.name));
                 self.set_status(Some(&s), &client.name);
@@ -949,6 +1100,7 @@ impl HostAgent {
         params: SessionParams,
         peer: SocketAddr,
         secure: Option<Responder>,
+        web: Option<web::WebSetup>,
     ) -> anyhow::Result<(Session, Option<Vec<u8>>)> {
         let loss = LossEstimator::default();
         HostStats::bump(&self.stats.sessions);
@@ -972,7 +1124,7 @@ impl HostAgent {
         };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
-        let input = make_input(&self.cfg.input, source.screen());
+        let mut input = make_input(&self.cfg.input, source.screen());
         let (crypto, handshake_reply) = match secure {
             None => (None, None),
             Some(responder) => {
@@ -984,11 +1136,15 @@ impl HostAgent {
                 (Some(Arc::new(transport)), Some(reply))
             }
         };
-        let link = Link {
-            socket: self.socket.clone(),
-            peer,
-            session_id: params.session_id,
-            crypto,
+        let web_out = web.as_ref().map(|_| web::out_channel());
+        let link = match &web_out {
+            Some((tx, _)) => Link::Web(tx.clone()),
+            None => Link::Udp(UdpLink {
+                socket: self.socket.clone(),
+                peer,
+                session_id: params.session_id,
+                crypto,
+            }),
         };
         let frame_slot = Arc::new(Slot::new());
         let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
@@ -1045,7 +1201,13 @@ impl HostAgent {
                 None
             }
         };
-        let send = {
+        let send = if let Some((tx, _)) = &web_out {
+            let (shared, tx) = (shared.clone(), tx.clone());
+            let label = codec_label(codec);
+            spawn_hot("send", move || {
+                web::send_loop(&shared, &send_rx, &free_enc_tx, &tx, params, label);
+            })?
+        } else {
             let (shared, link) = (shared.clone(), link.clone());
             let pacer = Pacer {
                 rate_bytes_per_sec: self.cfg.pace_bytes_per_sec,
@@ -1061,16 +1223,25 @@ impl HostAgent {
             })?
         };
 
+        // The browser's input arrives on the WebRTC thread, which injects
+        // it there (the host's loop only polls every 100 ms).
+        let webrtc = match (web, web_out) {
+            (Some(setup), Some((_, rx))) => {
+                Some(web::spawn(setup, shared.clone(), rx, input.take())?)
+            }
+            _ => None,
+        };
         let session = Session {
             params,
             codec,
             peer,
+            web: webrtc.is_some(),
             link,
             handshake: None,
             last_seen: Instant::now(),
             shared,
             loss,
-            threads: [Some(capture), Some(encode), Some(send), audio]
+            threads: [Some(capture), Some(encode), Some(send), audio, webrtc]
                 .into_iter()
                 .flatten()
                 .collect(),
@@ -1102,7 +1273,7 @@ fn log_session(s: &Session, who: &str) {
         p.height,
         p.fps,
         p.bitrate_kbps,
-        if s.link.crypto.is_some() {
+        if s.link.encrypted() {
             ", encrypted"
         } else {
             ""
@@ -1128,6 +1299,15 @@ fn on_feedback(s: &mut Session, fb: &Feedback) {
         fb.frames_dropped,
         estimate * 100.0
     );
+}
+
+fn codec_label(codec: Codec) -> &'static str {
+    match codec {
+        Codec::Synthetic => "Synthetisch",
+        Codec::H264 => "H.264",
+        Codec::Hevc => "HEVC",
+        Codec::Av1 => "AV1",
+    }
 }
 
 fn new_session_id() -> u32 {
@@ -1280,7 +1460,17 @@ fn audio_loop(
             capture_us: captured_us,
         }
         .encode(&current[..n], &previous, &mut buf);
-        let _ = link.send(&buf[..len]);
+        match link {
+            // WebRTC carries Opus frames as they are.
+            Link::Web(tx) => {
+                let _ = tx.try_send(web::WebOut::Audio {
+                    data: current[..n].to_vec(),
+                });
+            }
+            Link::Udp(_) => {
+                let _ = link.send(&buf[..len]);
+            }
+        }
         HostStats::bump(&shared.stats.audio_frames_sent);
         previous.clear();
         previous.extend_from_slice(&current[..n]);

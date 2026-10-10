@@ -66,7 +66,13 @@ fn spawn_host(dir: &std::path::Path) -> HostProcess {
 fn spawn_host_with(dir: &std::path::Path, pair: bool) -> HostProcess {
     let control = dir.join("control.sock");
     let mut child = bin("fernsicht-host-agent")
-        .args(["--bind", "127.0.0.1:0", "--state-dir"])
+        .args([
+            "--bind",
+            "127.0.0.1:0",
+            "--web",
+            "127.0.0.1:0",
+            "--state-dir",
+        ])
         .arg(dir)
         .arg("--control")
         .arg(&control)
@@ -206,7 +212,7 @@ fn host_reports_bind_errors() {
     let taken = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = taken.local_addr().unwrap().to_string();
     let out = bin("fernsicht-host-agent")
-        .args(["--bind", &addr, "--state-dir"])
+        .args(["--bind", &addr, "--no-web", "--state-dir"])
         .arg(state_dir("bind"))
         .output()
         .unwrap();

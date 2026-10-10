@@ -350,6 +350,7 @@ fn forward(
 /// A running host agent on an ephemeral localhost port.
 pub struct Host {
     addr: SocketAddr,
+    web_addr: Option<SocketAddr>,
     stats: Arc<HostStats>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -363,12 +364,14 @@ impl Host {
         })
         .expect("bind host");
         let addr = agent.local_addr().unwrap();
+        let web_addr = agent.web_addr();
         let stats = agent.stats();
         let stop = Arc::new(AtomicBool::new(false));
         let s = stop.clone();
         let thread = std::thread::spawn(move || agent.run(s).expect("host failed"));
         Self {
             addr,
+            web_addr,
             stats,
             stop,
             thread: Some(thread),
@@ -381,6 +384,11 @@ impl Host {
 
     pub fn stats(&self) -> Arc<HostStats> {
         self.stats.clone()
+    }
+
+    /// The web viewer's address (with `HostConfig::web`).
+    pub fn web_addr(&self) -> Option<SocketAddr> {
+        self.web_addr
     }
 
     /// Stops the host (it says `Bye` to its client) and waits for it.

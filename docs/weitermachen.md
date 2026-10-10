@@ -60,6 +60,21 @@ verwenden. Alle fünf Schritte sind gebaut, getestet und gepusht:
      sudo.
    - Anleitung: [install.md](install.md).
 
+Danach kam dazu:
+
+6. **Web-Viewer im LAN.**
+   - Der Host liefert die Seite selbst (`--web`, Standard `0.0.0.0:47800`
+     TCP; `--web-root`, installiert nach `/usr/local/share/fernsicht/viewer`).
+   - Zugang mit der Kopplungs-PIN, einmalig.
+   - WebRTC mit str0m: H.264 und Opus, dazu ein Datenkanal (Mauszeiger als
+     Protokoll-Pakete und Statistik zum Browser, Eingaben als JSON zum
+     Host).
+   - Code: `apps/host-agent/src/web.rs`, `web/viewer/src/lib/host.ts`,
+     `web/viewer/src/routes/live.tsx`.
+   - Getestet: mit headless Chrome (in der Box) gegen einen echten Host
+     mit VAAPI-Testbild, 1920×1080 bei 60 fps, Glass-to-Glass laut
+     Overlay ≈ 15 ms auf localhost.
+
 Gemessene Latenz (frühere Sitzungen):
 
 | Strecke | Glass-to-Glass |
@@ -100,7 +115,11 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
    `WEBKIT_DISABLE_DMABUF_RENDERER=1`, wenn `/proc/driver/nvidia`
    existiert (leere Fenster sonst, tauri#9394). Prüfen, ob das Fenster
    etwas zeigt.
-4. **Gerätesuche über WLAN.** Kommt der Broadcast von der bazzite bei
+4. **Web-Viewer echt.** Auf der zentrale nach der Dienst-Installation
+   von einem anderen Gerät `http://192.168.178.87:47800` öffnen, PIN, dann
+   KMS-Bild, Ton, Maus und Tastatur prüfen. Auch mit Firefox und einem
+   Handy.
+5. **Gerätesuche über WLAN.** Kommt der Broadcast von der bazzite bei
    der zentrale an, und die Antwort zurück? Die Antwort geht an einen
    kurzlebigen Port des Clients. Fedoras Zone `FedoraWorkstation`
    erlaubt UDP 1025–65535; auf der bazzite prüfen
@@ -141,7 +160,9 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
    - Die Toolbar-Knöpfe in der Sitzung (Bildschirm, Zwischenablage,
      Dateien, Ton) tun noch nichts.
 8. **Später:** Internet (NAT, Rendezvous-Server), Bitratenanpassung,
-   PipeWire-Capture, Web-Viewer.
+   PipeWire-Capture. Web-Viewer über das Internet (Rendezvous, TURN),
+   Browser merken statt jedes Mal eine PIN, Test mit echtem Chrome in der
+   CI.
 
 ## Regeln für die Arbeit
 

@@ -29,7 +29,7 @@ Wo es weitergeht (offene Live-Tests, Aufgaben, Regeln):
 | | Gerätesuche | ✅ `fernsicht-client discover`: Broadcast über den Stream-Port (keine Firewall-Änderung), Hosts nennen Name, Schlüssel, OS, GPU und ob Kopplung offen ist; neue Adressen gekoppelter Hosts werden übernommen |
 | | Desktop-App | ✅ Tauri um die Client-UI: Rechner im Netz, Koppeln per PIN, Sitzung starten (Bild im nativen Vulkan-Fenster, Latenz-Overlay in der App), „Dieser Rechner" öffnet die Kopplung am eigenen Host ([apps/desktop](apps/desktop)) |
 | | Installation | ✅ `packaging/build.sh` (baut alles in der Distrobox), `install-app.sh` (App und Client mit Startmenü-Eintrag, ohne sudo), `install-host.sh` (Host-Dienst); [Anleitung](docs/install.md) |
-| | Web-Viewer | ⏳ offen |
+| | Web-Viewer | ✅ im LAN: Der Host liefert die Seite selbst (`http://host:47800`), Zugang mit der Kopplungs-PIN (einmalig), Bild H.264 und Ton Opus über WebRTC (str0m), Mauszeiger, Maus und Tastatur über einen Datenkanal, Zeigerfang im Gaming-Modus, Latenz-Overlay aus `getStats()` ([Anleitung](docs/install.md#im-browser)) |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
@@ -102,7 +102,7 @@ Oberflächen im Browser (mit Demo-Daten):
 ```sh
 pnpm install
 pnpm dev:client   # Client-UI auf http://localhost:1420
-pnpm dev:viewer   # Web-Viewer auf http://localhost:5174
+pnpm dev:viewer   # Web-Viewer auf http://localhost:5174 (Demo; echt: vom Host, siehe docs/install.md)
 ```
 
 ## Aufbau

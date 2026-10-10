@@ -1,21 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { createViewerRouter } from "../router";
-
-export async function renderViewer(path: string) {
-  const router = createViewerRouter(createMemoryHistory({ initialEntries: [path] }));
-  render(
-    <QueryClientProvider client={new QueryClient()}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  );
-  await screen.findByRole(path.startsWith("/session") ? "toolbar" : "form");
-  return { router, user: userEvent.setup() };
-}
+import { renderViewer } from "../test-utils";
 
 describe("Web-Viewer: Verbinden", () => {
   it("prefills the device id from a shared link", async () => {

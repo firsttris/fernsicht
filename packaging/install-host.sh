@@ -22,6 +22,7 @@ fi
 if [ "${1:-}" = "--uninstall" ]; then
     systemctl disable --now "$unit" 2>/dev/null || true
     rm -f "/etc/systemd/system/$unit" "$prefix/bin/fernsicht-host-agent"
+    rm -rf "$prefix/share/fernsicht/viewer"
     systemctl daemon-reload
     echo "Fernsicht-Host entfernt (Schlüssel und Kopplungen bleiben in /var/lib/fernsicht)."
     exit 0
@@ -41,24 +42,43 @@ if [ -n "$missing" ]; then
 fi
 
 install -D -m 0755 "$bin" "$prefix/bin/fernsicht-host-agent"
+# The web viewer the host serves (found next to the program).
+if [ -f web/viewer/dist/index.html ]; then
+    rm -rf "$prefix/share/fernsicht/viewer"
+    mkdir -p "$prefix/share/fernsicht"
+    cp -r web/viewer/dist "$prefix/share/fernsicht/viewer"
+    chmod -R a+rX "$prefix/share/fernsicht"
+else
+    echo "Hinweis: web/viewer/dist fehlt (./packaging/build.sh baut es); kein Web-Viewer." >&2
+fi
 sed "s|/usr/local/bin/|$prefix/bin/|" "packaging/$unit" >"/etc/systemd/system/$unit"
 chmod 0644 "/etc/systemd/system/$unit"
 systemctl daemon-reload
 systemctl enable "$unit"
 systemctl restart "$unit"
 
-# Let clients reach the port if a firewall is up.
+# Let clients reach the port if a firewall is up: UDP for the app, TCP
+# for the web viewer (its WebRTC uses a random UDP port above 1024).
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    if ! firewall-cmd --query-port="$port/udp" >/dev/null 2>&1; then
-        firewall-cmd --permanent --add-port="$port/udp" >/dev/null
+    for proto in udp tcp; do
+        if ! firewall-cmd --query-port="$port/$proto" >/dev/null 2>&1; then
+            firewall-cmd --permanent --add-port="$port/$proto" >/dev/null
+            changed=1
+            echo "Firewall: $proto-Port $port geöffnet."
+        fi
+    done
+    if [ "${changed:-0}" = 1 ]; then
         firewall-cmd --reload >/dev/null
-        echo "Firewall: UDP-Port $port geöffnet."
     fi
 fi
 
 sleep 1
 if systemctl is-active --quiet "$unit"; then
     echo "Fernsicht-Host läuft. Gerät koppeln: fernsicht-host-agent pair"
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [ -n "$ip" ] && [ -f "$prefix/share/fernsicht/viewer/index.html" ]; then
+        echo "Im Browser: http://$ip:$port (PIN wie beim Koppeln)"
+    fi
 else
     echo "Der Dienst startet nicht. Log: journalctl -u $unit -n 50" >&2
     exit 1

@@ -23,6 +23,8 @@ fernsicht-proto.workspace = true
 
 [dev-dependencies]
 escargot.workspace = true
+serde_json.workspace = true
+str0m.workspace = true
 
 [lints]
 workspace = true
