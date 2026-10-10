@@ -430,6 +430,8 @@ fn congestion_lowers_the_bitrate() {
         });
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Frames sent before the change still wait in the socket: skip them.
+    assert!(peer.video_flows(Duration::from_secs(2)));
     let after = frame_size(&mut peer);
     assert!(
         f64::from(after) < f64::from(before) * 0.6,
