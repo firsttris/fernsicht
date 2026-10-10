@@ -4,11 +4,14 @@
 //! - [`synthetic`]: produces a checksummed payload of realistic size for the
 //!   configured bitrate. No real compression; it lets transport, FEC and
 //!   latency measurement run on machines without a GPU.
-//! - VAAPI (planned, phase 1): H.264 low-latency with DMA-BUF import
-//!   (radeonsi on the RX 7800 XT, iHD on Intel), decode into a Vulkan
-//!   texture on the client. NVENC for NVIDIA.
+//! - [`vaapi`] (feature `vaapi`): H.264 low-latency encode and decode in
+//!   hardware via FFmpeg (radeonsi on the RX 7800 XT, iHD on Intel).
+//!   Frames are uploaded from CPU memory for now; DMA-BUF import from KMS
+//!   capture comes with the capture backend. NVENC for NVIDIA follows.
 
 pub mod synthetic;
+#[cfg(feature = "vaapi")]
+pub mod vaapi;
 
 use fernsicht_capture::Frame;
 use fernsicht_proto::Codec;

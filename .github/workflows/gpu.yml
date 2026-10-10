@@ -47,3 +47,8 @@ jobs:
         run: dev/gpu-check.sh --expect ${{ matrix.gpu }} --summary "$GITHUB_STEP_SUMMARY"
       - name: Tests on this machine
         run: cargo test --workspace --exclude fernsicht-e2e
+      - name: VAAPI encode/decode on the GPU
+        if: matrix.gpu == 'amd'
+        env:
+          FERNSICHT_GPU: amd
+        run: cargo test -p fernsicht-codec --features vaapi --test vaapi -- --test-threads=1 --nocapture

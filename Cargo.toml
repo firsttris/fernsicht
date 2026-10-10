@@ -25,6 +25,7 @@ fernsicht-client = { path = "apps/client" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format"] }
 crossbeam-channel = "0.5"
 libc = "0.2"
 log = "0.4"

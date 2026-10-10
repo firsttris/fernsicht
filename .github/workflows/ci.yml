@@ -29,7 +29,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
-      - run: cargo clippy --workspace --all-targets
+      - name: FFmpeg and VAAPI headers (feature "vaapi")
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libavcodec-dev libavformat-dev libavutil-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev
+      - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo bench --workspace --no-run
 
   rust-test:
@@ -39,9 +44,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: FFmpeg and VAAPI headers (feature "vaapi")
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libavcodec-dev libavformat-dev libavutil-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev
       - run: cargo test --workspace --exclude fernsicht-e2e
         env:
           PROPTEST_CASES: "1024"
+      # Builds the hardware tests; without a GPU they skip themselves.
+      - run: cargo test -p fernsicht-codec --features vaapi
 
   rust-e2e:
     name: Rust · end-to-end (impaired network, binaries)
