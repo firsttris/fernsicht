@@ -20,10 +20,12 @@ fernsicht-codec = { path = "crates/codec" }
 fernsicht-render = { path = "crates/render" }
 fernsicht-input = { path = "crates/input" }
 fernsicht-audio = { path = "crates/audio" }
+fernsicht-secure = { path = "crates/secure" }
 fernsicht-host-agent = { path = "apps/host-agent" }
 fernsicht-client = { path = "apps/client" }
 
 anyhow = "1"
+chacha20poly1305 = "0.10"
 ash = "0.38"
 ash-window = "0.13"
 clap = { version = "4", features = ["derive"] }
@@ -36,9 +38,12 @@ log = "0.4"
 naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 raw-window-handle = "0.6"
 env_logger = "0.11"
+getrandom = "0.3"
 reed-solomon-simd = "3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+snow = "0.10"
+spake2 = "0.4"
 socket2 = "0.6"
 thiserror = "2"
 winit = "0.30"
