@@ -7,7 +7,7 @@
 //! from the VAAPI decoder, by DMA-BUF without a copy.
 #![cfg(feature = "vulkan")]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use fernsicht_codec::Picture;
 use fernsicht_render::vulkan::{Gpu, Renderer};
@@ -22,14 +22,24 @@ const STRIPES: [(u8, u8, u8); 6] = [
     (200, 120, 40),
 ];
 
-fn renderer() -> Option<Renderer> {
-    // RUST_LOG=fernsicht_render=debug shows the steps of the Vulkan setup.
-    let _ = env_logger::builder().is_test(true).try_init();
-    match Gpu::new() {
-        Ok(gpu) => {
-            eprintln!("Vulkan device: {}", gpu.name());
-            Some(Renderer::new(Arc::new(gpu)).expect("renderer"))
+/// One device for all tests of the process, like the client has one.
+fn gpu() -> &'static Result<Arc<Gpu>, String> {
+    static GPU: OnceLock<Result<Arc<Gpu>, String>> = OnceLock::new();
+    GPU.get_or_init(|| {
+        // RUST_LOG=fernsicht_render=debug shows the steps of the setup.
+        let _ = env_logger::builder().is_test(true).try_init();
+        let gpu = Gpu::new().map(Arc::new);
+        if let Ok(g) = &gpu {
+            eprintln!("Vulkan device: {}", g.name());
         }
+        gpu
+    })
+}
+
+/// A fresh renderer on the shared device.
+fn renderer() -> Option<Renderer> {
+    match gpu() {
+        Ok(gpu) => Some(Renderer::new(gpu.clone()).expect("renderer")),
         Err(e) if std::env::var_os("FERNSICHT_REQUIRE_VULKAN").is_none() => {
             eprintln!("skipped, no Vulkan: {e}");
             None

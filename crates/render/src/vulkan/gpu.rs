@@ -35,6 +35,9 @@ pub struct Gpu {
     pub(crate) physical: vk::PhysicalDevice,
     pub(crate) device: ash::Device,
     pub(crate) queue: vk::Queue,
+    /// Vulkan requires submissions to one queue to be serialized; several
+    /// renderers may share a device.
+    pub(crate) queue_lock: std::sync::Mutex<()>,
     pub(crate) queue_family: u32,
     memory: vk::PhysicalDeviceMemoryProperties,
     /// Present when the DMA-BUF import extensions are enabled.
@@ -205,6 +208,7 @@ impl Gpu {
                 physical,
                 device,
                 queue,
+                queue_lock: std::sync::Mutex::new(()),
                 queue_family,
                 name,
             })

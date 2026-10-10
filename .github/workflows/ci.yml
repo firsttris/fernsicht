@@ -61,12 +61,23 @@ jobs:
       # Vulkan renderer on the software rasterizer (llvmpipe): NV12 → RGB,
       # letterboxing, error paths. REQUIRE makes a missing driver a failure
       # instead of a silent skip.
-      - name: Software Vulkan (llvmpipe)
-        run: sudo apt-get install -y -q mesa-vulkan-drivers
-      - run: cargo test -p fernsicht-render --features vulkan
+      # The validation layers check every Vulkan call, including
+      # synchronization; any message they print fails the job.
+      - name: Software Vulkan (llvmpipe) and the validation layers
+        run: sudo apt-get install -y -q mesa-vulkan-drivers vulkan-validationlayers
+      - name: Vulkan renderer, validated
+        shell: bash
         env:
           FERNSICHT_REQUIRE_VULKAN: "1"
           FERNSICHT_VULKAN_DEVICE: llvmpipe
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+          VK_LAYER_VALIDATE_SYNC: "1"
+        run: |
+          cargo test -p fernsicht-render --features vulkan -- --nocapture 2>&1 | tee vulkan.log
+          if grep -q "Validation Error\|Validation Warning" vulkan.log; then
+            grep -A6 "Validation Error\|Validation Warning" vulkan.log | head -60
+            exit 1
+          fi
 
   rust-e2e:
     name: Rust · end-to-end (impaired network, binaries)

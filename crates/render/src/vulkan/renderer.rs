@@ -608,9 +608,12 @@ impl Renderer {
                 _ => {}
             }
 
+            // Source stage = the stage the acquire semaphore is waited at:
+            // the layout change must not start before the presentation
+            // engine has released a swapchain image.
             d.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -744,8 +747,15 @@ impl Renderer {
                 .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&wait_stages)
                 .signal_semaphores(&signals);
-            d.queue_submit(self.gpu.queue, &[submit], self.fence)
-                .map_err(other("submit"))?;
+            {
+                let _queue = self
+                    .gpu
+                    .queue_lock
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                d.queue_submit(self.gpu.queue, &[submit], self.fence)
+                    .map_err(other("submit"))?;
+            }
             let waited = d.wait_for_fences(&[self.fence], true, u64::MAX);
             d.reset_fences(&[self.fence])
                 .map_err(other("reset fence"))?;
@@ -824,7 +834,23 @@ impl Renderer {
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                     readback,
                     &[copy],
-                )
+                );
+                // Make the copy visible to the CPU reading the mapping.
+                d.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::HOST,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[vk::BufferMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::HOST_READ)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .buffer(readback)
+                        .size(vk::WHOLE_SIZE)],
+                    &[],
+                );
             };
         })?;
         let len = width as usize * height as usize * 4;
