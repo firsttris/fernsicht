@@ -1,4 +1,7 @@
 /target
+# Also build directories inside a crate (tests that build binaries from
+# their own directory with a relative CARGO_TARGET_DIR).
+target/
 node_modules/
 dist/
 *.tsbuildinfo

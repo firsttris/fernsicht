@@ -197,18 +197,26 @@ fn tone(down: Impairment, secs: u64) -> (fernsicht_client::RunSummary, Vec<i16>)
     (s, pcm)
 }
 
-/// Share of the left channel's energy at `hz` (Goertzel).
+/// Share of the left channel's energy at `hz`, measured in 50 ms blocks
+/// (Goertzel per block). One filter over the whole recording would be
+/// under 1 Hz wide: a single phase jump where a lost packet was concealed
+/// would smear the tone's energy and make a clean tone look broken.
 fn share_at(pcm: &[i16], hz: f64) -> f64 {
-    let x: Vec<f64> = pcm.iter().step_by(2).map(|&v| f64::from(v)).collect();
+    // 2400 samples: a whole number of cycles at 440 Hz (22), no leakage.
+    const BLOCK: usize = 2400;
     let w = std::f64::consts::TAU * hz / 48_000.0;
-    let (mut s1, mut s2) = (0.0, 0.0);
-    for &v in &x {
-        let s = v + 2.0 * w.cos() * s1 - s2;
-        s2 = s1;
-        s1 = s;
+    let (mut power, mut total) = (0.0, 0.0);
+    for block in pcm.as_chunks::<{ 2 * BLOCK }>().0 {
+        let x: Vec<f64> = block.iter().step_by(2).map(|&v| f64::from(v)).collect();
+        let (mut s1, mut s2) = (0.0, 0.0);
+        for &v in &x {
+            let s = v + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        power += s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+        total += x.iter().map(|v| v * v).sum::<f64>() * BLOCK as f64 / 2.0;
     }
-    let power = s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
-    let total: f64 = x.iter().map(|v| v * v).sum::<f64>() * x.len() as f64 / 2.0;
     power / total.max(1.0)
 }
 
@@ -246,5 +254,10 @@ fn lost_sound_packets_are_mostly_repaired() {
     let concealed = s.audio.concealed as f64 / (s.audio.played + s.audio.concealed) as f64;
     assert!(concealed < 0.1, "{concealed:.3} concealed: {:?}", s.audio);
     let middle = &pcm[pcm.len() / 4..pcm.len() * 3 / 4];
-    assert!(share_at(middle, 440.0) > 0.6);
+    let share = share_at(middle, 440.0);
+    assert!(
+        share > 0.9,
+        "440 Hz is {share:.2} of what was played: {:?}",
+        s.audio
+    );
 }
