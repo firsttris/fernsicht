@@ -271,11 +271,23 @@ impl Backend {
                 .iter()
                 .filter_map(|p| p.address.as_deref()?.parse::<SocketAddr>().ok()),
         );
-        let found = discover(&targets, self.discovery_wait).context("looking for hosts")?;
+        let mut found = discover(&targets, self.discovery_wait).context("looking for hosts")?;
         if refresh_addresses(&mut trusted, &found) {
             self.save(&trusted)?;
         }
-        Ok(merge(&trusted, &found))
+        // The host on this computer answers too; it is "Dieser Rechner",
+        // not a device to connect to.
+        let own = self.own_host_key();
+        found.retain(|f| own.as_deref() != Some(f.key.fingerprint().as_str()));
+        let mut devices = merge(&trusted, &found);
+        devices.retain(|d| own.as_deref() != Some(d.id.as_str()));
+        Ok(devices)
+    }
+
+    /// The fingerprint of the host running on this computer, if one runs.
+    fn own_host_key(&self) -> Option<String> {
+        let status = control::request(&self.control_path(), &json!({"cmd": "status"})).ok()?;
+        status["key"].as_str().map(str::to_owned)
     }
 
     /// Pairs with the host at `address` (or of that name in the LAN) with

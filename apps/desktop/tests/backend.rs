@@ -81,10 +81,21 @@ fn find_pair_connect_and_forget() {
     app.extra_targets = vec![addr];
     app.discovery_wait = Duration::from_millis(300);
 
+    // A second computer, where the host is not "this machine".
+    let mut remote = Backend::new(dir.join("remote"));
+    remote.client = app.client.clone();
+    remote.client_args = app.client_args.clone();
+    remote.control = Some(dir.join("no-host-here.sock"));
+    remote.extra_targets = vec![addr];
+    remote.discovery_wait = app.discovery_wait;
+
+    // This computer does not list its own host.
+    let id = sec.public_key().fingerprint();
+    assert!(!app.devices().unwrap().iter().any(|d| d.id == id));
+
     // Found, not paired yet. By key: a real host in the LAN may be called
     // "zentrale" too.
-    let id = sec.public_key().fingerprint();
-    let list = app.devices().unwrap();
+    let list = remote.devices().unwrap();
     let zentrale = list.iter().find(|d| d.id == id).expect("found");
     assert_eq!(zentrale.name, "zentrale");
     assert!(zentrale.online && !zentrale.paired && !zentrale.pairing);
@@ -104,59 +115,67 @@ fn find_pair_connect_and_forget() {
         .unwrap()
         .to_owned();
     assert!(
-        app.devices()
+        remote
+            .devices()
             .unwrap()
             .iter()
             .any(|d| d.id == id && d.pairing)
     );
-    let paired = app.pair(&addr.to_string(), &pin).unwrap();
+    let paired = remote.pair(&addr.to_string(), &pin).unwrap();
     assert_eq!((paired.id.as_str(), paired.paired), (id.as_str(), true));
     assert_eq!(sec.paired().len(), 1);
-    let list = app.devices().unwrap();
+    let list = remote.devices().unwrap();
     assert!(list[0].id == id && list[0].paired && list[0].online);
+    // Paired or not, this computer still does not list itself.
+    assert!(!app.devices().unwrap().iter().any(|d| d.id == id));
 
-    // A session: the overlay comes in, the host shows it, then it ends.
-    assert!(app.command("mute").is_err(), "no session yet");
+    // A session from the other computer: the overlay comes in, the host
+    // shows it, then it ends.
+    assert!(remote.command("mute").is_err(), "no session yet");
     let settings = fernsicht_desktop::backend::StreamSettings {
         fps: 30,
         ..Default::default()
     };
-    let s = app.connect(&id, &settings).unwrap();
+    let s = remote.connect(&id, &settings).unwrap();
     assert!(s.active);
     assert_eq!(s.device_name.as_deref(), Some("zentrale"));
-    wait_for("overlay stats", || app.session().stats.is_some());
+    wait_for("overlay stats", || remote.session().stats.is_some());
     // The session's controls reach the client.
-    app.command("mute").unwrap();
-    app.command("gaming").unwrap();
-    assert!(app.session().active, "commands do not end the session");
-    let stats = app.session().stats.unwrap();
+    remote.command("mute").unwrap();
+    remote.command("gaming").unwrap();
+    assert!(remote.session().active, "commands do not end the session");
+    let stats = remote.session().stats.unwrap();
     assert!(
         stats["glassToGlassUs"]["avg"].as_u64().unwrap() > 0,
         "{stats}"
     );
     assert!(app.this_machine().host.unwrap()["session"].is_object());
-    app.disconnect();
-    let s = app.session();
+    remote.disconnect();
+    let s = remote.session();
     assert!(!s.active && s.error.is_none(), "{s:?}");
 
     // The host forgets this device: it is turned away, and the app says why.
     let device_name = sec.paired()[0].name.clone();
     app.unpair_from_host(&device_name).unwrap();
-    app.connect(&id, &Default::default()).unwrap();
-    wait_for("the client to give up", || !app.session().active);
-    let err = app.session().error.unwrap();
+    remote.connect(&id, &Default::default()).unwrap();
+    wait_for("the client to give up", || !remote.session().active);
+    let err = remote.session().error.unwrap();
     assert!(err.contains("not paired"), "{err}");
 
     // Forgotten here as well: listed as not paired.
-    app.forget(&id).unwrap();
-    assert!(app.forget(&id).is_err());
+    remote.forget(&id).unwrap();
+    assert!(remote.forget(&id).is_err());
     assert!(
-        app.devices()
+        remote
+            .devices()
             .unwrap()
             .iter()
             .any(|d| d.id == id && !d.paired)
     );
-    assert!(app.connect(&id, &Default::default()).is_err(), "not paired");
+    assert!(
+        remote.connect(&id, &Default::default()).is_err(),
+        "not paired"
+    );
 
     stop.store(true, Ordering::Relaxed);
     host.join().unwrap().unwrap();
