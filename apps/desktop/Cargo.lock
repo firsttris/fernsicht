@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-audio"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fernsicht-core",
  "libc",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-capture"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fernsicht-core",
  "thiserror 2.0.21",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-codec"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fernsicht-capture",
  "fernsicht-core",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "log",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-host-agent"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-input"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fernsicht-proto",
  "libc",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fernsicht-core",
  "fernsicht-proto",
@@ -1412,14 +1412,14 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "fernsicht-render"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fernsicht-capture",
  "fernsicht-codec",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-secure"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.3.4",
