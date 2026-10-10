@@ -7,6 +7,9 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 
 ## Stand
 
+Wo es weitergeht (offene Live-Tests, Aufgaben, Regeln):
+[docs/weitermachen.md](docs/weitermachen.md).
+
 | Phase | Inhalt | Stand |
 |---|---|---|
 | 0 – Fundament | Workspace, CI, Latenz-Messung pro Stufe, Uhren-Sync, Overlay, Distrobox | ✅ fertig. Die Sunshine-Referenzmessung steht noch aus ([Vorlage](docs/latency-baseline.md)) |
