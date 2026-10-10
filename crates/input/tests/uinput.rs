@@ -17,6 +17,10 @@ fn enabled() -> bool {
     on
 }
 
+/// The tests create and remove devices and look at the list: one at a
+/// time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn devices() -> String {
     std::fs::read_to_string("/proc/bus/input/devices").unwrap_or_default()
 }
@@ -26,6 +30,7 @@ fn devices_are_created_take_every_event_and_go_away() {
     if !enabled() {
         return;
     }
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut u = Uinput::open(AbsArea {
         x: 0.5,
         y: 0.0,
@@ -87,6 +92,7 @@ fn a_virtual_pad_reads_back_through_evdev() {
     if !enabled() {
         return;
     }
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut u = Uinput::open(AbsArea::default()).expect("open /dev/uinput");
     let north = InputEvent::PadButton {
         pad: 0,
@@ -102,33 +108,48 @@ fn a_virtual_pad_reads_back_through_evdev() {
         sink.lock().unwrap().push(e)
     })
     .unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-    let stick = InputEvent::PadAxis {
-        pad: 0,
-        axis: PadAxis::LeftX,
-        value: -20000,
+    // udev may set the new device's permissions a moment later, and the
+    // reader looks again every 2 s: move the stick until it is seen.
+    let seen = |got: &[InputEvent]| {
+        got.iter().any(|e| {
+            matches!(e, InputEvent::PadAxis { axis: PadAxis::LeftX, value, .. }
+                if (*value + 20000).abs() < 2)
+        })
     };
-    u.inject(&stick).unwrap();
-    u.inject(&InputEvent::PadButton {
-        pad: 0,
-        code: 0x133,
-        pressed: false,
-    })
-    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut nudge = 0;
+    while !seen(&got.lock().unwrap()) && std::time::Instant::now() < deadline {
+        // The kernel drops unchanged values: alternate by one.
+        nudge = 1 - nudge;
+        u.inject(&InputEvent::PadAxis {
+            pad: 0,
+            axis: PadAxis::LeftX,
+            value: -20000 + nudge,
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The reader sees changes only: release the button pressed before it
+    // started, then press and release it again.
+    for pressed in [false, true, false] {
+        u.inject(&InputEvent::PadButton {
+            pad: 0,
+            code: 0x133,
+            pressed,
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
     std::thread::sleep(Duration::from_millis(300));
     drop(reader);
     let got = got.lock().unwrap().clone();
-    assert!(
-        got.iter()
-            .any(|e| matches!(e, InputEvent::PadAxis { axis: PadAxis::LeftX, value, .. } if (*value - -20000).abs() < 2)),
-        "{got:?}"
-    );
+    assert!(seen(&got), "{got:?}");
     assert!(
         got.iter().any(|e| matches!(
             e,
             InputEvent::PadButton {
                 code: 0x133,
-                pressed: false,
+                pressed: true,
                 ..
             }
         )),
