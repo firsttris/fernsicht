@@ -52,3 +52,8 @@ jobs:
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-codec --features vaapi --test vaapi -- --test-threads=1 --nocapture
+      - name: Real H.264 end to end (host → impaired link → client)
+        if: matrix.gpu == 'amd'
+        env:
+          FERNSICHT_GPU: amd
+        run: cargo test -p fernsicht-e2e --features vaapi --test gpu -- --nocapture

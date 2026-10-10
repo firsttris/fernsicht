@@ -46,6 +46,12 @@ fn eagain(code: c_int) -> bool {
     code == -libc::EAGAIN
 }
 
+#[link(name = "va")]
+unsafe extern "C" {
+    /// Blocks until all work on `surface` (here: decoding into it) is done.
+    fn vaSyncSurface(dpy: ffi::VADisplay, surface: ffi::VASurfaceID) -> c_int;
+}
+
 /// A VAAPI device (one render node), shared by encoder and decoder contexts.
 pub struct VaapiDevice {
     ctx: *mut ffi::AVBufferRef,
@@ -72,6 +78,14 @@ impl VaapiDevice {
             )
         })?;
         Ok(Self { ctx })
+    }
+
+    fn display(&self) -> ffi::VADisplay {
+        // SAFETY: a VAAPI device context's hwctx is an AVVAAPIDeviceContext.
+        unsafe {
+            let dc = (*self.ctx).data as *mut ffi::AVHWDeviceContext;
+            (*((*dc).hwctx as *mut ffi::AVVAAPIDeviceContext)).display
+        }
     }
 
     fn new_ref(&self) -> *mut ffi::AVBufferRef {
@@ -457,6 +471,14 @@ impl Decoder for VaapiDecoder {
             }
             if !got {
                 return Err(CodecError::Corrupt("decoder produced no frame"));
+            }
+            // avcodec_receive_frame returns once decoding is *queued* on the
+            // GPU. Wait for it to finish: the presenter needs the picture,
+            // and the Decode stage in the latency overlay must be honest.
+            let surface = (*self.frame).data[3] as usize as ffi::VASurfaceID;
+            let r = vaSyncSurface(self._device.display(), surface);
+            if r != 0 {
+                return Err(CodecError::Backend(format!("vaSyncSurface failed: {r}")));
             }
         }
         Ok(())

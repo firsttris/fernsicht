@@ -27,6 +27,9 @@ struct Args {
     /// Stop after this many seconds (default: run until Ctrl+C).
     #[arg(long)]
     duration: Option<u64>,
+    /// GPU render node for hardware decoding (VAAPI).
+    #[arg(long, default_value = "/dev/dri/renderD128")]
+    render_node: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,6 +44,7 @@ fn main() -> anyhow::Result<()> {
         loss: args.loss,
         duration: args.duration.map(Duration::from_secs),
         print_overlay: true,
+        render_node: args.render_node,
         ..ClientConfig::default()
     };
     let s = run(cfg, Arc::new(AtomicBool::new(false)))?;

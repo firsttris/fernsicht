@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
-use fernsicht_host_agent::{HostAgent, HostConfig};
+use fernsicht_host_agent::{EncoderKind, HostAgent, HostConfig};
 
-/// Fernsicht host agent (phase 1: test pattern + synthetic codec over UDP).
+/// Fernsicht host agent (phase 1: test pattern, synthetic or VAAPI H.264 over UDP).
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
@@ -28,6 +28,19 @@ struct Args {
     /// Pacing rate in Mbit/s.
     #[arg(long, default_value_t = 400)]
     pace_mbit: u64,
+    /// Video encoder: "synthetic" (no GPU) or "vaapi" (hardware H.264;
+    /// needs a build with the "vaapi" feature).
+    #[arg(long, value_enum, default_value_t = EncoderArg::Synthetic)]
+    encoder: EncoderArg,
+    /// GPU render node for VAAPI.
+    #[arg(long, default_value = "/dev/dri/renderD128")]
+    render_node: String,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum EncoderArg {
+    Synthetic,
+    Vaapi,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,6 +54,12 @@ fn main() -> anyhow::Result<()> {
         max_bitrate_kbps: args.max_bitrate,
         loss: args.loss,
         pace_bytes_per_sec: args.pace_mbit * 1_000_000 / 8,
+        encoder: match args.encoder {
+            EncoderArg::Synthetic => EncoderKind::Synthetic,
+            EncoderArg::Vaapi => EncoderKind::Vaapi {
+                render_node: args.render_node,
+            },
+        },
         ..HostConfig::default()
     };
     let agent = HostAgent::bind(cfg)?;

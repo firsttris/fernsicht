@@ -21,11 +21,13 @@ use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use fernsicht_capture::{Frame, FrameSource, TestPattern};
 use fernsicht_codec::synthetic::SyntheticEncoder;
+#[cfg(feature = "vaapi")]
+use fernsicht_codec::vaapi::{VaapiEncoder, VaapiEncoderConfig};
 use fernsicht_codec::{EncodedFrame, Encoder};
 use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock, now_us};
 use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
-use fernsicht_proto::{Bye, ClockPong, Feedback, Hello, HelloAck, MAX_DATAGRAM, Packet};
+use fernsicht_proto::{Bye, ClockPong, Codec, Feedback, Hello, HelloAck, MAX_DATAGRAM, Packet};
 
 /// Raw frame buffers: producer, slot, consumer.
 const BUFFERS: usize = 3;
@@ -46,6 +48,17 @@ pub struct HostConfig {
     pub pace_bytes_per_sec: u64,
     /// A session ends when the client has been silent this long.
     pub client_timeout: Duration,
+    pub encoder: EncoderKind,
+}
+
+/// Which video encoder sessions use.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum EncoderKind {
+    /// Realistic frame sizes without real video; runs anywhere.
+    #[default]
+    Synthetic,
+    /// Hardware H.264 over VAAPI (needs the `vaapi` feature and a GPU).
+    Vaapi { render_node: String },
 }
 
 impl Default for HostConfig {
@@ -59,6 +72,7 @@ impl Default for HostConfig {
             loss: 0.0,
             pace_bytes_per_sec: 50_000_000,
             client_timeout: Duration::from_secs(5),
+            encoder: EncoderKind::default(),
         }
     }
 }
@@ -105,6 +119,7 @@ struct Shared {
 
 struct Session {
     params: SessionParams,
+    codec: Codec,
     peer: SocketAddr,
     last_seen: Instant,
     shared: Arc<Shared>,
@@ -209,15 +224,23 @@ impl HostAgent {
                             params.fps,
                             params.bitrate_kbps
                         );
-                        session = Some(self.start_session(params, from)?);
+                        match self.start_session(params, from) {
+                            Ok(s) => session = Some(s),
+                            Err(e) => {
+                                // No ack: the client keeps asking and times out.
+                                log::error!("session {:08x}: {e:#}", params.session_id);
+                                continue;
+                            }
+                        }
                     }
-                    let p = session.as_ref().unwrap().params;
+                    let Some(s) = session.as_ref() else { continue };
+                    let (p, codec) = (s.params, s.codec);
                     let ack = HelloAck {
                         session_id: p.session_id,
                         width: p.width,
                         height: p.height,
                         fps: p.fps,
-                        codec: fernsicht_proto::Codec::Synthetic,
+                        codec,
                     };
                     let n = ack.encode(&mut out);
                     let _ = self.socket.send_to(&out[..n], from);
@@ -287,6 +310,10 @@ impl HostAgent {
             keyframe_requested: AtomicBool::new(true),
             fec_loss: AtomicU32::new(loss.estimate().to_bits()),
         });
+        // Create the encoder first: if the GPU is unavailable the session
+        // fails before any thread starts.
+        let encoder = make_encoder(&self.cfg.encoder, &params)?;
+        let codec = encoder.codec();
         let frame_slot = Arc::new(Slot::new());
         let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
 
@@ -314,7 +341,6 @@ impl HostAgent {
         let encode = {
             let (shared, in_slot) = (shared.clone(), frame_slot.clone());
             let free_enc_tx = free_enc_tx.clone();
-            let encoder = SyntheticEncoder::new(params.bitrate_kbps, u32::from(params.fps));
             spawn_hot("encode", move || {
                 encode_loop(
                     encoder,
@@ -352,6 +378,7 @@ impl HostAgent {
 
         Ok(Session {
             params,
+            codec,
             peer,
             last_seen: Instant::now(),
             shared,
@@ -409,8 +436,31 @@ fn capture_loop(
     slot.close();
 }
 
+fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn Encoder>> {
+    match kind {
+        EncoderKind::Synthetic => Ok(Box::new(SyntheticEncoder::new(
+            p.bitrate_kbps,
+            u32::from(p.fps),
+        ))),
+        #[cfg(feature = "vaapi")]
+        EncoderKind::Vaapi { render_node } => {
+            Ok(Box::new(VaapiEncoder::new(&VaapiEncoderConfig {
+                render_node: render_node.clone(),
+                width: u32::from(p.width),
+                height: u32::from(p.height),
+                fps: u32::from(p.fps),
+                bitrate_kbps: p.bitrate_kbps,
+            })?))
+        }
+        #[cfg(not(feature = "vaapi"))]
+        EncoderKind::Vaapi { .. } => {
+            anyhow::bail!("this build has no VAAPI support (cargo feature \"vaapi\")")
+        }
+    }
+}
+
 fn encode_loop(
-    mut encoder: SyntheticEncoder,
+    mut encoder: Box<dyn Encoder>,
     shared: &Shared,
     in_slot: &Slot<Frame>,
     send_tx: &Sender<EncodedFrame>,

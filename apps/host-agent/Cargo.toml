@@ -10,6 +10,10 @@ publish.workspace = true
 name = "fernsicht-host-agent"
 path = "src/main.rs"
 
+[features]
+# Hardware H.264 over VAAPI (AMD, Intel); needs FFmpeg/libva headers.
+vaapi = ["fernsicht-codec/vaapi"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

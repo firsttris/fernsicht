@@ -48,6 +48,8 @@ pub struct ClientConfig {
     pub print_overlay: bool,
     /// Give up when the host has been silent this long.
     pub host_timeout: Duration,
+    /// GPU used for hardware decoding (VAAPI).
+    pub render_node: String,
 }
 
 impl Default for ClientConfig {
@@ -62,6 +64,7 @@ impl Default for ClientConfig {
             duration: None,
             print_overlay: false,
             host_timeout: Duration::from_secs(5),
+            render_node: "/dev/dri/renderD128".into(),
         }
     }
 }
@@ -142,6 +145,8 @@ impl RefChain {
 /// A reassembled frame on its way to the decoder.
 struct ReceivedFrame {
     header: VideoHeader,
+    /// Codec announced by the host for this session.
+    codec: Codec,
     data: Vec<u8>,
     completed_us: u64,
     /// Host clock − client clock at the time the frame completed.
@@ -152,6 +157,7 @@ impl ReceivedFrame {
     fn empty() -> Self {
         Self {
             header: VideoHeader::default(),
+            codec: Codec::Synthetic,
             data: Vec::new(),
             completed_us: 0,
             offset_us: 0,
@@ -179,8 +185,16 @@ pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummar
     let presenter = {
         let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
         let print = cfg.print_overlay;
+        let render_node = cfg.render_node.clone();
         spawn_hot("present", move || {
-            present_loop(&decode_rx, &info, &free_tx, &need_keyframe, print)
+            present_loop(
+                &decode_rx,
+                &info,
+                &free_tx,
+                &need_keyframe,
+                print,
+                &render_node,
+            )
         })?
     };
 
@@ -365,6 +379,7 @@ fn network_loop(
                         continue;
                     };
                     rf.header = done.header;
+                    rf.codec = session.map_or(Codec::Synthetic, |(_, codec)| codec);
                     rf.data.clear();
                     rf.data.extend_from_slice(done.data);
                     rf.completed_us = done.completed_us;
@@ -446,6 +461,23 @@ fn ratio(part: u32, total: u32) -> f32 {
     }
 }
 
+fn make_decoder(codec: Codec, render_node: &str) -> Result<Box<dyn Decoder>, CodecError> {
+    match codec {
+        Codec::Synthetic => Ok(Box::new(SyntheticDecoder::default())),
+        #[cfg(feature = "vaapi")]
+        Codec::H264 => Ok(Box::new(fernsicht_codec::vaapi::VaapiDecoder::new(
+            render_node,
+        )?)),
+        other => {
+            let _ = render_node;
+            Err(CodecError::Backend(format!(
+                "this build cannot decode {} (cargo feature \"vaapi\")",
+                overlay::codec_label(other)
+            )))
+        }
+    }
+}
+
 struct PresentResult {
     stats: LatencyStats,
     presented: u64,
@@ -461,8 +493,10 @@ fn present_loop(
     free_tx: &Sender<ReceivedFrame>,
     need_keyframe: &AtomicBool,
     print_overlay: bool,
+    render_node: &str,
 ) -> PresentResult {
-    let mut decoder = SyntheticDecoder::default();
+    // Created on the first frame, from the codec the host announced.
+    let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
     let mut presenter = HeadlessPresenter::default();
     let mut decoded = DecodedFrame::default();
     let mut chain = RefChain::default();
@@ -478,6 +512,21 @@ fn present_loop(
 
     while let Ok(rf) = queue.recv() {
         let h = rf.header;
+        if decoder.as_ref().is_none_or(|(codec, _)| *codec != rf.codec) {
+            decoder = match make_decoder(rf.codec, render_node) {
+                Ok(d) => Some((rf.codec, d)),
+                Err(e) => {
+                    log::error!("no decoder for {}: {e}", overlay::codec_label(rf.codec));
+                    None
+                }
+            };
+            chain = RefChain::default();
+        }
+        let Some((_, decoder)) = decoder.as_mut() else {
+            r.decode_errors += 1;
+            let _ = free_tx.send(rf);
+            continue;
+        };
         if !chain.accept(h.frame_id, h.keyframe) {
             r.awaiting_keyframe += 1;
         } else {

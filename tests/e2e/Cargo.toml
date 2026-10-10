@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# GPU end-to-end tests (tests/gpu.rs); run on the self-hosted AMD runner.
+vaapi = ["fernsicht-host-agent/vaapi", "fernsicht-client/vaapi"]
+
 [dependencies]
 fernsicht-client.workspace = true
 fernsicht-core.workspace = true
