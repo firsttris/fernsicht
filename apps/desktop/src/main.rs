@@ -74,6 +74,14 @@ async fn unpair_from_host(backend: Shared<'_>, device: String) -> Result<(), Str
 }
 
 fn main() {
+    // WebKitGTK's DMA-BUF renderer shows an empty window with NVIDIA's
+    // driver (tauri-apps/tauri#9394); its fallback renders fine.
+    if std::path::Path::new("/proc/driver/nvidia").exists()
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        // SAFETY: first thing in main, before any other thread exists.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let backend = Arc::new(Backend::new(default_dir()));
     log::info!("client program: {}", backend.client.display());

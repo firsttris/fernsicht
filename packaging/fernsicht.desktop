@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fernsicht
+GenericName=Remote-Desktop
+Comment=Andere Rechner im Netz sehen und steuern
+Exec=@BIN@/fernsicht
+Icon=fernsicht
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;streaming;gaming;fernsteuern;
+StartupWMClass=fernsicht

@@ -1,25 +1,44 @@
-# Host als Dienst einrichten
+# Fernsicht installieren
 
-Als Dienst startet der Host mit dem Rechner und läuft im Hintergrund. Es
-braucht kein Terminal und kein `sudo` bei jedem Start. Geräte koppelt man
-dann über den laufenden Dienst.
+Es gibt zwei Teile:
 
-## Installieren
+- **Die App** auf jedem Rechner, *von dem aus* man zugreift. Sie findet
+  die Rechner im Netz, koppelt und öffnet Sitzungen.
+- **Den Host-Dienst** auf jedem Rechner, *auf den* man zugreift. Er
+  startet mit dem Rechner und läuft im Hintergrund.
 
-Einmal bauen, als normaler Benutzer in der Distrobox:
+Ein Rechner kann beides haben.
+
+## 1. Bauen
+
+Einmal pro Rechner (oder nach einem `git pull`). Das Skript läuft in der
+Distrobox `fernsicht` und betritt sie selbst:
 
 ```sh
-distrobox enter fernsicht
 cd ~/fernsicht
-git pull
-cargo build --release -p fernsicht-host-agent --features vaapi,kms,nvidia
-exit
+./packaging/build.sh
 ```
 
-Dann auf dem Host (nicht in der Box) installieren:
+Bazzite bringt FFmpeg, libva und WebKitGTK selbst mit. Die Programme aus
+der Box laufen deshalb direkt auf dem System.
+
+## 2. App installieren
+
+Ohne `sudo`, für den eigenen Benutzer:
 
 ```sh
-cd ~/fernsicht
+./packaging/install-app.sh
+```
+
+Danach steht **Fernsicht** im Startmenü. Das Skript legt App und Client
+nach `~/.local/bin` und richtet Startmenü-Eintrag und Symbol ein. Mit
+`--uninstall` entfernt es beides wieder.
+
+## 3. Host-Dienst installieren
+
+Auf dem Rechner, den man fernsteuern will:
+
+```sh
 sudo ./packaging/install-host.sh
 ```
 
@@ -33,7 +52,7 @@ Das Skript erledigt Folgendes:
 - Es richtet den Dienst `fernsicht-host` ein ([Unit](../packaging/fernsicht-host.service)) und startet ihn.
 - Läuft firewalld und ist UDP-Port 47800 zu, öffnet es den Port.
 
-Ein Update geht genauso: neu bauen und das Skript noch einmal starten.
+Ein Update geht genauso: neu bauen und die Skripte noch einmal starten.
 
 Der Dienst läuft so:
 
@@ -41,6 +60,21 @@ Der Dienst läuft so:
 - **Encoder:** Der Dienst wählt den Encoder passend zur Grafikkarte (`--encoder auto`): VAAPI auf AMD/Intel, NVENC auf NVIDIA. Bildschirmaufnahme mit NVENC fehlt allerdings noch. Ein Rechner mit NVIDIA-Karte taugt deshalb vorerst nicht als Host, als Client schon.
 - **Maus und Tastatur:** Eingaben gekoppelter Geräte nimmt der Dienst an (`--input`).
 - **Ton:** Ton und Monitoranordnung holt sich der Dienst vom angemeldeten Benutzer. Er nimmt also auf, was auf dessen Desktop läuft.
+
+## 4. Koppeln und verbinden (in der App)
+
+1. **Am Host:** Fernsicht öffnen und unten links unter „Dieser Rechner“
+   auf **Gerät koppeln** klicken. Die App zeigt eine 6-stellige PIN, die
+   5 Minuten gilt.
+2. **Am anderen Rechner:** Fernsicht öffnen. Der Host steht in der
+   Liste. Dort auf **Koppeln** klicken und die PIN eingeben.
+3. **Verbinden:** Auf **Desktop** klicken. Das Bild öffnet sich in einem
+   eigenen Fenster, die App zeigt die Latenz.
+   - <kbd>Strg</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> schaltet Vollbild um.
+   - <kbd>Strg</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> oder **Trennen** in der App beendet die Sitzung.
+
+Gekoppelt wird nur einmal pro Gerätepaar. Dasselbe geht auch im
+Terminal, wie die folgenden Abschnitte zeigen.
 
 ## Hosts im Netz finden
 

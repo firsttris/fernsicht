@@ -25,7 +25,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | 4–5 | Host als Dienst | ✅ systemd-Dienst mit Installationsskript, Encoder passend zur Grafikkarte, Koppeln/Status/Entfernen über einen lokalen Steuer-Socket ([Anleitung](docs/install.md)) |
 | | Gerätesuche | ✅ `fernsicht-client discover`: Broadcast über den Stream-Port (keine Firewall-Änderung), Hosts nennen Name, Schlüssel, OS, GPU und ob Kopplung offen ist; neue Adressen gekoppelter Hosts werden übernommen |
 | | Desktop-App | ✅ Tauri um die Client-UI: Rechner im Netz, Koppeln per PIN, Sitzung starten (Bild im nativen Vulkan-Fenster, Latenz-Overlay in der App), „Dieser Rechner" öffnet die Kopplung am eigenen Host ([apps/desktop](apps/desktop)) |
-| | Installer, Web-Viewer | ⏳ offen |
+| | Installation | ✅ `packaging/build.sh` (baut alles in der Distrobox), `install-app.sh` (App und Client mit Startmenü-Eintrag, ohne sudo), `install-host.sh` (Host-Dienst); [Anleitung](docs/install.md) |
+| | Web-Viewer | ⏳ offen |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
@@ -52,9 +53,10 @@ cargo build --release
 # mit 1 % künstlichem Paketverlust
 ./target/release/fernsicht-client <host-name> --loss 0.01 --duration 10
 
-# Als Dienst, der mit dem Rechner startet (docs/install.md)
-cargo build --release -p fernsicht-host-agent --features vaapi,kms,nvidia
-sudo ./packaging/install-host.sh
+# Installieren (docs/install.md): App für dich, Host-Dienst für den Rechner
+./packaging/build.sh
+./packaging/install-app.sh            # Fernsicht im Startmenü
+sudo ./packaging/install-host.sh      # nur auf Rechnern, die man fernsteuert
 fernsicht-host-agent pair      # PIN für ein neues Gerät
 fernsicht-host-agent status    # Verbindung, gekoppelte Geräte
 
