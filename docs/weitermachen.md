@@ -120,7 +120,12 @@ Gemessene Latenz (frühere Sitzungen):
 ## Was noch niemand live gesehen hat
 
 Diese Punkte sind automatisch getestet, aber nie auf echter Hardware
-gelaufen. Sie brauchen den Benutzer am Rechner:
+gelaufen. Sie brauchen den Benutzer am Rechner.
+
+Live bestätigt (10.10.2026, laut Benutzer): Der Web-Viewer verbindet
+sich, und die bazzite (NVIDIA, Client) verbindet sich mit der zentrale
+(AMD, Host). Beides „hat alles funktioniert“. Die Einzelprüfungen unten
+(Ton, Eingabe, Firefox, Handy) sind damit nicht einzeln abgehakt.
 
 1. **Dienst auf der zentrale.**
    - Vorher den alten Host stoppen, den der Benutzer in der Root-Box
