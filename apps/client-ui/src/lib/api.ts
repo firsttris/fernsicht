@@ -165,6 +165,10 @@ export const actions = {
   setMuted: async (muted: boolean) => {
     if (inApp()) await invoke("set_muted", { muted });
   },
+  /** A key combination for the host (Linux key codes). */
+  sendKeys: async (codes: number[]) => {
+    if (inApp()) await invoke("send_keys", { codes });
+  },
   setMode: async (gaming: boolean) => {
     if (inApp()) await invoke("set_mode", { gaming });
   },

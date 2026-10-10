@@ -356,6 +356,43 @@ pub fn window_to_stream(
     Some((q(u), q(v)))
 }
 
+/// Most keys in one combination sent from a menu.
+pub const MAX_CHORD: usize = 6;
+
+/// A key combination as events: pressed in order, released in reverse
+/// (Ctrl, Alt, Del → Del, Alt, Ctrl up).
+pub fn chord_events(codes: &[u16]) -> Vec<InputEvent> {
+    let press = codes.iter().map(|&code| InputEvent::Key {
+        code,
+        pressed: true,
+    });
+    let release = codes.iter().rev().map(|&code| InputEvent::Key {
+        code,
+        pressed: false,
+    });
+    press.chain(release).collect()
+}
+
+/// The app's "keys 29,56,111" command (Linux key codes, at most
+/// [`MAX_CHORD`], no repeats).
+pub fn parse_keys_command(line: &str) -> Option<Vec<u16>> {
+    let list = line.strip_prefix("keys ")?;
+    let codes: Vec<u16> = list
+        .split(',')
+        .map(|c| c.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    let valid = !codes.is_empty()
+        && codes.len() <= MAX_CHORD
+        && codes
+            .iter()
+            .all(|c| (1..=fernsicht_proto::KEY_MAX).contains(c))
+        && codes
+            .iter()
+            .enumerate()
+            .all(|(i, c)| !codes[..i].contains(c));
+    valid.then_some(codes)
+}
+
 /// The video codec a client asks for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CodecChoice {
@@ -1356,6 +1393,40 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_combinations_from_the_menu() {
+        // Ctrl+Alt+Del
+        assert_eq!(
+            parse_keys_command("keys 29,56,111"),
+            Some(vec![29, 56, 111])
+        );
+        assert_eq!(parse_keys_command("keys 125"), Some(vec![125]));
+        for bad in [
+            "keys",
+            "keys ",
+            "keys 0",
+            "keys 99999",
+            "keys 29,29",
+            "keys 1,2,3,4,5,6,7",
+            "keys a",
+            "mute",
+        ] {
+            assert_eq!(parse_keys_command(bad), None, "{bad:?}");
+        }
+        let key = |code, pressed| InputEvent::Key { code, pressed };
+        assert_eq!(
+            chord_events(&[29, 56, 111]),
+            [
+                key(29, true),
+                key(56, true),
+                key(111, true),
+                key(111, false),
+                key(56, false),
+                key(29, false)
+            ]
+        );
+    }
 
     #[test]
     fn auto_offers_hevc_only_where_it_is_decoded() {

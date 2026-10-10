@@ -14,6 +14,7 @@ import {
   decodeCursorPacket,
 } from "../lib/cursor";
 import { type HostStats, type LiveSession, type StatsSample, summarize } from "../lib/host";
+import { useFullscreen } from "../lib/fullscreen";
 import { PadTracker } from "../lib/gamepad";
 import { WheelAccumulator, contentRect, linuxButton, toAbsolute } from "../lib/input";
 import { linuxKeyCode } from "../lib/keys";
@@ -32,6 +33,7 @@ export function LiveSessionPage({
   const [stats, setStats] = useState<SessionStats>();
   const [ended, setEnded] = useState(false);
   const [size, setSize] = useState({ width: session.width, height: session.height });
+  const [fullscreen, setFullscreen] = useFullscreen();
 
   // The overlay, once per second; the host's share comes on the channel.
   useEffect(() => {
@@ -97,6 +99,13 @@ export function LiveSessionPage({
       stats={stats}
       mode={mode}
       onModeChange={onModeChange}
+      fullscreen={fullscreen}
+      onFullscreenChange={setFullscreen}
+      onSendKeys={(codes) => {
+        // Pressed in order, released in reverse, like a person would.
+        for (const c of codes) session.send({ t: "k", c, p: true });
+        for (const c of [...codes].reverse()) session.send({ t: "k", c, p: false });
+      }}
       onDisconnect={() => {
         session.close();
         onEnd();

@@ -322,12 +322,17 @@ fn main() -> anyhow::Result<()> {
                     "mute" => muted.store(true, std::sync::atomic::Ordering::Relaxed),
                     "unmute" => muted.store(false, std::sync::atomic::Ordering::Relaxed),
                     "gaming" => {
-                        let _ = commands_tx.send(true);
+                        let _ = commands_tx.send(AppCommand::Mode(true));
                     }
                     "desktop" => {
-                        let _ = commands_tx.send(false);
+                        let _ = commands_tx.send(AppCommand::Mode(false));
                     }
-                    other => log::debug!("unknown command {other:?}"),
+                    line => match fernsicht_client::parse_keys_command(line) {
+                        Some(codes) => {
+                            let _ = commands_tx.send(AppCommand::Keys(codes));
+                        }
+                        None => log::debug!("unknown command {line:?}"),
+                    },
                 }
             }
             // The app let go of stdin: the session is over.
@@ -409,6 +414,18 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What the app tells a running client on stdin (used by the window).
+#[cfg_attr(not(feature = "window"), allow(dead_code))]
+enum AppCommand {
+    /// Gaming (true) or desktop mode.
+    Mode(bool),
+    /// A key combination from the "send keys" menu.
+    Keys(Vec<u16>),
+}
+
+#[cfg(feature = "window")]
+mod shortcuts;
+
 #[cfg(feature = "window")]
 mod window {
     use std::sync::Arc;
@@ -435,6 +452,8 @@ mod window {
         Done,
         /// The app switched between gaming (true) and desktop mode.
         Gaming(bool),
+        /// The app's "send keys" menu: a combination for the host.
+        Keys(Vec<u16>),
     }
 
     /// How the window behaves.
@@ -445,8 +464,8 @@ mod window {
         pub gaming: bool,
         /// This machine's gamepads go to the host.
         pub gamepads: bool,
-        /// Mode switches from the app.
-        pub commands: crossbeam_channel::Receiver<bool>,
+        /// Mode switches and key combinations from the app.
+        pub commands: crossbeam_channel::Receiver<crate::AppCommand>,
     }
 
     /// Wheel units (120 per notch) per pixel of touchpad scrolling.
@@ -469,6 +488,9 @@ mod window {
         captured: bool,
         /// Fractions of pixels of relative motion, carried over.
         motion_rest: (f64, f64),
+        focused: bool,
+        /// Passes the desktop's shortcuts (Meta, Alt+Tab) to the host.
+        shortcuts: Option<crate::shortcuts::ShortcutLock>,
     }
 
     fn mouse_button(b: MouseButton) -> Option<u16> {
@@ -512,6 +534,25 @@ mod window {
             }
             self.captured = on;
             self.motion_rest = (0.0, 0.0);
+            self.update_shortcuts();
+        }
+
+        /// Hands the desktop's shortcuts to the host or takes them back,
+        /// per [`crate::shortcuts::wanted`].
+        fn update_shortcuts(&mut self) {
+            let fullscreen = self
+                .window
+                .as_ref()
+                .is_some_and(|w| w.fullscreen().is_some());
+            let on = crate::shortcuts::wanted(
+                self.focused,
+                self.input.is_some(),
+                fullscreen,
+                self.captured,
+            );
+            if let Some(lock) = &mut self.shortcuts {
+                lock.set(on);
+            }
         }
 
         fn toggle_fullscreen(&self) {
@@ -592,6 +633,9 @@ mod window {
                      Ctrl+Alt+Shift+F toggles fullscreen"
                 );
             }
+            if self.input.is_some() {
+                self.shortcuts = crate::shortcuts::ShortcutLock::new(&window);
+            }
             let for_presenter = window.clone();
             let factory: PresenterFactory = Box::new(move || {
                 WindowPresenter::new(for_presenter, &title)
@@ -616,8 +660,16 @@ mod window {
                     if let Some(input) = &self.input {
                         input.release_all();
                     }
+                    self.focused = false;
                     self.capture(false);
+                    self.update_shortcuts();
                 }
+                WindowEvent::Focused(true) => {
+                    self.focused = true;
+                    self.update_shortcuts();
+                }
+                // Entering or leaving fullscreen shows as a new size.
+                WindowEvent::Resized(_) => self.update_shortcuts(),
                 WindowEvent::KeyboardInput { event: key, .. } => {
                     if self.command(event_loop, &key) {
                         return;
@@ -690,6 +742,13 @@ mod window {
         fn user_event(&mut self, event_loop: &ActiveEventLoop, e: UserEvent) {
             match e {
                 UserEvent::Done => event_loop.exit(),
+                UserEvent::Keys(codes) => {
+                    if let Some(input) = &self.input {
+                        for e in fernsicht_client::chord_events(&codes) {
+                            input.push(e);
+                        }
+                    }
+                }
                 UserEvent::Gaming(on) => {
                     self.gaming = on;
                     if !on {
@@ -714,8 +773,12 @@ mod window {
         let proxy = event_loop.create_proxy();
         let commands = options.commands;
         std::thread::spawn(move || {
-            for gaming in commands {
-                if proxy.send_event(UserEvent::Gaming(gaming)).is_err() {
+            for command in commands {
+                let event = match command {
+                    crate::AppCommand::Mode(gaming) => UserEvent::Gaming(gaming),
+                    crate::AppCommand::Keys(codes) => UserEvent::Keys(codes),
+                };
+                if proxy.send_event(event).is_err() {
                     return;
                 }
             }
@@ -744,6 +807,8 @@ mod window {
             gaming: options.gaming,
             captured: false,
             motion_rest: (0.0, 0.0),
+            focused: false,
+            shortcuts: None,
         };
         event_loop.run_app(&mut app)?;
         app.stop.store(true, Ordering::Relaxed);

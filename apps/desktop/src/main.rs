@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use fernsicht_desktop::backend::{
-    Backend, Device, SessionState, StreamSettings, ThisMachine, default_dir,
+    Backend, Device, SessionState, StreamSettings, ThisMachine, default_dir, keys_command,
 };
 use serde_json::Value;
 use tauri::State;
@@ -59,6 +59,11 @@ async fn set_muted(backend: Shared<'_>, muted: bool) -> Result<(), String> {
         b.command(if muted { "mute" } else { "unmute" })
     })
     .await
+}
+
+#[tauri::command]
+async fn send_keys(backend: Shared<'_>, codes: Vec<u16>) -> Result<(), String> {
+    blocking(&backend, move |b| b.command(&keys_command(&codes)?)).await
 }
 
 #[tauri::command]
@@ -137,6 +142,7 @@ fn main() {
             connect,
             set_muted,
             set_mode,
+            send_keys,
             session,
             disconnect,
             this_machine,

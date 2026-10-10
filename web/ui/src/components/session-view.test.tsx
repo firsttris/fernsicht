@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -44,6 +44,42 @@ describe("SessionView", () => {
     expect(screen.getByRole("button", { name: "Gaming" })).toHaveAttribute("aria-pressed", "false");
     await user.click(screen.getByRole("button", { name: "Gaming" }));
     expect(onModeChange).toHaveBeenCalledWith("gaming");
+  });
+
+  it("sends key combinations from the menu", async () => {
+    const onSendKeys = vi.fn();
+    const { user } = setup({ onSendKeys });
+    const button = screen.getByRole("button", { name: "Tasten senden" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    await user.click(button);
+    await user.click(screen.getByRole("menuitem", { name: "Strg+Alt+Entf" }));
+    expect(onSendKeys).toHaveBeenCalledWith([29, 56, 111]);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    // Esc and a click elsewhere close it without sending.
+    await user.click(button);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    await user.click(button);
+    await user.click(screen.getByText("zentrale"));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(onSendKeys).toHaveBeenCalledOnce();
+  });
+
+  it("has no keys menu or fullscreen button without a handler", () => {
+    setup();
+    expect(screen.queryByRole("button", { name: "Tasten senden" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Vollbild" })).not.toBeInTheDocument();
+  });
+
+  it("asks for fullscreen and back", async () => {
+    const onFullscreenChange = vi.fn();
+    const { user } = setup({ onFullscreenChange });
+    await user.click(screen.getByRole("button", { name: "Vollbild" }));
+    expect(onFullscreenChange).toHaveBeenLastCalledWith(true);
+    cleanup();
+    setup({ onFullscreenChange, fullscreen: true });
+    await user.click(screen.getByRole("button", { name: "Vollbild verlassen" }));
+    expect(onFullscreenChange).toHaveBeenLastCalledWith(false);
   });
 
   it("disconnects", async () => {

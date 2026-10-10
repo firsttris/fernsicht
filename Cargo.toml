@@ -52,6 +52,12 @@ spake2 = "0.4"
 socket2 = "0.6"
 thiserror = "2"
 winit = "0.30"
+# The client window asks the compositor to pass system shortcuts on
+# (keyboard-shortcuts-inhibit), on winit's own Wayland connection.
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+x11-dl = "2.21"
 
 # test-only
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

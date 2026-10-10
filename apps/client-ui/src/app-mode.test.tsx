@@ -44,6 +44,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         return null;
       case "set_muted":
       case "set_mode":
+      case "send_keys":
         return null;
       case "set_gpu_boost":
         backend.thisMachine = {
@@ -208,6 +209,9 @@ describe("Desktop-App", () => {
     expect(called("set_muted")).toEqual([["set_muted", { muted: true }]]);
     await user.click(screen.getByRole("button", { name: "Desktop" }));
     expect(called("set_mode")).toEqual([["set_mode", { gaming: false }]]);
+    await user.click(screen.getByRole("button", { name: "Tasten senden" }));
+    await user.click(screen.getByRole("menuitem", { name: "Windows+W" }));
+    expect(called("send_keys")).toEqual([["send_keys", { codes: [125, 17] }]]);
     await user.click(screen.getByRole("button", { name: "Trennen" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/devices"));
     expect(called("disconnect")).toHaveLength(1);

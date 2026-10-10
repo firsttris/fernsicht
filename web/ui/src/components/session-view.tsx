@@ -1,5 +1,7 @@
 import {
   ClipboardList,
+  Maximize,
+  Minimize,
   Monitor,
   MonitorPlay,
   Settings2,
@@ -13,6 +15,7 @@ import { cn } from "../lib/utils";
 import type { SessionInfo, SessionMode, SessionStats } from "../types";
 import { Button } from "./button";
 import { LatencyOverlay } from "./latency-overlay";
+import { SendKeysMenu } from "./send-keys";
 
 export interface SessionViewProps {
   session: SessionInfo;
@@ -21,6 +24,11 @@ export interface SessionViewProps {
   onModeChange: (mode: SessionMode) => void;
   /** The sound button was pressed (muted = true). */
   onMuteChange?: (muted: boolean) => void;
+  /** A key combination from the "send keys" menu (Linux key codes). */
+  onSendKeys?: (codes: number[]) => void;
+  /** Fullscreen button (the web viewer; the app's window has its own). */
+  fullscreen?: boolean;
+  onFullscreenChange?: (on: boolean) => void;
   onDisconnect: () => void;
   /** The video surface. Defaults to a placeholder frame. */
   children?: ReactNode;
@@ -36,6 +44,9 @@ export function SessionView({
   mode,
   onModeChange,
   onMuteChange,
+  onSendKeys,
+  fullscreen = false,
+  onFullscreenChange,
   onDisconnect,
   children,
 }: SessionViewProps) {
@@ -90,6 +101,7 @@ export function SessionView({
                 </Button>
               ))}
               <Divider />
+              {onSendKeys && <SendKeysMenu onSend={onSendKeys} />}
               <Button size="icon" variant="ghost" aria-label="Bildschirm wählen">
                 <Monitor size={16} />
               </Button>
@@ -111,6 +123,17 @@ export function SessionView({
               >
                 {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
               </Button>
+              {onFullscreenChange && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label={fullscreen ? "Vollbild verlassen" : "Vollbild"}
+                  aria-pressed={fullscreen}
+                  onClick={() => onFullscreenChange(!fullscreen)}
+                >
+                  {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+                </Button>
+              )}
               <Button size="icon" variant="ghost" aria-label="Einstellungen">
                 <Settings2 size={16} />
               </Button>

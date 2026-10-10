@@ -148,6 +148,21 @@ describe("Web-Viewer am Host", () => {
     expect(sent().at(-1)).toEqual({ t: "release" });
   });
 
+  it("sends key combinations from the menu", async () => {
+    const { pc } = await connected();
+    const before = pc.channel.sent.length;
+    fireEvent.click(screen.getByRole("button", { name: "Tasten senden" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Strg+Alt+Entf" }));
+    expect(pc.channel.sent.slice(before)).toEqual([
+      { t: "k", c: 29, p: true },
+      { t: "k", c: 56, p: true },
+      { t: "k", c: 111, p: true },
+      { t: "k", c: 111, p: false },
+      { t: "k", c: 56, p: false },
+      { t: "k", c: 29, p: false },
+    ]);
+  });
+
   it("sends gamepads", async () => {
     let pressed = false;
     const buttons = () =>

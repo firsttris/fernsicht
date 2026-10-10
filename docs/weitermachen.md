@@ -191,6 +191,18 @@ Live bestätigt (10.10.2026, laut Benutzer):
    erlaubt UDP 1025–65535; auf der bazzite prüfen
    (`firewall-cmd --list-all`). Zur Not fragt die App gekoppelte Hosts
    auch direkt.
+9. **Systemtasten an den Host.** Gebaut, nie live gesehen:
+   - App: Im Vollbild oder mit gefangenem Zeiger bittet das Fenster den
+     Desktop, seine Tastenkürzel durchzulassen (Wayland
+     `keyboard-shortcuts-inhibit`, X11 Tastatur-Grab;
+     `apps/client/src/shortcuts.rs`). KDE fragt beim ersten Mal. Prüfen:
+     Meta, Meta+W, Alt+Tab und Strg+Alt+Entf kommen beim Host an; im
+     normalen Fenster bleibt Alt+Tab lokal; Strg+Alt+Shift+F/M/Q gehen
+     weiter.
+   - Web-Viewer: Vollbild-Knopf in der Toolbar; Chrome/Edge sperren dann
+     die Tastatur (Keyboard Lock, Esc gedrückt halten zum Verlassen).
+   - Beide: Menü „Tasten senden“ (Tastatur-Symbol in der Toolbar) mit
+     Strg+Alt+Entf, Windows-Taste, Windows+W, Alt+Tab, Alt+F4, Druck.
 
 ## Offene Aufgaben, nach Wichtigkeit
 
@@ -213,8 +225,7 @@ Staukontrolle, 4:4:4) mit Nutzen und Aufwand stehen gesammelt in
 4. **Referenzmessung mit Sunshine/Moonlight**
    ([latency-baseline.md](latency-baseline.md)).
 5. **Spiele, Rest:** Rumble (Force Feedback zurück zum Controller),
-   mehr als 4 Controller, Tastatur-Sperre im Vollbild (Alt+Tab und die
-   Windows-Taste gehen an den Host).
+   mehr als 4 Controller.
 6. **NVIDIA als Host: live prüfen.** Die Bildschirmaufnahme mit NVENC ist
    gebaut. Der Weg: KMS-DMA-BUF → Vulkan-Compute (RGB → NV12, BT.709,
    skaliert) → von CUDA importierter Speicher → NVENC. Code:

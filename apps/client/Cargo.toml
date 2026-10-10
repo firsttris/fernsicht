@@ -17,7 +17,15 @@ vaapi = ["fernsicht-codec/vaapi"]
 nvidia = ["fernsicht-codec/nvidia"]
 # The video window (Vulkan via ash, winit); without it the client is
 # headless and prints the overlay only.
-window = ["fernsicht-render/window", "dep:winit"]
+window = [
+    "fernsicht-render/window",
+    "dep:winit",
+    "dep:raw-window-handle",
+    "dep:wayland-backend",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
+    "dep:x11-dl",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -36,6 +44,11 @@ fernsicht-secure.workspace = true
 fernsicht-render.workspace = true
 log.workspace = true
 winit = { workspace = true, optional = true }
+raw-window-handle = { workspace = true, optional = true }
+wayland-backend = { workspace = true, optional = true }
+wayland-client = { workspace = true, optional = true }
+wayland-protocols = { workspace = true, optional = true }
+x11-dl = { workspace = true, optional = true }
 
 [dev-dependencies]
 

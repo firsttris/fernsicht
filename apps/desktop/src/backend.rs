@@ -102,6 +102,18 @@ impl StreamSettings {
     }
 }
 
+/// The client's command for a key combination from the "send keys" menu
+/// (Linux key codes, at most 6).
+pub fn keys_command(codes: &[u16]) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        (1..=6).contains(&codes.len()),
+        "1 to 6 keys, not {}",
+        codes.len()
+    );
+    let list: Vec<String> = codes.iter().map(u16::to_string).collect();
+    Ok(format!("keys {}", list.join(",")))
+}
+
 /// The session as the UI polls it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,7 +394,7 @@ impl Backend {
     }
 
     /// Tells the running client something (a line on its stdin): "mute",
-    /// "unmute", "gaming", "desktop".
+    /// "unmute", "gaming", "desktop", "keys 29,56,111".
     pub fn command(&self, line: &str) -> anyhow::Result<()> {
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
         let stdin = session
@@ -538,6 +550,13 @@ mod tests {
         assert_eq!(list[1].address.as_deref(), Some("192.168.178.50:47800"));
         assert!(list[2].online && !list[2].paired && list[2].pairing);
         assert_eq!(list[2].id, PublicKey([3; 32]).fingerprint());
+    }
+
+    #[test]
+    fn key_combinations_become_a_client_command() {
+        assert_eq!(keys_command(&[29, 56, 111]).unwrap(), "keys 29,56,111");
+        assert!(keys_command(&[]).is_err());
+        assert!(keys_command(&[1; 7]).is_err());
     }
 
     #[test]
