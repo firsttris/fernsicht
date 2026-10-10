@@ -34,7 +34,7 @@ jobs:
             set -euxo pipefail
             cargo --version
             rpm -q mesa-va-drivers-freeworld ffmpeg
-            rpm -q mesa-vulkan-drivers-freeworld || echo "::warning::no freeworld Vulkan driver: Vulkan Video without H.264/HEVC"
+            rpm -q mesa-vulkan-drivers-freeworld.x86_64 || echo "::warning::no freeworld Vulkan driver: Vulkan Video without H.264/HEVC"
             ffmpeg -hide_banner -encoders | grep -E "h264_(vaapi|nvenc)"
             command -v vainfo vulkaninfo lspci
             test -x /opt/actions-runner/config.sh

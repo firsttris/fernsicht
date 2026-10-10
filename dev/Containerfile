@@ -16,7 +16,7 @@ RUN dnf install -y \
       mesa-va-drivers-freeworld mesa-vulkan-drivers \
       ffmpeg ffmpeg-devel \
     && if dnf list --available mesa-vulkan-drivers-freeworld >/dev/null 2>&1; then \
-         dnf install -y --allowerasing mesa-vulkan-drivers-freeworld; \
+         dnf install -y --allowerasing mesa-vulkan-drivers-freeworld.x86_64; \
        else \
          echo "RPM Fusion has no mesa-vulkan-drivers-freeworld: Vulkan Video without H.264/HEVC"; \
        fi \
