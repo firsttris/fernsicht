@@ -66,6 +66,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           FERNSICHT_REQUIRE_VULKAN: "1"
+          FERNSICHT_REQUIRE_DMABUF: "1"
         run: cargo test -p fernsicht-gpu -- --test-threads=1 --nocapture
       - name: VAAPI encode/decode on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}

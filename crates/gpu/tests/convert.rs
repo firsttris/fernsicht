@@ -1,5 +1,9 @@
-//! RGB DMA-BUF → NV12 on the real GPU. Skipped without a Vulkan device
-//! that imports DMA-BUFs, unless FERNSICHT_REQUIRE_VULKAN is set.
+//! RGB DMA-BUF → NV12 on the real GPU.
+//!
+//! Without Vulkan the tests skip, unless `FERNSICHT_REQUIRE_VULKAN` is set.
+//! Without DMA-BUF import (llvmpipe in containers and on CI machines has
+//! none) they skip, unless `FERNSICHT_REQUIRE_DMABUF` is set, as on the GPU
+//! runners.
 
 use std::sync::Arc;
 
@@ -9,15 +13,24 @@ use fernsicht_gpu::convert::Converter;
 use fernsicht_gpu::testimage::upload_as_dmabuf;
 
 fn gpu() -> Option<Arc<Gpu>> {
+    let required = |var: &str| std::env::var_os(var).is_some();
     match Gpu::new() {
         Ok(g) if g.can_import_dmabuf() => Some(Arc::new(g)),
-        other => {
-            let why = other.map(|g| format!("{} has no DMA-BUF import", g.name()));
+        Ok(g) => {
+            let why = format!("{} has no DMA-BUF import", g.name());
             assert!(
-                std::env::var_os("FERNSICHT_REQUIRE_VULKAN").is_none(),
-                "Vulkan required: {why:?}"
+                !required("FERNSICHT_REQUIRE_DMABUF"),
+                "DMA-BUF import required: {why}"
             );
-            eprintln!("skipped: {why:?}");
+            eprintln!("skipped: {why}");
+            None
+        }
+        Err(e) => {
+            assert!(
+                !required("FERNSICHT_REQUIRE_VULKAN"),
+                "Vulkan required: {e}"
+            );
+            eprintln!("skipped: {e}");
             None
         }
     }
