@@ -505,6 +505,38 @@ fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn
     }
 }
 
+/// Collapses an error that repeats every frame into one log line per second.
+#[derive(Default)]
+struct RepeatedError {
+    last: String,
+    repeats: u64,
+    since: Option<Instant>,
+}
+
+impl RepeatedError {
+    /// The line to log for this occurrence, if any.
+    fn report(&mut self, msg: String, now: Instant) -> Option<String> {
+        if msg != self.last || self.since.is_none() {
+            self.last = msg;
+            self.repeats = 0;
+            self.since = Some(now);
+            return Some(self.last.clone());
+        }
+        self.repeats += 1;
+        let since = self.since.expect("set above");
+        if now.duration_since(since) < Duration::from_secs(1) {
+            return None;
+        }
+        let line = format!(
+            "{} (another {}× in the last second)",
+            self.last, self.repeats
+        );
+        self.repeats = 0;
+        self.since = Some(now);
+        Some(line)
+    }
+}
+
 fn encode_loop(
     mut encoder: Box<dyn Encoder>,
     shared: &Shared,
@@ -515,6 +547,7 @@ fn encode_loop(
     free_enc_tx: &Sender<EncodedFrame>,
 ) {
     let mut next_frame_id = 0u32;
+    let mut errors = RepeatedError::default();
     while let Some(frame) = in_slot.take() {
         if !shared.running.load(Ordering::Acquire) {
             break;
@@ -550,7 +583,9 @@ fn encode_loop(
                 }
             }
             Err(e) => {
-                log::warn!("encode: {e}");
+                if let Some(line) = errors.report(e.to_string(), Instant::now()) {
+                    log::warn!("encode: {line}");
+                }
                 let _ = free_enc_tx.send(out);
             }
         }
@@ -621,4 +656,30 @@ fn send_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_errors_are_collapsed() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut e = RepeatedError::default();
+        assert_eq!(e.report("bad".into(), t0).as_deref(), Some("bad"));
+        for i in 1..60 {
+            assert_eq!(e.report("bad".into(), t0 + ms(i * 16)), None);
+        }
+        assert_eq!(
+            e.report("bad".into(), t0 + ms(1000)).as_deref(),
+            Some("bad (another 60× in the last second)")
+        );
+        assert_eq!(e.report("bad".into(), t0 + ms(1016)), None);
+        // A different error is reported at once.
+        assert_eq!(
+            e.report("worse".into(), t0 + ms(1020)).as_deref(),
+            Some("worse")
+        );
+    }
 }

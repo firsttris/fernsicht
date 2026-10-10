@@ -11,10 +11,10 @@ use std::time::Instant;
 
 use std::sync::Arc;
 
-use fernsicht_capture::dmabuf::{DmaBuf, DmaBufPlane, formats};
+use fernsicht_capture::dmabuf::{DmaBuf, DmaBufPlane, formats, fourcc, fourcc_name};
 use fernsicht_capture::{Frame, FrameSource, PixelFormat, TestPattern};
 use fernsicht_codec::vaapi::{
-    DEFAULT_RENDER_NODE, VaapiDecoder, VaapiEncoder, VaapiEncoderConfig, upload_bgrx_as_dmabuf,
+    DEFAULT_RENDER_NODE, VaapiDecoder, VaapiEncoder, VaapiEncoderConfig, upload_as_dmabuf,
 };
 use fernsicht_codec::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder};
 
@@ -254,9 +254,25 @@ const PATCHES: [(u8, u8, u8); 6] = [
     (128, 128, 128),
 ];
 
-/// BGRX test image: the colour patches on top, a grey ramp below that moves
-/// with `shift` so the encoder sees motion.
-fn bgrx_image(w: usize, h: usize, shift: usize) -> Vec<u8> {
+/// One pixel in the memory layout of a DRM format, opaque.
+fn pack(format: u32, r: u8, g: u8, b: u8) -> [u8; 4] {
+    let ten = |v: u8| (u32::from(v) * 1023 + 127) / 255;
+    match format {
+        formats::XRGB8888 | formats::ARGB8888 => [b, g, r, 255],
+        formats::XBGR8888 | formats::ABGR8888 => [r, g, b, 255],
+        formats::XRGB2101010 | formats::ARGB2101010 => {
+            (3 << 30 | ten(r) << 20 | ten(g) << 10 | ten(b)).to_le_bytes()
+        }
+        formats::XBGR2101010 | formats::ABGR2101010 => {
+            (3 << 30 | ten(b) << 20 | ten(g) << 10 | ten(r)).to_le_bytes()
+        }
+        other => panic!("no packing for {}", fourcc_name(other)),
+    }
+}
+
+/// Test image in `format`: the colour patches on top, a grey ramp below
+/// that moves with `shift` so the encoder sees motion.
+fn rgb_image(w: usize, h: usize, shift: usize, format: u32) -> Vec<u8> {
     let mut img = vec![0u8; w * h * 4];
     for y in 0..h {
         for x in 0..w {
@@ -266,10 +282,19 @@ fn bgrx_image(w: usize, h: usize, shift: usize) -> Vec<u8> {
                 let v = (((x + shift) % w) * 255 / w) as u8;
                 (v, v, v)
             };
-            img[(y * w + x) * 4..][..4].copy_from_slice(&[b, g, r, 0]);
+            img[(y * w + x) * 4..][..4].copy_from_slice(&pack(format, r, g, b));
         }
     }
     img
+}
+
+fn bgrx_image(w: usize, h: usize, shift: usize) -> Vec<u8> {
+    rgb_image(w, h, shift, formats::XRGB8888)
+}
+
+fn upload_bgrx(node: &str, w: u32, h: u32, shift: usize) -> DmaBuf {
+    let img = bgrx_image(w as usize, h as usize, shift);
+    upload_as_dmabuf(node, w, h, formats::XRGB8888, &img).unwrap()
 }
 
 /// BT.709 limited range, the conversion the encoder path promises.
@@ -330,9 +355,7 @@ fn dmabuf_zero_copy_bt709_and_latency() {
     let Some(node) = render_node() else { return };
     let (w, h) = (1920usize, 1080usize);
     let images: Vec<DmaBuf> = (0..2)
-        .map(|i| {
-            upload_bgrx_as_dmabuf(&node, w as u32, h as u32, &bgrx_image(w, h, i * 64)).unwrap()
-        })
+        .map(|i| upload_bgrx(&node, w as u32, h as u32, i * 64))
         .collect();
     let mut enc = VaapiEncoder::new(&config(&node, w as u32, h as u32, 60, 20_000)).unwrap();
     let mut dec = VaapiDecoder::new(&node).unwrap();
@@ -379,7 +402,7 @@ fn dmabuf_zero_copy_bt709_and_latency() {
 #[test]
 fn dmabuf_is_scaled_to_the_stream_size() {
     let Some(node) = render_node() else { return };
-    let image = upload_bgrx_as_dmabuf(&node, 2560, 1440, &bgrx_image(2560, 1440, 0)).unwrap();
+    let image = upload_bgrx(&node, 2560, 1440, 0);
     let mut enc = VaapiEncoder::new(&config(&node, 1920, 1080, 60, 20_000)).unwrap();
     let mut dec = VaapiDecoder::new(&node).unwrap();
     let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
@@ -397,8 +420,8 @@ fn cpu_and_dmabuf_input_mix_and_the_source_size_may_change() {
     let (w, h) = (1280u32, 720u32);
     let mut enc = VaapiEncoder::new(&config(&node, w, h, 60, 8_000)).unwrap();
     let mut dec = VaapiDecoder::new(&node).unwrap();
-    let small = upload_bgrx_as_dmabuf(&node, w, h, &bgrx_image(w as usize, h as usize, 0)).unwrap();
-    let big = upload_bgrx_as_dmabuf(&node, 1920, 1080, &bgrx_image(1920, 1080, 0)).unwrap();
+    let small = upload_bgrx(&node, w, h, 0);
+    let big = upload_bgrx(&node, 1920, 1080, 0);
     let cpu = frames(w, h, 1).remove(0);
     let inputs = [
         cpu.clone(),
@@ -420,14 +443,14 @@ fn bad_dmabufs_are_rejected_and_the_encoder_keeps_working() {
     let Some(node) = render_node() else { return };
     let mut enc = VaapiEncoder::new(&config(&node, 640, 360, 30, 1_000)).unwrap();
     let mut out = EncodedFrame::default();
-    let good = upload_bgrx_as_dmabuf(&node, 640, 360, &bgrx_image(640, 360, 0)).unwrap();
+    let good = upload_bgrx(&node, 640, 360, 0);
 
     let not_a_dmabuf = DmaBuf {
         objects: vec![Arc::new(std::fs::File::open("/dev/null").unwrap().into())],
         ..good.clone()
     };
-    let ten_bit = DmaBuf {
-        fourcc: formats::XRGB2101010,
+    let yuyv = DmaBuf {
+        fourcc: fourcc(b"YUYV"),
         ..good.clone()
     };
     let dangling = DmaBuf {
@@ -440,7 +463,7 @@ fn bad_dmabufs_are_rejected_and_the_encoder_keeps_working() {
     };
     for (name, bad) in [
         ("/dev/null", not_a_dmabuf),
-        ("10 bit", ten_bit),
+        ("YUYV", yuyv),
         ("dangling plane", dangling),
     ] {
         assert!(
@@ -450,4 +473,44 @@ fn bad_dmabufs_are_rejected_and_the_encoder_keeps_working() {
     }
     enc.encode(&dmabuf_frame(&good, 1), &mut out).unwrap();
     assert!(out.keyframe, "the first good frame is the keyframe");
+}
+
+#[test]
+fn every_desktop_format_keeps_its_colours() {
+    // 8 and 10 bit, RGB and BGR order, with and without alpha. KDE Plasma
+    // on AMD scans out AB30 (10 bit), most others XR24.
+    let Some(node) = render_node() else { return };
+    let (w, h) = (1280usize, 720usize);
+    for format in [
+        formats::XRGB8888,
+        formats::ARGB8888,
+        formats::XBGR8888,
+        formats::ABGR8888,
+        formats::XRGB2101010,
+        formats::ARGB2101010,
+        formats::XBGR2101010,
+        formats::ABGR2101010,
+    ] {
+        let name = fourcc_name(format);
+        let image = upload_as_dmabuf(
+            &node,
+            w as u32,
+            h as u32,
+            format,
+            &rgb_image(w, h, 0, format),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut enc = VaapiEncoder::new(&config(&node, w as u32, h as u32, 60, 8_000)).unwrap();
+        let mut dec = VaapiDecoder::new(&node).unwrap();
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        for i in 0..3 {
+            enc.encode(&dmabuf_frame(&image, i), &mut out)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            dec.decode(&out.data, &mut d).unwrap();
+        }
+        let nv12 = dec.last_frame_nv12().unwrap();
+        let result = std::panic::catch_unwind(|| assert_patch_colours(&nv12, w, h));
+        assert!(result.is_ok(), "{name}: colours wrong (see above)");
+        summary(&format!("- DMA-BUF {name}: Farben ok"));
+    }
 }

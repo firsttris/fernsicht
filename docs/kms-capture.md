@@ -80,7 +80,7 @@ NVIDIA-Rechner geht das erst mit dem Vulkan-Client.
 | `KMS capture needs CAP_SYS_ADMIN` | Nicht mit `sudo` gestartet oder in der rootless Box. Siehe oben. |
 | `no display to capture` | Kein Monitor aktiv, oder die falsche Karte. Mit `--kms-card` bzw. `--kms-connector` wählen. |
 | `connector DP-2 is not active (active: ["DP-1"])` | Den angezeigten Namen verwenden. |
-| `DMA-BUF format XR30 is not supported yet` | Der Desktop läuft mit 10 Bit oder HDR. Zum Testen in den Anzeige-Einstellungen ausschalten. |
+| `the driver cannot import this DMA-BUF (…)` | Der Treiber kann das Puffer-Format nicht lesen. Bitte die ganze Zeile schicken. |
 | `display is off (no framebuffer)` | Monitor im Standby. |
 | Session wird abgelehnt (Client wartet auf Antwort) | Die Fehlermeldung steht im Terminal des Host-Agents. |
 
@@ -93,6 +93,8 @@ NVIDIA-Rechner geht das erst mit dem Vulkan-Client.
 - **Root-Prozess.** Der ganze Host-Agent läuft vorerst als root. Das ist nur
   zum Testen im LAN gedacht. Später übernimmt ein kleiner privilegierter
   Helfer nur das Capture.
+- **HDR** wird noch nicht getreu übertragen. 10-Bit-Desktops (KDE auf AMD
+  nutzt `AB30`) gehen, werden aber auf 8 Bit H.264 heruntergerechnet.
 - Möglich ist minimales **Tearing**, falls der Compositor in den gerade
   gelesenen Puffer schreibt (wie bei Sunshine).
 
@@ -103,7 +105,8 @@ NVIDIA-Rechner geht das erst mit dem Vulkan-Client.
 - Der Weg DMA-BUF → VAAPI läuft in CI auf dem AMD-Runner. Statt eines
   KMS-Framebuffers dient ein exportiertes VAAPI-Bild als DMA-BUF, der Rest ist
   identisch. Geprüft werden:
-  - Farbtreue nach BT.709 an sechs Farbfeldern;
+  - Farbtreue nach BT.709 an sechs Farbfeldern, für alle acht Formate
+    (8 und 10 Bit, RGB- und BGR-Reihenfolge, mit und ohne Alpha);
   - Skalierung von 1440p auf 1080p;
   - Wechsel zwischen CPU- und DMA-BUF-Eingang;
   - Ablehnung kaputter Puffer;

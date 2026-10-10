@@ -22,6 +22,10 @@ pub mod formats {
     pub const XBGR8888: u32 = fourcc(b"XB24");
     pub const ABGR8888: u32 = fourcc(b"AB24");
     pub const XRGB2101010: u32 = fourcc(b"XR30");
+    pub const ARGB2101010: u32 = fourcc(b"AR30");
+    pub const XBGR2101010: u32 = fourcc(b"XB30");
+    /// What KDE Plasma scans out on AMD by default.
+    pub const ABGR2101010: u32 = fourcc(b"AB30");
 
     /// `DRM_FORMAT_MOD_LINEAR`.
     pub const MOD_LINEAR: u64 = 0;

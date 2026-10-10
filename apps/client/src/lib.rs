@@ -30,6 +30,8 @@ use fernsicht_render::{HeadlessPresenter, Presenter};
 const HELLO_INTERVAL: Duration = Duration::from_millis(250);
 const FEEDBACK_INTERVAL: Duration = Duration::from_millis(100);
 const OVERLAY_INTERVAL: Duration = Duration::from_secs(1);
+/// Warn when the host acked but no video arrived for this long.
+const NO_VIDEO_WARNING: Duration = Duration::from_secs(2);
 /// Completed frames waiting for the decoder.
 const DECODE_QUEUE: usize = 4;
 /// Frame buffers: the queue, one being decoded, one being filled.
@@ -285,10 +287,19 @@ fn network_loop(
     let mut last_packet = Instant::now();
     let mut rates = RateWindow::new();
     let mut overflowed = 0u64;
+    let mut acked_at: Option<Instant> = None;
+    let mut video_seen = false;
 
     loop {
         if stop.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
             break;
+        }
+        if !video_seen && acked_at.is_some_and(|t| t.elapsed() >= NO_VIDEO_WARNING) {
+            log::warn!(
+                "the host accepted the session but sends no video for {NO_VIDEO_WARNING:?}; \
+                 the host agent's log says why"
+            );
+            video_seen = true; // warn once
         }
         if last_packet.elapsed() > cfg.host_timeout {
             anyhow::bail!("no packets from {} for {:?}", cfg.host, cfg.host_timeout);
@@ -363,6 +374,7 @@ fn network_loop(
         match packet {
             Packet::HelloAck(ack) => {
                 if session.is_none() {
+                    acked_at = Some(Instant::now());
                     log::info!(
                         "session {:08x}: {}x{}@{} {}",
                         ack.session_id,
@@ -381,6 +393,7 @@ fn network_loop(
                 if session.is_none_or(|(id, _)| id != h.session_id) {
                     continue;
                 }
+                video_seen = true;
                 if loss.drop_packet() {
                     continue;
                 }

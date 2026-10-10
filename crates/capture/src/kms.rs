@@ -7,7 +7,7 @@
 //! session (login screen, gamescope) and needs no confirmation dialog.
 //!
 //! Limits: the hardware cursor and overlay planes are separate planes and
-//! are not in the picture; HDR (10-bit) framebuffers are not supported yet.
+//! are not in the picture.
 //!
 //! The kernel only hands out buffer handles of another client's
 //! framebuffer to processes with `CAP_SYS_ADMIN`. Without it, GetFB2
