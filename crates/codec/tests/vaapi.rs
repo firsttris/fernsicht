@@ -518,3 +518,62 @@ fn every_desktop_format_keeps_its_colours() {
         summary(&format!("- DMA-BUF {name}: Farben ok"));
     }
 }
+
+/// Encode time for a source like a real desktop (1440p, 10 bit, scaled to
+/// 1080p), once with frames back to back and once paced at 60 fps like
+/// live capture. Between paced frames the GPU may clock down, which the
+/// back-to-back numbers would hide.
+#[test]
+fn desktop_source_encode_time_back_to_back_and_paced() {
+    let Some(node) = render_node() else { return };
+    let (sw, sh) = (2560usize, 1440usize);
+    let format = formats::ABGR2101010;
+    let images: Vec<DmaBuf> = (0..2)
+        .map(|i| {
+            upload_as_dmabuf(
+                &node,
+                sw as u32,
+                sh as u32,
+                format,
+                &rgb_image(sw, sh, i * 64, format),
+            )
+            .unwrap()
+        })
+        .collect();
+    let mut enc = VaapiEncoder::new(&config(&node, 1920, 1080, 60, 20_000)).unwrap();
+    let mut out = EncodedFrame::default();
+    let mut measure = |paced: bool| {
+        let interval = std::time::Duration::from_micros(16_667);
+        let mut next = Instant::now();
+        let mut ms = Vec::new();
+        for i in 0..120u64 {
+            if paced {
+                next += interval;
+                if let Some(wait) = next.checked_duration_since(Instant::now()) {
+                    std::thread::sleep(wait);
+                }
+            }
+            let t = Instant::now();
+            enc.encode(&dmabuf_frame(&images[(i % 2) as usize], i), &mut out)
+                .unwrap();
+            ms.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        ms
+    };
+    let burst = measure(false);
+    let paced = measure(true);
+    summary("### Encode einer Desktop-Quelle (2560×1440, 10 Bit → 1080p)");
+    summary("| Takt | Median / p95 |\n|---|---|");
+    for (name, v) in [
+        ("Frames direkt hintereinander", &burst),
+        ("60 fps wie live", &paced),
+    ] {
+        summary(&format!(
+            "| {name} | {:.2} / {:.2} ms |",
+            percentile(v.clone(), 0.5),
+            percentile(v.clone(), 0.95)
+        ));
+    }
+    summary("");
+    assert!(percentile(paced, 0.95) < 16.0);
+}

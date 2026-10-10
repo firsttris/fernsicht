@@ -63,10 +63,11 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             host: "127.0.0.1:47800".into(),
-            width: 1920,
-            height: 1080,
+            // The host's screen size and a bitrate to match.
+            width: 0,
+            height: 0,
             fps: 60,
-            bitrate_kbps: 20_000,
+            bitrate_kbps: 0,
             loss: 0.0,
             duration: None,
             print_overlay: false,

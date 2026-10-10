@@ -12,10 +12,11 @@ struct Args {
     /// UDP address to listen on.
     #[arg(long, default_value = "0.0.0.0:47800")]
     bind: String,
-    /// Upper bound for the resolution a client may request.
-    #[arg(long, default_value_t = 1920)]
+    /// Upper bound for the stream resolution. A client asking for the
+    /// host's resolution gets the screen's, scaled down to fit this.
+    #[arg(long, default_value_t = 3840)]
     max_width: u16,
-    #[arg(long, default_value_t = 1080)]
+    #[arg(long, default_value_t = 2160)]
     max_height: u16,
     /// Upper bound for the frame rate a client may request.
     #[arg(long, default_value_t = 144)]

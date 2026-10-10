@@ -87,8 +87,8 @@ impl Default for HostConfig {
     fn default() -> Self {
         Self {
             bind: "0.0.0.0:47800".into(),
-            max_width: 1920,
-            max_height: 1080,
+            max_width: 3840,
+            max_height: 2160,
             max_fps: 144,
             max_bitrate_kbps: 80_000,
             loss: 0.0,
@@ -239,16 +239,19 @@ impl HostAgent {
                             old.stop();
                         }
                         let params = self.negotiate(&hello);
-                        log::info!(
-                            "session {:08x}: {from} {}x{}@{} {} kbit/s",
-                            params.session_id,
-                            params.width,
-                            params.height,
-                            params.fps,
-                            params.bitrate_kbps
-                        );
                         match self.start_session(params, from) {
-                            Ok(s) => session = Some(s),
+                            Ok(s) => {
+                                let p = s.params;
+                                log::info!(
+                                    "session {:08x}: {from} {}x{}@{} {} kbit/s",
+                                    p.session_id,
+                                    p.width,
+                                    p.height,
+                                    p.fps,
+                                    p.bitrate_kbps
+                                );
+                                session = Some(s);
+                            }
                             Err(e) => {
                                 // No ack: the client keeps asking and times out.
                                 log::error!("session {:08x}: {e:#}", params.session_id);
@@ -309,19 +312,33 @@ impl HostAgent {
         Ok(())
     }
 
+    /// The client's wishes capped by the host's limits. A width, height or
+    /// bitrate of 0 is resolved when the session starts: the size of the
+    /// captured screen, and a bitrate for that size.
     fn negotiate(&self, hello: &Hello) -> SessionParams {
         let pick = |want: u16, max: u16| if want == 0 { max } else { want.min(max) };
         SessionParams {
             session_id: new_session_id(),
-            width: pick(hello.width, self.cfg.max_width) & !1,
-            height: pick(hello.height, self.cfg.max_height) & !1,
+            width: hello.width.min(self.cfg.max_width) & !1,
+            height: hello.height.min(self.cfg.max_height) & !1,
             fps: pick(hello.fps, self.cfg.max_fps).max(1),
-            bitrate_kbps: if hello.bitrate_kbps == 0 {
-                20_000.min(self.cfg.max_bitrate_kbps)
-            } else {
-                hello.bitrate_kbps.min(self.cfg.max_bitrate_kbps)
-            },
+            bitrate_kbps: hello.bitrate_kbps.min(self.cfg.max_bitrate_kbps),
         }
+    }
+
+    /// Fills in what the client left to the host (see [`Self::negotiate`]).
+    fn resolve(&self, mut p: SessionParams, native: (u32, u32)) -> SessionParams {
+        if p.width == 0 || p.height == 0 {
+            let (w, h) = fit(native, (self.cfg.max_width, self.cfg.max_height));
+            p.width = w;
+            p.height = h;
+        }
+        if p.bitrate_kbps == 0 {
+            p.bitrate_kbps = default_bitrate_kbps(p.width, p.height, p.fps)
+                .min(self.cfg.max_bitrate_kbps)
+                .max(1);
+        }
+        p
     }
 
     fn start_session(&self, params: SessionParams, peer: SocketAddr) -> anyhow::Result<Session> {
@@ -333,14 +350,22 @@ impl HostAgent {
             keyframe_requested: AtomicBool::new(true),
             fec_loss: AtomicU32::new(loss.estimate().to_bits()),
         });
-        // Create the encoder first: if the GPU is unavailable the session
-        // fails before any thread starts.
+        // Source and encoder come first: if the screen or the GPU is
+        // unavailable the session fails before any thread starts. The
+        // source tells the size of the screen, for a client that asked for
+        // the host's own resolution.
+        let source = make_source(&self.cfg.capture, &params)?;
+        let params = self.resolve(params, (source.width(), source.height()));
+        let source = match &self.cfg.capture {
+            // The test pattern is drawn at whatever size the session uses.
+            CaptureKind::TestPattern => make_source(&self.cfg.capture, &params)?,
+            _ => source,
+        };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
         let frame_slot = Arc::new(Slot::new());
         let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
 
-        let source = make_source(&self.cfg.capture, &params)?;
         let (free_frames_tx, free_frames_rx) = bounded(BUFFERS);
         for _ in 0..BUFFERS {
             free_frames_tx.send(source.alloc_frame()).unwrap();
@@ -455,13 +480,37 @@ fn capture_loop(
     slot.close();
 }
 
+/// Size of the test pattern when the client leaves the size to the host.
+pub const TEST_PATTERN_SIZE: (u32, u32) = (1920, 1080);
+
+/// `native` scaled down to fit `max` (aspect ratio kept), even sizes.
+fn fit(native: (u32, u32), max: (u16, u16)) -> (u16, u16) {
+    let (w, h) = (native.0.max(2) as f64, native.1.max(2) as f64);
+    let s = (f64::from(max.0) / w).min(f64::from(max.1) / h).min(1.0);
+    let even = |v: f64| ((v.round() as u32).max(2) & !1).min(u32::from(u16::MAX) & !1) as u16;
+    (even(w * s), even(h * s))
+}
+
+/// About what 20 Mbit/s are for 1080p60, the same bits per pixel for any
+/// size and rate. Desktop text needs that much to stay sharp.
+fn default_bitrate_kbps(width: u16, height: u16, fps: u16) -> u32 {
+    let pixels_per_sec = f64::from(width) * f64::from(height) * f64::from(fps);
+    let per_1080p60 = 1920.0 * 1080.0 * 60.0;
+    (20_000.0 * pixels_per_sec / per_1080p60)
+        .round()
+        .clamp(1_000.0, 200_000.0) as u32
+}
+
 fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn FrameSource>> {
     match kind {
-        CaptureKind::TestPattern => Ok(Box::new(TestPattern::new(
-            u32::from(p.width),
-            u32::from(p.height),
-            u32::from(p.fps),
-        ))),
+        CaptureKind::TestPattern => {
+            let (w, h) = if p.width == 0 || p.height == 0 {
+                TEST_PATTERN_SIZE
+            } else {
+                (u32::from(p.width), u32::from(p.height))
+            };
+            Ok(Box::new(TestPattern::new(w, h, u32::from(p.fps))))
+        }
         #[cfg(feature = "kms")]
         CaptureKind::Kms { card, connector } => {
             let cap =
@@ -678,6 +727,26 @@ fn send_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_size_is_fitted_into_the_limits() {
+        assert_eq!(fit((2560, 1440), (3840, 2160)), (2560, 1440));
+        assert_eq!(fit((2560, 1440), (1920, 1080)), (1920, 1080));
+        // Aspect ratio kept, even sizes.
+        assert_eq!(fit((2560, 1600), (1920, 1080)), (1728, 1080));
+        assert_eq!(fit((1366, 768), (3840, 2160)), (1366, 768));
+        assert_eq!(fit((1365, 767), (3840, 2160)), (1364, 766));
+        assert_eq!(fit((0, 0), (640, 480)), (2, 2));
+    }
+
+    #[test]
+    fn default_bitrate_follows_the_pixel_rate() {
+        assert_eq!(default_bitrate_kbps(1920, 1080, 60), 20_000);
+        assert_eq!(default_bitrate_kbps(2560, 1440, 60), 35_556);
+        assert_eq!(default_bitrate_kbps(1920, 1080, 30), 10_000);
+        assert_eq!(default_bitrate_kbps(320, 240, 30), 1_000, "floor");
+        assert_eq!(default_bitrate_kbps(3840, 2160, 144), 192_000);
+    }
 
     #[test]
     fn repeated_errors_are_collapsed() {

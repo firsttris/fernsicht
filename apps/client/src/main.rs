@@ -14,14 +14,16 @@ use fernsicht_render::overlay::ms;
 struct Args {
     /// Host agent address, e.g. 192.168.1.20:47800.
     host: String,
-    #[arg(long, default_value_t = 1920)]
+    /// Stream size; 0 (default) = the host's screen size.
+    #[arg(long, default_value_t = 0)]
     width: u16,
-    #[arg(long, default_value_t = 1080)]
+    #[arg(long, default_value_t = 0)]
     height: u16,
     #[arg(long, default_value_t = 60)]
     fps: u16,
-    /// Requested bitrate in kbit/s.
-    #[arg(long, default_value_t = 20_000)]
+    /// Bitrate in kbit/s; 0 (default) = chosen by the host for the size
+    /// (20 Mbit/s for 1080p60, about 36 for 1440p60).
+    #[arg(long, default_value_t = 0)]
     bitrate: u32,
     /// Drop this fraction of incoming video packets (e.g. 0.01 = 1 %).
     #[arg(long, default_value_t = 0.0)]

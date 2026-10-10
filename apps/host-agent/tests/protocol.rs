@@ -144,7 +144,16 @@ fn hello_is_acked_with_capped_parameters() {
 }
 
 #[test]
-fn zero_resolution_means_host_maximum() {
+fn zero_resolution_means_the_screen_size() {
+    // The test pattern stands in for a 1080p screen.
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(0, 0, 60, 0);
+    let ack = peer.ack();
+    assert_eq!((ack.width, ack.height), (1920, 1080));
+    host.shutdown();
+
+    // Too large for the host's limits: scaled down, aspect ratio kept.
     let host = Host::start(HostConfig {
         max_width: 640,
         max_height: 480,
@@ -154,7 +163,7 @@ fn zero_resolution_means_host_maximum() {
     let mut peer = Peer::new(host.addr);
     peer.hello(0, 0, 50, 0);
     let ack = peer.ack();
-    assert_eq!((ack.width, ack.height, ack.fps), (640, 480, 50));
+    assert_eq!((ack.width, ack.height, ack.fps), (640, 360, 50));
     host.shutdown();
 }
 
