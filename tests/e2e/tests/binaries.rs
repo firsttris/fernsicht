@@ -118,6 +118,7 @@ fn host_and_client_binaries_stream() {
             "360",
             "--duration",
             "3",
+            "--no-audio",
         ])
         .args(["--loss", "0.01"])
         .output()

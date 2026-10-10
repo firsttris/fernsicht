@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use fernsicht_client::{ClientConfig, InputEvent, InputHandle, run};
+use fernsicht_client::{AudioOutput, ClientConfig, InputEvent, InputHandle, run};
 use fernsicht_e2e::{Host, ImpairedLink, Impairment};
-use fernsicht_host_agent::{HostConfig, InputKind};
+use fernsicht_host_agent::{AudioKind, HostConfig, InputKind};
 use fernsicht_input::Recorder;
 
 fn client(host: &Host, secs: f32) -> fernsicht_client::RunSummary {
@@ -156,4 +156,95 @@ fn keys_arrive_once_and_in_order_through_loss() {
     drop(link);
     host.stop();
     assert_eq!(*recorder.0.lock().unwrap(), typed);
+}
+
+fn opus() -> bool {
+    match fernsicht_audio::opus::available() {
+        Ok(()) => true,
+        Err(e) if std::env::var_os("FERNSICHT_REQUIRE_OPUS").is_none() => {
+            eprintln!("skipped: {e}");
+            false
+        }
+        Err(e) => panic!("FERNSICHT_REQUIRE_OPUS is set but: {e}"),
+    }
+}
+
+/// Plays the host's test tone for `secs` through `down` and returns the
+/// summary and what was played.
+fn tone(down: Impairment, secs: u64) -> (fernsicht_client::RunSummary, Vec<i16>) {
+    let host = Host::start(HostConfig {
+        audio: AudioKind::Tone,
+        ..HostConfig::default()
+    });
+    let link = ImpairedLink::start(host.addr(), down, Impairment::none(), 3);
+    let recorder = fernsicht_audio::Recorder::default();
+    let s = run(
+        ClientConfig {
+            host: link.addr().to_string(),
+            width: 640,
+            height: 360,
+            duration: Some(Duration::from_secs(secs)),
+            audio: AudioOutput::Record(recorder.clone()),
+            ..ClientConfig::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("client failed");
+    drop(link);
+    host.stop();
+    let pcm = recorder.played();
+    eprintln!("{down:?}: {:?}", s.audio);
+    (s, pcm)
+}
+
+/// Share of the left channel's energy at `hz` (Goertzel).
+fn share_at(pcm: &[i16], hz: f64) -> f64 {
+    let x: Vec<f64> = pcm.iter().step_by(2).map(|&v| f64::from(v)).collect();
+    let w = std::f64::consts::TAU * hz / 48_000.0;
+    let (mut s1, mut s2) = (0.0, 0.0);
+    for &v in &x {
+        let s = v + 2.0 * w.cos() * s1 - s2;
+        s2 = s1;
+        s1 = s;
+    }
+    let power = s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+    let total: f64 = x.iter().map(|v| v * v).sum::<f64>() * x.len() as f64 / 2.0;
+    power / total.max(1.0)
+}
+
+#[test]
+fn the_hosts_sound_is_played() {
+    if !opus() {
+        return;
+    }
+    let _serial = fernsicht_e2e::exclusive();
+    let (s, pcm) = tone(Impairment::none(), 3);
+    // 200 frames a second; start-up takes a moment.
+    assert!(s.audio.played > 400, "{:?}", s.audio);
+    assert!(s.audio.concealed <= 2, "{:?}", s.audio);
+    let middle = &pcm[pcm.len() / 4..pcm.len() * 3 / 4];
+    let share = share_at(middle, 440.0);
+    assert!(
+        share > 0.8,
+        "440 Hz is {share:.2} of what was played: {:?}",
+        s.audio
+    );
+    // Buffers: 15 ms jitter + 10 ms output + transport; generous bound.
+    assert!(s.audio.delay_us < 80_000, "{:?}", s.audio);
+}
+
+#[test]
+fn lost_sound_packets_are_mostly_repaired() {
+    if !opus() {
+        return;
+    }
+    let _serial = fernsicht_e2e::exclusive();
+    let (s, pcm) = tone(Impairment::loss(0.2), 3);
+    assert!(s.audio.played > 400, "{:?}", s.audio);
+    // Each packet repeats the previous frame: only two losses in a row
+    // (4 % of the time at 20 % loss) need concealment.
+    let concealed = s.audio.concealed as f64 / (s.audio.played + s.audio.concealed) as f64;
+    assert!(concealed < 0.1, "{concealed:.3} concealed: {:?}", s.audio);
+    let middle = &pcm[pcm.len() / 4..pcm.len() * 3 / 4];
+    assert!(share_at(middle, 440.0) > 0.6);
 }

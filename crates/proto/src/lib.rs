@@ -46,6 +46,7 @@ pub enum Kind {
     CursorShape = 9,
     Input = 10,
     InputAck = 11,
+    Audio = 12,
 }
 
 impl Kind {
@@ -62,6 +63,7 @@ impl Kind {
             9 => Kind::CursorShape,
             10 => Kind::Input,
             11 => Kind::InputAck,
+            12 => Kind::Audio,
             _ => return None,
         })
     }
@@ -719,6 +721,70 @@ impl InputAck {
     }
 }
 
+/// Largest encoded audio frame (Opus at up to ~500 kbit/s, 5 ms).
+pub const MAX_AUDIO_FRAME: usize = 400;
+
+/// Audio, host → client: Opus frame `seq` and, again, frame `seq - 1`, so
+/// one lost packet leaves no gap. Frames are 5 ms; `capture_us` (host
+/// clock) is when frame `seq` was played on the host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AudioHeader {
+    pub session_id: u32,
+    pub seq: u32,
+    pub capture_us: u64,
+}
+
+impl AudioHeader {
+    pub const LEN: usize = PREFIX_LEN + 16;
+
+    /// Header, then `frame` and `previous` (may be empty), each with a
+    /// 16-bit length.
+    pub fn encode(&self, frame: &[u8], previous: &[u8], buf: &mut [u8]) -> usize {
+        assert!(
+            !frame.is_empty()
+                && frame.len() <= MAX_AUDIO_FRAME
+                && previous.len() <= MAX_AUDIO_FRAME,
+            "audio frame size"
+        );
+        let len = Self::LEN + 4 + frame.len() + previous.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Audio, 0);
+        w.u32(self.session_id);
+        w.u32(self.seq);
+        w.u64(self.capture_us);
+        w.u16(frame.len() as u16);
+        w.bytes(frame);
+        w.u16(previous.len() as u16);
+        w.bytes(previous);
+        len
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn read<'a>(r: &mut Reader<'a>) -> Result<(Self, &'a [u8], &'a [u8]), DecodeError> {
+        let h = AudioHeader {
+            session_id: r.u32()?,
+            seq: r.u32()?,
+            capture_us: r.u64()?,
+        };
+        let mut frame = || -> Result<&'a [u8], DecodeError> {
+            let n = usize::from(r.u16()?);
+            if n > MAX_AUDIO_FRAME {
+                return Err(DecodeError::Invalid("audio frame too large"));
+            }
+            r.take_slice(n)
+        };
+        let current = frame()?;
+        let previous = frame()?;
+        if current.is_empty() {
+            return Err(DecodeError::Invalid("empty audio frame"));
+        }
+        if !r.is_empty() {
+            return Err(DecodeError::Invalid("trailing bytes after audio"));
+        }
+        Ok((h, current, previous))
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -735,6 +801,8 @@ pub enum Packet<'a> {
     /// Header and the checked events; iterate with [`InputHeader::events`].
     Input(InputHeader, &'a [u8]),
     InputAck(InputAck),
+    /// Header, frame `seq`, frame `seq - 1` (may be empty).
+    Audio(AudioHeader, &'a [u8], &'a [u8]),
 }
 
 impl<'a> Packet<'a> {
@@ -780,6 +848,10 @@ impl<'a> Packet<'a> {
                 Packet::Input(h, body)
             }
             Kind::InputAck => Packet::InputAck(InputAck::read(&mut r)?),
+            Kind::Audio => {
+                let (h, frame, previous) = AudioHeader::read(&mut r)?;
+                Packet::Audio(h, frame, previous)
+            }
         })
     }
 }
@@ -1064,6 +1136,41 @@ mod tests {
         let n = InputHeader::encode(1, &full, &mut buf);
         assert!(n <= MAX_DATAGRAM);
         assert!(Packet::decode(&buf[..n]).is_ok());
+    }
+
+    #[test]
+    fn audio_roundtrips_with_its_previous_frame() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let h = AudioHeader {
+            session_id: 4,
+            seq: 77,
+            capture_us: 123_456_789,
+        };
+        let (cur, prev) = ([1u8; 80], [2u8; 81]);
+        let n = h.encode(&cur, &prev, &mut buf);
+        assert_eq!(
+            Packet::decode(&buf[..n]).unwrap(),
+            Packet::Audio(h, &cur[..], &prev[..])
+        );
+        // The first frame has no previous one.
+        let n = h.encode(&cur, &[], &mut buf);
+        assert_eq!(
+            Packet::decode(&buf[..n]).unwrap(),
+            Packet::Audio(h, &cur[..], &[][..])
+        );
+        // Two maximal frames fit a datagram.
+        let big = [0u8; MAX_AUDIO_FRAME];
+        assert!(h.encode(&big, &big, &mut buf) <= MAX_DATAGRAM);
+        // Broken: truncated, trailing, oversized length, empty frame.
+        let n = h.encode(&cur, &prev, &mut buf);
+        assert!(Packet::decode(&buf[..n - 1]).is_err());
+        assert!(Packet::decode(&buf[..n + 1]).is_err());
+        let mut huge = buf[..n].to_vec();
+        huge[AudioHeader::LEN..AudioHeader::LEN + 2].copy_from_slice(&500u16.to_le_bytes());
+        assert!(Packet::decode(&huge).is_err());
+        let mut empty = buf[..AudioHeader::LEN].to_vec();
+        empty.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(Packet::decode(&empty).is_err());
     }
 
     #[test]

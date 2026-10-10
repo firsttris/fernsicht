@@ -31,6 +31,7 @@ ffmpeg-next = { version = "9", default-features = false, features = ["codec", "f
 crossbeam-channel = "0.5"
 drm = "0.15"
 libc = "0.2"
+libloading = "0.8"
 log = "0.4"
 naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 raw-window-handle = "0.6"

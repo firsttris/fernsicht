@@ -29,6 +29,7 @@ fuzz_target!(|data: &[u8]| {
             InputHeader::encode(h.session_id, &events, &mut buf)
         }
         Packet::InputAck(p) => p.encode(&mut buf),
+        Packet::Audio(h, frame, previous) => h.encode(frame, previous, &mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

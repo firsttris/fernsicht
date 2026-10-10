@@ -184,13 +184,14 @@ proptest! {
                 InputHeader::encode(h.session_id, &events, &mut buf)
             }
             Packet::InputAck(p) => p.encode(&mut buf),
+            Packet::Audio(h, frame, previous) => h.encode(frame, previous, &mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }
 
     /// Valid prefix plus random body: exercises the per-kind validation.
     #[test]
-    fn random_bodies_are_safe(kind in 1u8..=11, flags: u8,
+    fn random_bodies_are_safe(kind in 1u8..=12, flags: u8,
                               body in proptest::collection::vec(any::<u8>(), 0..96)) {
         let mut bytes = vec![MAGIC, VERSION, kind, flags];
         bytes.extend_from_slice(&body);

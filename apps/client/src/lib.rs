@@ -64,6 +64,8 @@ pub struct ClientConfig {
     pub decoder: DecoderChoice,
     /// Mouse and keyboard to send to the host; `None` = view only.
     pub input: Option<Arc<InputHandle>>,
+    /// Where the host's sound is played.
+    pub audio: AudioOutput,
     /// Writes the received bitstream here (H.264 Annex B: plays with
     /// `ffplay` or `mpv`). Only frames the decoder gets are written.
     pub record: Option<std::path::PathBuf>,
@@ -85,8 +87,31 @@ impl Default for ClientConfig {
             render_node: "/dev/dri/renderD128".into(),
             decoder: DecoderChoice::Auto,
             input: None,
+            audio: AudioOutput::Off,
             record: None,
         }
+    }
+}
+
+/// Where the host's sound goes.
+#[derive(Clone, Default)]
+pub enum AudioOutput {
+    /// Not played (the library default: tests stay quiet).
+    #[default]
+    Off,
+    /// The default output (PipeWire/PulseAudio).
+    Speakers,
+    /// Kept (tests).
+    Record(fernsicht_audio::Recorder),
+}
+
+impl std::fmt::Debug for AudioOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AudioOutput::Off => "Off",
+            AudioOutput::Speakers => "Speakers",
+            AudioOutput::Record(_) => "Record",
+        })
     }
 }
 
@@ -185,6 +210,20 @@ pub struct RunSummary {
     /// Pointer positions received, and pointer images completed.
     pub cursor_positions: u64,
     pub cursor_shapes: u64,
+    pub audio: AudioSummary,
+}
+
+/// How the sound went.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AudioSummary {
+    /// 5 ms frames played from what arrived.
+    pub played: u64,
+    /// Frames lost and bridged by the decoder.
+    pub concealed: u64,
+    /// Frames dropped to keep the delay down.
+    pub dropped: u64,
+    /// From the host's speakers to ours, average (µs).
+    pub delay_us: u64,
 }
 
 impl RunSummary {
@@ -334,7 +373,14 @@ pub fn run_with(
     if let Err(e) = raise_priority(HOT_NICE) {
         log::debug!("network thread: could not raise priority: {e}");
     }
+    // Sound plays on its own thread, paced by the sound card.
+    let (audio_tx, audio_rx) = bounded::<AudioPacket>(64);
+    let audio = match cfg.audio.clone() {
+        AudioOutput::Off => None,
+        out => Some(spawn_hot("audio", move || audio_loop(&audio_rx, &out))?),
+    };
     let pipe = Pipe {
+        audio_tx: audio.as_ref().map(|_| &audio_tx),
         decode_tx: &decode_tx,
         free_rx: &free_rx,
         free_tx: &free_tx,
@@ -344,7 +390,11 @@ pub fn run_with(
     let net = network_loop(&cfg, &socket, &stop, &pipe, &info);
     // Closing the queue ends the present thread once it has drained.
     drop(decode_tx);
+    drop(audio_tx);
     let present = presenter.join().expect("present thread panicked");
+    let audio = audio
+        .map(|t| t.join().expect("audio thread panicked"))
+        .unwrap_or_default();
     let net = net?;
     let (cursor_positions, cursor_shapes) = cursor
         .lock()
@@ -370,11 +420,14 @@ pub fn run_with(
             .collect(),
         cursor_positions,
         cursor_shapes,
+        audio,
     })
 }
 
 /// The network thread's ends of the decode queue.
 struct Pipe<'a> {
+    /// `None` without sound output.
+    audio_tx: Option<&'a Sender<AudioPacket>>,
     decode_tx: &'a Sender<ReceivedFrame>,
     free_rx: &'a Receiver<ReceivedFrame>,
     free_tx: &'a Sender<ReceivedFrame>,
@@ -533,6 +586,19 @@ fn network_loop(
                     && let Ok(mut q) = input.queue.lock()
                 {
                     q.ack(a.seq);
+                }
+            }
+            Packet::Audio(h, frame, previous) => {
+                if session.is_some_and(|(id, _)| id == h.session_id)
+                    && let Some(tx) = pipe.audio_tx
+                {
+                    // Full only if playback stalls; then dropping is right.
+                    let _ = tx.try_send(AudioPacket {
+                        seq: h.seq,
+                        frame: frame.to_vec(),
+                        previous: previous.to_vec(),
+                        captured_local: h.capture_us as i64 - clock.offset_us(),
+                    });
                 }
             }
             Packet::Cursor(c) => {
@@ -822,6 +888,133 @@ fn present_loop(
         }
     }
     r
+}
+
+/// One audio packet for the playback thread.
+struct AudioPacket {
+    seq: u32,
+    frame: Vec<u8>,
+    previous: Vec<u8>,
+    /// When the host played it, on our clock (µs).
+    captured_local: i64,
+}
+
+/// Frames the jitter buffer holds before playing (15 ms), and what the
+/// sound server buffers after it (10 ms).
+const AUDIO_JITTER_FRAMES: usize = 3;
+const AUDIO_OUTPUT_FRAMES: u32 = 2;
+
+fn audio_sink(out: &AudioOutput) -> Option<Box<dyn fernsicht_audio::AudioSink>> {
+    match out {
+        AudioOutput::Off => None,
+        AudioOutput::Record(r) => Some(Box::new(r.clone())),
+        AudioOutput::Speakers => {
+            match fernsicht_audio::pulse::Playback::open(AUDIO_OUTPUT_FRAMES) {
+                Ok(p) => Some(Box::new(p)),
+                Err(e) => {
+                    log::warn!("no sound: {e}");
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Plays the host's sound: jitter buffer, Opus decoding with concealment
+/// of lost frames, and a sink whose blocking writes pace the loop. The
+/// output opens with the first sound from the host. Ends when the network
+/// thread hangs up.
+fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput) -> AudioSummary {
+    use fernsicht_audio::jitter::{Jitter, Next};
+    let mut summary = AudioSummary::default();
+    let Ok(first) = rx.recv() else {
+        return summary;
+    };
+    let Some(mut sink) = audio_sink(out) else {
+        // Drain, so the network thread never blocks on us.
+        while rx.recv().is_ok() {}
+        return summary;
+    };
+    let mut decoder = match fernsicht_audio::opus::Decoder::new() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("no sound: {e}");
+            return summary;
+        }
+    };
+    let mut jitter = Jitter::new(AUDIO_JITTER_FRAMES);
+    let mut pcm: fernsicht_audio::Frame =
+        [0; fernsicht_audio::FRAME_SAMPLES * fernsicht_audio::CHANNELS];
+    let mut captured: std::collections::BTreeMap<u32, i64> = Default::default();
+    let mut started = false;
+    let mut delays = (0u64, 0u64);
+    take(first, &mut jitter, &mut captured);
+    fn take(
+        p: AudioPacket,
+        jitter: &mut Jitter,
+        captured: &mut std::collections::BTreeMap<u32, i64>,
+    ) {
+        jitter.push(p.seq, &p.frame);
+        jitter.push(p.seq.wrapping_sub(1), &p.previous);
+        captured.insert(p.seq, p.captured_local);
+        while captured.len() > 64 {
+            captured.pop_first();
+        }
+    }
+    loop {
+        // Wait for sound before starting; once playing, the sink paces us.
+        if !started {
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(p) => take(p, &mut jitter, &mut captured),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        loop {
+            match rx.try_recv() {
+                Ok(p) => take(p, &mut jitter, &mut captured),
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    summary.played = jitter.played;
+                    summary.concealed = jitter.concealed;
+                    summary.dropped = jitter.dropped;
+                    summary.delay_us = delays.0.checked_div(delays.1).unwrap_or(0);
+                    return summary;
+                }
+            }
+        }
+        let result = match jitter.pop() {
+            Next::Frame(data) => decoder.decode(Some(&data), &mut pcm),
+            Next::Lost => decoder.decode(None, &mut pcm),
+            Next::Empty if started => decoder.decode(None, &mut pcm),
+            Next::Empty => continue,
+        };
+        if let Err(e) = result {
+            log::debug!("audio decode: {e}");
+            pcm.fill(0);
+        }
+        started = true;
+        if let Err(e) = sink.play(&pcm) {
+            log::warn!("sound output: {e}");
+            break;
+        }
+        // Delay of the newest frame: from the host's output to ours.
+        if let Some((_, &t)) = captured.last_key_value() {
+            let queued = jitter.depth() as u64 * u64::from(fernsicht_audio::FRAME_MS) * 1000;
+            let d = (now_us() as i64 - t).max(0) as u64 + queued + sink.buffered_us();
+            delays = (delays.0 + d, delays.1 + 1);
+        }
+        // The host's clock runs a little faster than the sound card: the
+        // buffer grows. Keep it near the target.
+        if jitter.depth() > AUDIO_JITTER_FRAMES + 3 {
+            jitter.skip_one();
+        }
+    }
+    summary.played = jitter.played;
+    summary.concealed = jitter.concealed;
+    summary.dropped = jitter.dropped;
+    summary.delay_us = delays.0.checked_div(delays.1).unwrap_or(0);
+    summary
 }
 
 #[cfg(test)]

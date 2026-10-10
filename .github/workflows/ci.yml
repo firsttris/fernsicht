@@ -48,10 +48,22 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q libavcodec-dev libavformat-dev libavutil-dev \
-            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev
-      - run: cargo test --workspace --exclude fernsicht-e2e
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev libopus0
+      # A sound server with a null output and a writable /dev/uinput: the
+      # hardware-facing tests run for real here (they would make sound or
+      # type on a desktop, so they need these variables to run at all).
+      - name: Sound server and uinput for the device tests
+        run: |
+          sudo apt-get install -y -q pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          sudo chmod 666 /dev/uinput
+      - run: cargo test --workspace --exclude fernsicht-e2e --features fernsicht-input/uinput
         env:
           PROPTEST_CASES: "1024"
+          # libopus is loaded at runtime; the audio tests must not skip.
+          FERNSICHT_REQUIRE_OPUS: "1"
+          FERNSICHT_PULSE_TEST: "1"
+          FERNSICHT_UINPUT_TEST: "1"
       # Builds the hardware tests; without a GPU they skip themselves (and
       # NVENC/NVDEC must fail cleanly without the NVIDIA driver).
       - run: cargo test -p fernsicht-codec --features vaapi,nvidia
@@ -88,7 +100,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Raise UDP buffer limits like a tuned host
         run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - name: libopus (loaded at runtime by the sound tests)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libopus0
       - run: cargo test -p fernsicht-e2e
+        env:
+          FERNSICHT_REQUIRE_OPUS: "1"
 
   rust-coverage:
     name: Rust · coverage
@@ -101,11 +117,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+      - name: libopus, a sound server and uinput (see rust-test)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q libopus0 pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          sudo chmod 666 /dev/uinput
       # CLI entry points are exercised by the binary E2E tests but run as
       # separate processes, so they are excluded from the measurement.
       - run: >
           cargo llvm-cov --workspace --lcov --output-path lcov.info
           --ignore-filename-regex 'main\.rs$' --fail-under-lines 90
+        env:
+          FERNSICHT_REQUIRE_OPUS: "1"
+          FERNSICHT_PULSE_TEST: "1"
+          FERNSICHT_UINPUT_TEST: "1"
       - run: cargo llvm-cov report --summary-only --ignore-filename-regex 'main\.rs$' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
-use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig, InputKind};
+use fernsicht_host_agent::{AudioKind, CaptureKind, EncoderKind, HostAgent, HostConfig, InputKind};
 
 /// Fernsicht host agent (phase 1: test pattern or KMS capture, synthetic or
 /// VAAPI H.264 over UDP).
@@ -41,6 +41,11 @@ struct Args {
     /// with the "kms" feature and CAP_SYS_ADMIN, see docs/kms-capture.md).
     #[arg(long, value_enum, default_value_t = CaptureArg::TestPattern)]
     capture: CaptureArg,
+    /// Sound to send: "desktop" (what this computer plays), "tone" (a
+    /// 440 Hz test tone) or "off". Default: desktop with --capture kms,
+    /// off with the test pattern.
+    #[arg(long, value_enum)]
+    audio: Option<AudioArg>,
     /// Accept mouse and keyboard from the client (virtual devices through
     /// /dev/uinput). There is no authentication yet: anyone who reaches the
     /// port can then type on this machine. Only in a trusted LAN.
@@ -55,6 +60,13 @@ struct Args {
     /// KMS: connector, e.g. DP-1 (default: first active display).
     #[arg(long)]
     kms_connector: Option<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum AudioArg {
+    Desktop,
+    Tone,
+    Off,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -87,6 +99,11 @@ fn main() -> anyhow::Result<()> {
                 card: args.kms_card,
                 connector: args.kms_connector,
             },
+        },
+        audio: match (args.audio, args.capture) {
+            (Some(AudioArg::Desktop), _) | (None, CaptureArg::Kms) => AudioKind::Desktop,
+            (Some(AudioArg::Tone), _) => AudioKind::Tone,
+            (Some(AudioArg::Off), _) | (None, CaptureArg::TestPattern) => AudioKind::Off,
         },
         input: if args.input {
             log::warn!("input enabled without authentication: use only in a trusted LAN");

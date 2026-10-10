@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use clap::Parser;
-use fernsicht_client::{ClientConfig, DecoderChoice, run};
+use fernsicht_client::{AudioOutput, ClientConfig, DecoderChoice, run};
 use fernsicht_render::overlay::ms;
 
 /// Fernsicht client: shows the host's screen in a window (build feature
@@ -40,6 +40,9 @@ struct Args {
     /// H.264 decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     decoder: DecoderArg,
+    /// Do not play the host's sound.
+    #[arg(long)]
+    no_audio: bool,
     /// Only watch: send no mouse or keyboard input (the host also needs
     /// --input to accept it).
     #[arg(long)]
@@ -75,6 +78,11 @@ fn main() -> anyhow::Result<()> {
             DecoderArg::Nvdec => DecoderChoice::Nvdec,
         },
         record: args.record,
+        audio: if args.no_audio {
+            AudioOutput::Off
+        } else {
+            AudioOutput::Speakers
+        },
         ..ClientConfig::default()
     };
     let s = if args.headless || !cfg!(feature = "window") {
@@ -112,6 +120,15 @@ fn main() -> anyhow::Result<()> {
         "Mauszeiger: {} Positionen, {} Bilder empfangen",
         s.cursor_positions, s.cursor_shapes
     );
+    if s.audio.played > 0 {
+        println!(
+            "Ton: {:.1} s gespielt, Verzögerung Ø {} · {} Frames überbrückt, {} verworfen",
+            s.audio.played as f64 * 0.005,
+            ms(s.audio.delay_us as u32),
+            s.audio.concealed,
+            s.audio.dropped
+        );
+    }
     if s.decode_errors > 0 {
         println!("Decode-Fehler: {}", s.decode_errors);
     }

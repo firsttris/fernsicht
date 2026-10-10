@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use fernsicht_audio::{AudioSource, Frame as AudioFrame, Tone};
 use fernsicht_capture::{CursorState, Frame, FrameSource, TestPattern};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 #[cfg(feature = "vaapi")]
@@ -32,8 +33,8 @@ use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
 use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
 use fernsicht_proto::{
-    Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Hello, HelloAck, InputAck,
-    InputHeader, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
+    AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Hello,
+    HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
 };
 
 /// Raw frame buffers: producer, slot, consumer.
@@ -59,6 +60,20 @@ pub struct HostConfig {
     pub encoder: EncoderKind,
     /// What happens to the client's mouse and keyboard input.
     pub input: InputKind,
+    /// Sound sent along.
+    pub audio: AudioKind,
+}
+
+/// Where the sound comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioKind {
+    /// No sound (the library default, so tests stay quiet).
+    #[default]
+    Off,
+    /// What this computer plays (PipeWire/PulseAudio monitor).
+    Desktop,
+    /// A 440 Hz test tone.
+    Tone,
 }
 
 /// Where the client's input goes.
@@ -120,6 +135,7 @@ impl Default for HostConfig {
             capture: CaptureKind::default(),
             encoder: EncoderKind::default(),
             input: InputKind::default(),
+            audio: AudioKind::default(),
         }
     }
 }
@@ -144,6 +160,7 @@ pub struct HostStats {
     /// Encoded frames dropped because the sender was a whole queue behind.
     pub send_overflows: AtomicU64,
     pub frames_sent: AtomicU64,
+    pub audio_frames_sent: AtomicU64,
 }
 
 impl HostStats {
@@ -463,6 +480,22 @@ impl HostAgent {
                 );
             })?
         };
+        let audio = match make_audio(self.cfg.audio) {
+            Ok(None) => None,
+            Ok(Some(source)) => {
+                let (shared, socket) = (shared.clone(), self.socket.clone());
+                let session_id = params.session_id;
+                Some(spawn_hot("audio", move || {
+                    if let Err(e) = audio_loop(source, &shared, &socket, peer, session_id) {
+                        log::warn!("audio: {e}");
+                    }
+                })?)
+            }
+            Err(e) => {
+                log::warn!("no sound: {e}");
+                None
+            }
+        };
         let send = {
             let (shared, socket) = (shared.clone(), self.socket.clone());
             let pacer = Pacer {
@@ -493,7 +526,10 @@ impl HostAgent {
             last_seen: Instant::now(),
             shared,
             loss,
-            threads: vec![capture, encode, send],
+            threads: [Some(capture), Some(encode), Some(send), audio]
+                .into_iter()
+                .flatten()
+                .collect(),
             frame_slot,
             input,
             input_seen: Dedup::default(),
@@ -631,6 +667,50 @@ impl CursorSender {
         .encode(&mut buf);
         let _ = self.socket.send_to(&buf[..n], self.peer);
     }
+}
+
+/// Opus bitrate for the desktop's sound: transparent for music.
+const AUDIO_BITRATE: u32 = 128_000;
+
+fn make_audio(kind: AudioKind) -> Result<Option<Box<dyn AudioSource>>, String> {
+    match kind {
+        AudioKind::Off => Ok(None),
+        AudioKind::Tone => Ok(Some(Box::new(Tone::new(440.0)))),
+        AudioKind::Desktop => Ok(Some(Box::new(fernsicht_audio::pulse::Capture::open()?))),
+    }
+}
+
+/// Captures, encodes and sends 5 ms frames until the session ends. Each
+/// packet repeats the previous frame, so one lost packet leaves no gap.
+fn audio_loop(
+    mut source: Box<dyn AudioSource>,
+    shared: &Shared,
+    socket: &UdpSocket,
+    peer: SocketAddr,
+    session_id: u32,
+) -> Result<(), String> {
+    let mut encoder = fernsicht_audio::opus::Encoder::new(AUDIO_BITRATE)?;
+    let mut pcm: AudioFrame = [0; fernsicht_audio::FRAME_SAMPLES * fernsicht_audio::CHANNELS];
+    let mut current = [0u8; MAX_AUDIO_FRAME];
+    let mut previous = Vec::with_capacity(MAX_AUDIO_FRAME);
+    let mut buf = [0u8; MAX_DATAGRAM];
+    let mut seq = 0u32;
+    while shared.running.load(Ordering::Acquire) {
+        let captured_us = source.next_frame(&mut pcm)?;
+        let n = encoder.encode(&pcm, &mut current)?;
+        let len = AudioHeader {
+            session_id,
+            seq,
+            capture_us: captured_us,
+        }
+        .encode(&current[..n], &previous, &mut buf);
+        let _ = socket.send_to(&buf[..len], peer);
+        HostStats::bump(&shared.stats.audio_frames_sent);
+        previous.clear();
+        previous.extend_from_slice(&current[..n]);
+        seq = seq.wrapping_add(1);
+    }
+    Ok(())
 }
 
 fn make_input(

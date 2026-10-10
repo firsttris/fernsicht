@@ -1,0 +1,77 @@
+//! The uinput backend against the real kernel. It creates virtual devices
+//! and sends key presses, so it only runs where that cannot disturb
+//! anyone: with `FERNSICHT_UINPUT_TEST=1` (set in CI, on a machine without
+//! a desktop). Never on a developer's machine by accident.
+#![cfg(feature = "uinput")]
+
+use std::time::Duration;
+
+use fernsicht_input::uinput::{AbsArea, Uinput};
+use fernsicht_input::{InputEvent, InputSink, buttons};
+
+fn enabled() -> bool {
+    let on = std::env::var_os("FERNSICHT_UINPUT_TEST").is_some();
+    if !on {
+        eprintln!("skipped: set FERNSICHT_UINPUT_TEST=1 (creates real input devices)");
+    }
+    on
+}
+
+fn devices() -> String {
+    std::fs::read_to_string("/proc/bus/input/devices").unwrap_or_default()
+}
+
+#[test]
+fn devices_are_created_take_every_event_and_go_away() {
+    if !enabled() {
+        return;
+    }
+    let mut u = Uinput::open(AbsArea {
+        x: 0.5,
+        y: 0.0,
+        width: 0.5,
+        height: 1.0,
+    })
+    .expect("open /dev/uinput");
+    let listed = devices();
+    for name in ["Fernsicht keyboard", "Fernsicht pointer", "Fernsicht mouse"] {
+        assert!(listed.contains(name), "{name} missing:\n{listed}");
+    }
+    let events = [
+        InputEvent::MouseAbs { x: 100, y: 65535 },
+        InputEvent::Button {
+            code: buttons::LEFT,
+            pressed: true,
+        },
+        InputEvent::Scroll { dx: 0, dy: -120 },
+        InputEvent::Scroll { dx: 30, dy: 0 },
+        InputEvent::MouseRel { dx: 5, dy: -5 },
+        InputEvent::Button {
+            code: buttons::RIGHT,
+            pressed: true,
+        },
+        InputEvent::Key {
+            code: 30,
+            pressed: true,
+        },
+        InputEvent::Key {
+            code: 30,
+            pressed: false,
+        },
+        InputEvent::Key {
+            code: 42,
+            pressed: true,
+        },
+    ];
+    for e in &events {
+        u.inject(e).unwrap_or_else(|err| panic!("{e:?}: {err}"));
+    }
+    // Shift and both buttons are still held: released here.
+    u.release_all();
+    drop(u);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !devices().contains("Fernsicht keyboard"),
+        "devices removed on drop"
+    );
+}

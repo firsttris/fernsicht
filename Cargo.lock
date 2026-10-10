@@ -772,6 +772,11 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fernsicht-audio"
 version = "0.1.0"
+dependencies = [
+ "fernsicht-core",
+ "libc",
+ "libloading",
+]
 
 [[package]]
 name = "fernsicht-capture"
@@ -793,6 +798,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "env_logger",
+ "fernsicht-audio",
  "fernsicht-capture",
  "fernsicht-codec",
  "fernsicht-core",
@@ -831,6 +837,7 @@ name = "fernsicht-e2e"
 version = "0.1.0"
 dependencies = [
  "escargot",
+ "fernsicht-audio",
  "fernsicht-client",
  "fernsicht-core",
  "fernsicht-host-agent",
@@ -847,6 +854,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "env_logger",
+ "fernsicht-audio",
  "fernsicht-capture",
  "fernsicht-codec",
  "fernsicht-core",

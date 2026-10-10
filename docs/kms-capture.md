@@ -65,6 +65,14 @@ AMD-Rechners. Auf dem NVIDIA-Rechner den Client mit NVDEC bauen
 (`--features nvidia,window`); er nimmt automatisch NVDEC, wenn VAAPI nicht
 geht.
 
+## Ton
+
+Mit `--capture kms` schickt der Host standardmäßig mit, was der Rechner
+abspielt, und der Client spielt es ab. Abschalten: `--audio off` am Host
+oder `--no-audio` am Client. `--audio tone` schickt einen 440-Hz-Testton.
+Mit sudo gestartet, verbindet sich der Host von selbst mit dem Soundserver
+des Benutzers (über `SUDO_UID`).
+
 ## Fernsteuern (Maus und Tastatur)
 
 Mit `--input` nimmt der Host Maus und Tastatur des Clients an:
