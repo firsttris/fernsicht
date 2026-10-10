@@ -12,6 +12,18 @@ const DMABUF_EXTENSIONS: [&CStr; 4] = [
     ash::ext::queue_family_foreign::NAME,
 ];
 
+/// How often device creation is tried before giving up.
+const DEVICE_ATTEMPTS: u64 = 4;
+
+/// Errors where another attempt can succeed; a missing extension or
+/// feature will not appear by waiting.
+fn device_error_is_transient(e: vk::Result) -> bool {
+    !matches!(
+        e,
+        vk::Result::ERROR_EXTENSION_NOT_PRESENT | vk::Result::ERROR_FEATURE_NOT_PRESENT
+    )
+}
+
 /// Picks the device whose name contains this (case-insensitive), e.g.
 /// `llvmpipe` for the software rasterizer.
 pub const DEVICE_ENV: &str = "FERNSICHT_VULKAN_DEVICE";
@@ -158,16 +170,29 @@ impl Gpu {
                 .queue_family_index(queue_family)
                 .queue_priorities(&priorities)];
             let mut v13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
-            let device = instance
-                .create_device(
+            // The NVIDIA driver now and then refuses a device right after
+            // another one was released (seen in CI: about 1 in 25 runs).
+            // It works a moment later, so try a few times.
+            let mut attempt = 1;
+            let device = loop {
+                let created = instance.create_device(
                     physical,
                     &vk::DeviceCreateInfo::default()
                         .queue_create_infos(&queues)
                         .enabled_extension_names(&extensions)
                         .push_next(&mut v13),
                     None,
-                )
-                .map_err(|e| format!("create Vulkan device on {name}: {e}"))?;
+                );
+                match created {
+                    Ok(device) => break device,
+                    Err(e) if attempt < DEVICE_ATTEMPTS && device_error_is_transient(e) => {
+                        log::warn!("creating the Vulkan device on {name} failed ({e}), retrying");
+                        std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+                        attempt += 1;
+                    }
+                    Err(e) => return Err(format!("create Vulkan device on {name}: {e}")),
+                }
+            };
             log::debug!("device created on {name}");
             let queue = device.get_device_queue(queue_family, 0);
             Ok(Self {
@@ -217,5 +242,26 @@ impl Drop for Gpu {
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_transient_device_errors_are_retried() {
+        assert!(device_error_is_transient(
+            vk::Result::ERROR_INITIALIZATION_FAILED
+        ));
+        assert!(device_error_is_transient(
+            vk::Result::ERROR_OUT_OF_DEVICE_MEMORY
+        ));
+        assert!(!device_error_is_transient(
+            vk::Result::ERROR_EXTENSION_NOT_PRESENT
+        ));
+        assert!(!device_error_is_transient(
+            vk::Result::ERROR_FEATURE_NOT_PRESENT
+        ));
     }
 }

@@ -3,7 +3,7 @@ name: GPU stress
 # On demand: runs the Vulkan renderer tests many times on one GPU machine
 # to catch rare crashes (e.g. in the driver), with the Vulkan setup steps
 # and loader messages logged, so a crash shows where it happened.
-#   gh workflow run gpu-stress.yml -f gpu=nvidia -f runs=50
+#   gh workflow run gpu-stress.yml -f gpu=nvidia -f runs=50 -f gdb=true
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +13,10 @@ on:
       runs:
         description: "How many times"
         default: "50"
+      gdb:
+        description: "Run under gdb, backtrace on a crash"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,24 +31,40 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the tests
         run: cargo test -p fernsicht-render --features vulkan --test vulkan --no-run
+      # The job runs as the container's root; gdb stays until the runner
+      # container is recreated.
+      - name: Install gdb
+        if: inputs.gdb
+        run: command -v gdb || dnf install -y -q gdb
       - name: Run them ${{ inputs.runs }} times
         env:
           FERNSICHT_REQUIRE_VULKAN: "1"
           RUST_LOG: fernsicht_render=debug
           VK_LOADER_DEBUG: error,warn
           RUNS: ${{ inputs.runs }}
+          GDB: ${{ inputs.gdb }}
         run: |
           bin=$(cargo test -p fernsicht-render --features vulkan --test vulkan --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.profile.test == true and .target.name == "vulkan") | .executable')
+          run() {
+            if [ "$GDB" = true ]; then
+              gdb -q -batch -return-child-result -ex run -ex "thread apply all bt 15" \
+                --args "$bin" --test-threads=1 --nocapture
+            else
+              "$bin" --test-threads=1 --nocapture
+            fi
+          }
           failed=0
+          retried=0
           for i in $(seq "$RUNS"); do
-            if ! "$bin" --test-threads=1 --nocapture > run.log 2>&1; then
+            if ! run > run.log 2>&1 || grep -q "SIGSEGV\|received signal" run.log; then
               failed=$((failed + 1))
               echo "::group::run $i failed (exit $?)"
-              tail -40 run.log
+              tail -80 run.log
               echo "::endgroup::"
             fi
+            retried=$((retried + $(grep -c "retrying" run.log || true)))
           done
-          echo "### Vulkan renderer: $failed of $RUNS runs failed" >> "$GITHUB_STEP_SUMMARY"
-          echo "$failed of $RUNS runs failed"
+          echo "### Vulkan renderer: $failed of $RUNS runs failed, device creation retried $retried times" >> "$GITHUB_STEP_SUMMARY"
+          echo "$failed of $RUNS runs failed, device creation retried $retried times"
           test "$failed" -eq 0
