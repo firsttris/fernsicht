@@ -41,9 +41,9 @@ use fernsicht_net::{
 };
 use fernsicht_proto::{Announce, Discover, MAX_ANNOUNCE_INFO, MAX_ANNOUNCE_NAME, clip};
 use fernsicht_proto::{
-    AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Handshake,
-    Hello, HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
-    Pair, RejectReason, SealedHeader,
+    AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, CodecSet, Cursor, CursorShape, Feedback,
+    Handshake, Hello, HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE,
+    MAX_DATAGRAM, Packet, Pair, RejectReason, SealedHeader,
 };
 use fernsicht_secure::pairing::HostPairing;
 use fernsicht_secure::session::{Responder, Transport};
@@ -304,6 +304,8 @@ pub struct SessionParams {
     pub height: u16,
     pub fps: u16,
     pub bitrate_kbps: u32,
+    /// What the client can decode; the encoder picks the best of it.
+    pub codecs: CodecSet,
 }
 
 /// State the control loop shares with the pipeline threads.
@@ -932,6 +934,8 @@ impl HostAgent {
             height: 0,
             fps: 60.min(self.cfg.max_fps),
             bitrate_kbps: 0,
+            // Browsers take H.264 over WebRTC; HEVC only some, and not all.
+            codecs: CodecSet::H264,
         };
         let who = format!("Browser {}", req.browser.ip());
         match self.start_session(params, req.browser, None, Some(setup)) {
@@ -1154,6 +1158,7 @@ impl HostAgent {
             height: hello.height.min(self.cfg.max_height) & !1,
             fps: pick(hello.fps, self.cfg.max_fps).max(1),
             bitrate_kbps: hello.bitrate_kbps.min(self.cfg.max_bitrate_kbps),
+            codecs: hello.codecs,
         }
     }
 
@@ -1205,6 +1210,11 @@ impl HostAgent {
         };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
+        // Rebuilt encoders (new bitrate) keep the codec the client was told.
+        let params = SessionParams {
+            codecs: CodecSet::EMPTY.with(codec),
+            ..params
+        };
         // The encoder's GPU at full clocks while the session runs.
         let gpu = match &self.cfg.encoder {
             EncoderKind::Vaapi { render_node } if self.cfg.settings.gpu_boost() => {
@@ -1730,16 +1740,58 @@ pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
     Ok(kind)
 }
 
+/// Codecs in the order the host prefers them: HEVC is as fast as H.264 and
+/// needs 30–50 % less bitrate for the same picture.
+pub const CODEC_PREFERENCE: [Codec; 2] = [Codec::Hevc, Codec::H264];
+
+/// The codecs to try for a client that can decode `client`, best first.
+pub fn codec_candidates(client: CodecSet) -> Vec<Codec> {
+    CODEC_PREFERENCE
+        .iter()
+        .copied()
+        .filter(|&c| client.contains(c))
+        .collect()
+}
+
+/// An encoder of `kind` with the best codec the client can decode and the
+/// GPU can encode: a GPU without HEVC encoding falls back to H.264.
 fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn Encoder>> {
-    match kind {
-        EncoderKind::Synthetic => Ok(Box::new(SyntheticEncoder::new(
+    if *kind == EncoderKind::Synthetic {
+        return Ok(Box::new(SyntheticEncoder::new(
             p.bitrate_kbps,
             u32::from(p.fps),
-        ))),
+        )));
+    }
+    let candidates = codec_candidates(p.codecs);
+    if candidates.is_empty() {
+        anyhow::bail!("the client decodes neither HEVC nor H.264");
+    }
+    let mut errors = Vec::new();
+    for codec in candidates {
+        match make_hardware_encoder(kind, p, codec) {
+            Ok(e) => return Ok(e),
+            Err(e) => {
+                log::info!("no {codec:?} encoder: {e:#}");
+                errors.push(format!("{codec:?}: {e:#}"));
+            }
+        }
+    }
+    anyhow::bail!("no encoder ({})", errors.join("; "))
+}
+
+#[allow(unused_variables)]
+fn make_hardware_encoder(
+    kind: &EncoderKind,
+    p: &SessionParams,
+    codec: Codec,
+) -> anyhow::Result<Box<dyn Encoder>> {
+    match kind {
+        EncoderKind::Synthetic => unreachable!("handled by make_encoder"),
         #[cfg(feature = "vaapi")]
         EncoderKind::Vaapi { render_node } => {
             Ok(Box::new(VaapiEncoder::new(&VaapiEncoderConfig {
                 render_node: render_node.clone(),
+                codec,
                 width: u32::from(p.width),
                 height: u32::from(p.height),
                 fps: u32::from(p.fps),
@@ -1754,6 +1806,7 @@ fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn
         EncoderKind::Nvenc { gpu } => Ok(Box::new(fernsicht_codec::nvidia::NvencEncoder::new(
             &fernsicht_codec::nvidia::NvencConfig {
                 gpu: *gpu,
+                codec,
                 width: u32::from(p.width),
                 height: u32::from(p.height),
                 fps: u32::from(p.fps),
@@ -1941,6 +1994,45 @@ fn send_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hevc_is_preferred_when_the_client_decodes_it() {
+        let both = CodecSet::of(&[Codec::H264, Codec::Hevc]);
+        assert_eq!(codec_candidates(both), vec![Codec::Hevc, Codec::H264]);
+        assert_eq!(codec_candidates(CodecSet::H264), vec![Codec::H264]);
+        assert_eq!(
+            codec_candidates(CodecSet::of(&[Codec::Hevc])),
+            vec![Codec::Hevc]
+        );
+        // AV1 is not offered (no encoder for it yet).
+        assert!(codec_candidates(CodecSet::of(&[Codec::Av1])).is_empty());
+    }
+
+    fn params(codecs: CodecSet) -> SessionParams {
+        SessionParams {
+            session_id: 1,
+            width: 640,
+            height: 360,
+            fps: 30,
+            bitrate_kbps: 1_000,
+            codecs,
+        }
+    }
+
+    #[test]
+    fn encoder_falls_back_and_says_what_it_tried() {
+        let gpu = EncoderKind::Vaapi {
+            render_node: "/dev/dri/renderD-does-not-exist".into(),
+        };
+        let both = params(CodecSet::of(&[Codec::H264, Codec::Hevc]));
+        let err = make_encoder(&gpu, &both).err().unwrap().to_string();
+        assert!(err.contains("Hevc") && err.contains("H264"), "{err}");
+        let nothing = make_encoder(&gpu, &params(CodecSet::EMPTY)).err().unwrap();
+        assert!(nothing.to_string().contains("neither"), "{nothing}");
+        // The synthetic encoder does not care what the client decodes.
+        let synthetic = make_encoder(&EncoderKind::Synthetic, &params(CodecSet::EMPTY)).unwrap();
+        assert_eq!(synthetic.codec(), Codec::Synthetic);
+    }
 
     #[test]
     fn native_size_is_fitted_into_the_limits() {

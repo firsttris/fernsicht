@@ -34,7 +34,7 @@ Vergleichsmessung fehlt ([latency-baseline.md](latency-baseline.md)).
 |---|---|---|---|---|
 | 1 | **Vergleichsmessung mit Sunshine/Moonlight** | Wir wissen, wo wir stehen und was sich lohnt | Klein, braucht den Benutzer am Rechner | Offen |
 | 2 | **GPU während Sitzungen hochtakten** | Encode bei 1440p von 10 ms Richtung 3–4 ms (geschätzt) | Klein | Gebaut, Messung offen |
-| 3 | **AV1 oder HEVC statt H.264** | Gleiche Qualität mit 30–50 % weniger Bitrate: deutlich schärfer, vor allem über WLAN. Latenz gleich | Mittel | Offen |
+| 3 | **AV1 oder HEVC statt H.264** | Gleiche Qualität mit 30–50 % weniger Bitrate: deutlich schärfer, vor allem über WLAN. Latenz gleich | Mittel | **HEVC fertig** (Standard, wo beide es können); AV1 offen |
 | 4 | **Sofort anzeigen statt auf den Bildaufbau warten** (Vulkan „Immediate“ im Gaming-Modus) | Bis zu einem Bildschirmtakt weniger: im Mittel ≈ 3 ms bei 165 Hz, ≈ 8 ms bei 60 Hz. Dafür Tearing | Klein bis mittel | Offen |
 | 5 | **Slices: Bildteile senden, bevor das Bild fertig ist** (wie Parsec) | Mehrere Millisekunden pro Bild, weil Kodieren, Senden und Dekodieren überlappen | Groß | Offen |
 | 6 | **Intra-Refresh statt Keyframes** | Keine großen Datenstöße nach einem Verlust, also weniger Ruckler über WLAN | Mittel | Offen |
@@ -65,9 +65,29 @@ Deshalb müssen Host und Client aushandeln, was beide können:
 - Der Client sagt im Verbindungsaufbau, was er dekodiert.
 - Der Host nimmt das Beste, das er kodieren kann.
 
-Für zentrale → bazzite hieße das HEVC. AV1 ginge erst mit einer neueren
+Für zentrale → bazzite heißt das HEVC. AV1 ginge erst mit einer neueren
 Karte im Client. Im Web-Viewer entscheidet der Browser: Chrome dekodiert
 AV1 und meist auch HEVC.
+
+**HEVC ist gebaut** (10.10.2026):
+
+- Der Client meldet im `Hello`, was er in Hardware dekodiert (VAAPI:
+  `vaQueryConfigProfiles`, NVIDIA: `cuvidGetDecoderCaps`). Der Host nimmt
+  HEVC vor H.264 und fällt auf H.264 zurück, wenn seine GPU kein HEVC
+  kodiert. Ältere Clients und Hosts sprechen weiter H.264.
+- Wählbar in der App („Einstellungen → Videoformat“) und mit
+  `fernsicht-client --codec auto|h264|hevc`.
+- Der Web-Viewer bleibt bei H.264 (WebRTC in Firefox kann kein HEVC).
+
+Gemessen auf der GTX 1080 (NVENC → NVDEC, 1080p60):
+
+| | H.264 | HEVC |
+|---|---|---|
+| 4 Mbit/s: Ø Bytes pro Frame | 8.273 | 2.681 |
+| 4 Mbit/s: PSNR (Y), schlechtester Frame | 29,1 dB | 32,4 dB |
+| 20 Mbit/s, Loopback: Glass-to-Glass ohne Bildschirm | 5,0 ms | 4,1 ms |
+
+Die Zahlen für VAAPI (zentrale) stehen im Job-Summary des AMD-Runners.
 
 ### 4 · Sofort anzeigen
 

@@ -5,6 +5,7 @@ import { useState } from "react";
 import {
   DEFAULT_SETTINGS,
   type StreamSettings,
+  type VideoCodec,
   actions,
   errorText,
   inApp,
@@ -30,6 +31,12 @@ const BITRATES = [
   { value: "50", label: "50 Mbit/s" },
   { value: "80", label: "80 Mbit/s" },
 ] as const;
+
+const CODECS: { value: VideoCodec; label: string }[] = [
+  { value: "auto", label: "Automatisch" },
+  { value: "hevc", label: "HEVC" },
+  { value: "h264", label: "H.264" },
+];
 
 const sizeKey = (s: StreamSettings): SizeKey =>
   SIZES.find((x) => x.size[0] === s.width && x.size[1] === s.height)?.value ?? "host";
@@ -87,6 +94,18 @@ export function SettingsPage() {
             }
             onChange={(v) => update({ ...s, bitrateMbit: Number(v) })}
             options={BITRATES.map(({ value, label }) => ({ value, label }))}
+          />
+        </Setting>
+        <Setting
+          title="Videoformat"
+          hint="HEVC zeigt bei gleicher Bitrate ein deutlich schärferes Bild, vor allem über WLAN. „Automatisch“ nimmt HEVC, wenn beide Rechner es in Hardware können, sonst H.264."
+        >
+          <Segmented<VideoCodec>
+            className="flex-wrap"
+            label="Videoformat"
+            value={CODECS.some((c) => c.value === s.codec) ? s.codec : "auto"}
+            onChange={(v) => update({ ...s, codec: v })}
+            options={CODECS}
           />
         </Setting>
         <div>

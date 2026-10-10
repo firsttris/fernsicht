@@ -119,9 +119,19 @@ export interface StreamSettings {
   fps: number;
   /** 0 = the host's choice for the size. */
   bitrateMbit: number;
+  /** "auto": HEVC where both sides can, else H.264. */
+  codec: VideoCodec;
 }
 
-export const DEFAULT_SETTINGS: StreamSettings = { width: 0, height: 0, fps: 60, bitrateMbit: 0 };
+export type VideoCodec = "auto" | "h264" | "hevc";
+
+export const DEFAULT_SETTINGS: StreamSettings = {
+  width: 0,
+  height: 0,
+  fps: 60,
+  bitrateMbit: 0,
+  codec: "auto",
+};
 const SETTINGS_KEY = "fernsicht.settings";
 
 export function loadSettings(): StreamSettings {

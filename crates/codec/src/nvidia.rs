@@ -1,4 +1,5 @@
-//! H.264 encode and decode on NVIDIA GPUs (NVENC, NVDEC), via FFmpeg.
+//! H.264 and HEVC encode and decode on NVIDIA GPUs (NVENC, NVDEC), via
+//! FFmpeg.
 //!
 //! The encoder uses NVIDIA's low-latency settings, the counterpart of the
 //! VAAPI ones: preset p1, tune "ull", zero latency, no B-frames, no
@@ -27,6 +28,7 @@ use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
 use crate::cuda;
+use crate::ff;
 use crate::ff::{
     check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_bt709_limited,
 };
@@ -37,6 +39,8 @@ use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, P
 pub struct NvencConfig {
     /// CUDA device index (0 = first NVIDIA GPU).
     pub gpu: u32,
+    /// H.264 or HEVC.
+    pub codec: Codec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -52,6 +56,7 @@ pub struct NvencEncoder {
     /// What NVENC encodes: NV12 in CUDA memory.
     hw: *mut ffi::AVFrame,
     pkt: *mut ffi::AVPacket,
+    codec: Codec,
     width: u32,
     height: u32,
     /// Vulkan conversion of DMA-BUF input, set up on the first such frame.
@@ -83,11 +88,13 @@ impl NvencEncoder {
         // SAFETY: every pointer is checked before use and released in Drop,
         // which also handles a partly built value.
         unsafe {
-            let codec = ffi::avcodec_find_encoder_by_name(c"h264_nvenc".as_ptr());
+            let names = ff::names(cfg.codec, ff::Backend::Nvenc)?;
+            let codec = ffi::avcodec_find_encoder_by_name(names.encoder.as_ptr());
             if codec.is_null() {
-                return Err(CodecError::Backend(
-                    "FFmpeg has no h264_nvenc encoder".into(),
-                ));
+                return Err(CodecError::Backend(format!(
+                    "FFmpeg has no {} encoder",
+                    names.encoder.to_string_lossy()
+                )));
             }
             let mut enc = Self {
                 device: ptr::null_mut(),
@@ -96,6 +103,7 @@ impl NvencEncoder {
                 sw: ffi::av_frame_alloc(),
                 hw: ffi::av_frame_alloc(),
                 pkt: ffi::av_packet_alloc(),
+                codec: cfg.codec,
                 width: cfg.width,
                 height: cfg.height,
                 gpu_input: None,
@@ -155,13 +163,13 @@ impl NvencEncoder {
                 (c"delay", c"0"),
                 (c"rc-lookahead", c"0"),
                 (c"forced-idr", c"1"),
-                (c"profile", c"high"),
+                (c"profile", names.profile),
             ] {
                 ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
             }
             let r = ffi::avcodec_open2(c, codec, &mut opts);
             ffi::av_dict_free(&mut opts);
-            check("open h264_nvenc", r)?;
+            check(&format!("open {}", names.encoder.to_string_lossy()), r)?;
 
             (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
             (*enc.sw).width = cfg.width as c_int;
@@ -293,7 +301,7 @@ impl NvencEncoder {
 
 impl Encoder for NvencEncoder {
     fn codec(&self) -> Codec {
-        Codec::H264
+        self.codec
     }
 
     fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
@@ -373,6 +381,41 @@ impl Drop for NvencEncoder {
     }
 }
 
+/// Whether NVDEC on CUDA device `gpu` decodes `codec` (H.264 or HEVC,
+/// 8 bit, up to at least 1080p). False without the NVIDIA driver.
+pub fn decodes(gpu: u32, codec: Codec) -> bool {
+    let cuvid = match codec {
+        Codec::H264 => cuda::CUVID_H264,
+        Codec::Hevc => cuda::CUVID_HEVC,
+        _ => return false,
+    };
+    let index = CString::new(gpu.to_string()).expect("digits");
+    let mut device = ptr::null_mut();
+    // SAFETY: creates and releases a CUDA device context.
+    unsafe {
+        if ffi::av_hwdevice_ctx_create(
+            &mut device,
+            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+            index.as_ptr(),
+            ptr::null_mut(),
+            0,
+        ) < 0
+        {
+            return false;
+        }
+        let dc = (*device).data as *mut ffi::AVHWDeviceContext;
+        let ctx = (*((*dc).hwctx as *const ffi::AVCUDADeviceContext)).cuda_ctx;
+        let ok = cuda::Current::push(ctx.cast())
+            .and_then(|c| cuda::nvdec_supports(&c, cuvid))
+            .unwrap_or_else(|e| {
+                log::debug!("NVDEC capability query: {e}");
+                false
+            });
+        ffi::av_buffer_unref(&mut device);
+        ok
+    }
+}
+
 /// Picks CUDA frames (NVDEC) as decoder output.
 unsafe extern "C" fn pick_cuda(
     _ctx: *mut ffi::AVCodecContext,
@@ -408,14 +451,23 @@ pub struct NvdecDecoder {
 unsafe impl Send for NvdecDecoder {}
 
 impl NvdecDecoder {
-    /// `gpu`: CUDA device index.
+    /// An H.264 decoder; `gpu`: CUDA device index.
     pub fn new(gpu: u32) -> Result<Self, CodecError> {
+        Self::for_codec(gpu, Codec::H264)
+    }
+
+    /// A decoder for `codec` (H.264 or HEVC).
+    pub fn for_codec(gpu: u32, codec: Codec) -> Result<Self, CodecError> {
+        let names = ff::names(codec, ff::Backend::Nvenc)?;
         let index = CString::new(gpu.to_string()).expect("digits");
         // SAFETY: as in NvencEncoder::new.
         unsafe {
-            let codec = ffi::avcodec_find_decoder(ffi::AVCodecID::AV_CODEC_ID_H264);
+            let codec = ffi::avcodec_find_decoder(names.id);
             if codec.is_null() {
-                return Err(CodecError::Backend("FFmpeg has no H.264 decoder".into()));
+                return Err(CodecError::Backend(format!(
+                    "FFmpeg has no {} decoder",
+                    names.label
+                )));
             }
             let mut dec = Self {
                 device: ptr::null_mut(),
@@ -450,7 +502,7 @@ impl NvdecDecoder {
             // Frame threading would delay output by a frame per thread.
             (*dec.ctx).thread_count = 1;
             check(
-                "open H.264 decoder",
+                "open the decoder",
                 ffi::avcodec_open2(dec.ctx, codec, ptr::null_mut()),
             )?;
             Ok(dec)
@@ -501,7 +553,7 @@ impl Decoder for NvdecDecoder {
             let r = ffi::avcodec_send_packet(self.ctx, self.pkt);
             if r < 0 {
                 return Err(if r == ffi::AVERROR_INVALIDDATA {
-                    CodecError::Corrupt("invalid H.264 data")
+                    CodecError::Corrupt("invalid video data")
                 } else {
                     ff_err("send packet", r)
                 });

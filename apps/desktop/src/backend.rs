@@ -53,6 +53,18 @@ pub struct StreamSettings {
     pub bitrate_mbit: u32,
     /// Start in gaming mode (a click captures the pointer).
     pub gaming: bool,
+    /// Video codec; automatic picks HEVC where both sides can.
+    pub codec: CodecSetting,
+}
+
+/// The settings page's video codec choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodecSetting {
+    #[default]
+    Auto,
+    H264,
+    Hevc,
 }
 
 impl StreamSettings {
@@ -75,6 +87,11 @@ impl StreamSettings {
                 "--bitrate".into(),
                 (self.bitrate_mbit.saturating_mul(1000)).to_string(),
             ]);
+        }
+        match self.codec {
+            CodecSetting::Auto => {}
+            CodecSetting::H264 => a.extend(["--codec".into(), "h264".into()]),
+            CodecSetting::Hevc => a.extend(["--codec".into(), "hevc".into()]),
         }
         if self.gaming {
             a.push("--gaming".into());
@@ -530,6 +547,7 @@ mod tests {
             fps: 120,
             bitrate_mbit: 50,
             gaming: true,
+            codec: CodecSetting::Hevc,
         };
         assert_eq!(
             s.args(),
@@ -542,6 +560,8 @@ mod tests {
                 "120",
                 "--bitrate",
                 "50000",
+                "--codec",
+                "hevc",
                 "--gaming"
             ]
         );
@@ -553,6 +573,10 @@ mod tests {
         assert!(odd.args().is_empty());
         let parsed: StreamSettings = serde_json::from_str(r#"{"fps":30,"bitrateMbit":8}"#).unwrap();
         assert_eq!(parsed.args(), ["--fps", "30", "--bitrate", "8000"]);
+        // Older UIs send no codec: automatic, no argument.
+        let h264: StreamSettings = serde_json::from_str(r#"{"codec":"h264"}"#).unwrap();
+        assert_eq!(h264.args(), ["--codec", "h264"]);
+        assert!(serde_json::from_str::<StreamSettings>(r#"{"codec":"av1"}"#).is_err());
     }
 
     #[test]

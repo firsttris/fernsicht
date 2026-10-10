@@ -79,6 +79,7 @@ impl Peer {
                 height,
                 fps,
                 bitrate_kbps,
+                codecs: CodecSet::H264,
             }
             .encode(b)
         });
@@ -797,6 +798,7 @@ mod secure {
             height: 240,
             fps: 30,
             bitrate_kbps: 500,
+            codecs: CodecSet::H264,
         };
         let (init, m1) = Initiator::start(client, host, &hello.encode_with_time(ms)).unwrap();
         peer.send(|b| {
@@ -954,6 +956,7 @@ mod secure {
             height: 0,
             fps: 30,
             bitrate_kbps: 0,
+            codecs: CodecSet::H264,
         };
         let (_, m1) =
             Initiator::start(&stranger, &sec.public_key(), &hello.encode_with_time(1)).unwrap();

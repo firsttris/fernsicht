@@ -301,5 +301,64 @@ mod tests {
         assert_eq!(std::mem::offset_of!(ExternalMemoryHandleDesc, size), 24);
         assert_eq!(std::mem::offset_of!(Memcpy2D, src_host), 24);
         assert_eq!(std::mem::offset_of!(Memcpy2D, dst_memory_type), 72);
+        assert_eq!(std::mem::size_of::<DecodeCaps>(), 88);
+        assert_eq!(std::mem::offset_of!(DecodeCaps, supported), 24);
+        assert_eq!(std::mem::offset_of!(DecodeCaps, max_width), 28);
+    }
+}
+
+/// `CUVIDDECODECAPS` from nv-codec-headers (dynlink_cuviddec.h).
+#[repr(C)]
+#[derive(Default)]
+struct DecodeCaps {
+    codec: c_uint,
+    chroma: c_uint,
+    bit_depth_minus8: c_uint,
+    reserved1: [c_uint; 3],
+    supported: u8,
+    nvdecs: u8,
+    output_format_mask: u16,
+    max_width: c_uint,
+    max_height: c_uint,
+    max_mb_count: c_uint,
+    min_width: u16,
+    min_height: u16,
+    histogram: u8,
+    counter_bit_depth: u8,
+    max_histogram_bins: u16,
+    decode_stats: u8,
+    reserved4: [u8; 3],
+    reserved3: [c_uint; 9],
+}
+
+/// cudaVideoCodec values.
+pub const CUVID_H264: c_uint = 4;
+pub const CUVID_HEVC: c_uint = 8;
+
+/// Whether NVDEC on the GPU of the current context decodes `cuvid_codec`
+/// in 8-bit 4:2:0 up to at least 1920×1080 (pre-Pascal GPUs lack HEVC).
+pub fn nvdec_supports(_current: &Current<'_>, cuvid_codec: c_uint) -> Result<bool, CodecError> {
+    static LIB: OnceLock<Result<libloading::Library, String>> = OnceLock::new();
+    let lib = LIB
+        .get_or_init(|| {
+            // SAFETY: loading the NVIDIA video decode library.
+            unsafe { libloading::Library::new("libnvcuvid.so.1") }
+                .map_err(|e| format!("no NVDEC (libnvcuvid.so.1): {e}"))
+        })
+        .as_ref()
+        .map_err(|e| CodecError::Backend(e.clone()))?;
+    // SAFETY: the signature of cuvidGetDecoderCaps; a context is current.
+    unsafe {
+        let caps_fn: libloading::Symbol<unsafe extern "C" fn(*mut DecodeCaps) -> CuResult> =
+            lib.get(b"cuvidGetDecoderCaps\0").map_err(|e| {
+                CodecError::Backend(format!("libnvcuvid has no cuvidGetDecoderCaps: {e}"))
+            })?;
+        let mut caps = DecodeCaps {
+            codec: cuvid_codec,
+            chroma: 1, // 4:2:0
+            ..Default::default()
+        };
+        check(api()?, "query NVDEC", caps_fn(&mut caps))?;
+        Ok(caps.supported != 0 && caps.max_width >= 1920 && caps.max_height >= 1080)
     }
 }

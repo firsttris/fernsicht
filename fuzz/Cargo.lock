@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-capture"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "fernsicht-core",
  "thiserror",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-codec"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "fernsicht-capture",
  "fernsicht-core",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-core"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "libc",
  "log",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-net"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "fernsicht-core",
  "fernsicht-proto",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-proto"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "thiserror",
 ]

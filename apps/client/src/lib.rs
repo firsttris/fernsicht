@@ -29,7 +29,7 @@ use fernsicht_input::InputQueue;
 pub use fernsicht_input::{InputEvent, buttons};
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
 use fernsicht_proto::{
-    Bye, ClockPing, Codec, Feedback, Handshake, Hello, InputHeader, MAX_DATAGRAM, Packet,
+    Bye, ClockPing, Codec, CodecSet, Feedback, Handshake, Hello, InputHeader, MAX_DATAGRAM, Packet,
     Pair as PairMsg, RejectReason, SealedHeader, VideoHeader,
 };
 use fernsicht_render::overlay::{self, StreamInfo};
@@ -66,8 +66,10 @@ pub struct ClientConfig {
     pub host_timeout: Duration,
     /// GPU used for hardware decoding (VAAPI).
     pub render_node: String,
-    /// Which hardware H.264 decoder to use.
+    /// Which hardware decoder to use.
     pub decoder: DecoderChoice,
+    /// Which video codec to ask the host for.
+    pub codec: CodecChoice,
     /// Mouse and keyboard to send to the host; `None` = view only.
     pub input: Option<Arc<InputHandle>>,
     /// Where the host's sound is played.
@@ -98,6 +100,7 @@ impl Default for ClientConfig {
             host_timeout: Duration::from_secs(5),
             render_node: "/dev/dri/renderD128".into(),
             decoder: DecoderChoice::Auto,
+            codec: CodecChoice::Auto,
             input: None,
             audio: AudioOutput::Off,
             muted: Arc::default(),
@@ -353,7 +356,31 @@ pub fn window_to_stream(
     Some((q(u), q(v)))
 }
 
-/// Hardware decoder for H.264 streams.
+/// The video codec a client asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CodecChoice {
+    /// HEVC if this machine decodes it in hardware, else H.264; the host
+    /// picks the best it can encode.
+    #[default]
+    Auto,
+    H264,
+    Hevc,
+}
+
+/// What to offer the host for `choice`, given which codecs the hardware
+/// decodes (`decodes`).
+pub fn offered_codecs(choice: CodecChoice, decodes: impl Fn(Codec) -> bool) -> CodecSet {
+    match choice {
+        CodecChoice::H264 => CodecSet::H264,
+        CodecChoice::Hevc => CodecSet::of(&[Codec::Hevc]),
+        // H.264 always: it is what every host encodes, and the decoder is
+        // looked for only once the stream arrives.
+        CodecChoice::Auto if decodes(Codec::Hevc) => CodecSet::of(&[Codec::H264, Codec::Hevc]),
+        CodecChoice::Auto => CodecSet::H264,
+    }
+}
+
+/// Hardware decoder for H.264 and HEVC streams.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DecoderChoice {
     /// VAAPI if it works (AMD, Intel), else NVDEC (NVIDIA).
@@ -630,11 +657,21 @@ fn network_loop(
 ) -> anyhow::Result<NetOutcome> {
     let started = Instant::now();
     let deadline = cfg.duration.map(|d| started + d);
+    let hw = Hw {
+        render_node: cfg.render_node.clone(),
+        decoder: cfg.decoder,
+    };
+    let codecs = offered_codecs(cfg.codec, |c| hw.decodes(c));
+    log::debug!("offering {codecs:?}");
+    if cfg.codec == CodecChoice::Hevc && !hw.decodes(Codec::Hevc) {
+        log::warn!("HEVC asked for, but no hardware decoder here reports HEVC support");
+    }
     let hello = Hello {
         width: cfg.width,
         height: cfg.height,
         fps: cfg.fps,
         bitrate_kbps: cfg.bitrate_kbps,
+        codecs,
     };
     let mut buf = [0u8; 2048];
     let mut out = [0u8; MAX_DATAGRAM];
@@ -975,10 +1012,30 @@ struct Hw {
     decoder: DecoderChoice,
 }
 
+impl Hw {
+    /// Whether one of the allowed hardware decoders reports `codec`.
+    #[allow(unused_variables)]
+    fn decodes(&self, codec: Codec) -> bool {
+        #[cfg(feature = "vaapi")]
+        if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Vaapi)
+            && fernsicht_codec::vaapi::decodes(&self.render_node, codec)
+        {
+            return true;
+        }
+        #[cfg(feature = "nvidia")]
+        if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Nvdec)
+            && fernsicht_codec::nvidia::decodes(0, codec)
+        {
+            return true;
+        }
+        false
+    }
+}
+
 fn make_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
     match codec {
         Codec::Synthetic => Ok(Box::new(SyntheticDecoder::default())),
-        Codec::H264 => make_h264_decoder(hw),
+        Codec::H264 | Codec::Hevc => make_hw_decoder(codec, hw),
         other => Err(CodecError::Backend(format!(
             "cannot decode {}",
             overlay::codec_label(other)
@@ -986,25 +1043,31 @@ fn make_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
     }
 }
 
-fn make_h264_decoder(hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
+#[allow(unused_variables)]
+fn make_hw_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
+    let label = overlay::codec_label(codec);
     let mut errors = Vec::new();
     if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Vaapi) {
         #[cfg(feature = "vaapi")]
-        match fernsicht_codec::vaapi::VaapiDecoder::new(&hw.render_node) {
-            Ok(d) => {
-                log::info!("decoding with VAAPI ({})", hw.render_node);
-                return Ok(Box::new(d));
+        if !fernsicht_codec::vaapi::decodes(&hw.render_node, codec) {
+            errors.push(format!("VAAPI: {} does not decode {label}", hw.render_node));
+        } else {
+            match fernsicht_codec::vaapi::VaapiDecoder::for_codec(&hw.render_node, codec) {
+                Ok(d) => {
+                    log::info!("decoding {label} with VAAPI ({})", hw.render_node);
+                    return Ok(Box::new(d));
+                }
+                Err(e) => errors.push(format!("VAAPI: {e}")),
             }
-            Err(e) => errors.push(format!("VAAPI: {e}")),
         }
         #[cfg(not(feature = "vaapi"))]
         errors.push("VAAPI: not in this build (cargo feature \"vaapi\")".to_string());
     }
     if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Nvdec) {
         #[cfg(feature = "nvidia")]
-        match fernsicht_codec::nvidia::NvdecDecoder::new(0) {
+        match fernsicht_codec::nvidia::NvdecDecoder::for_codec(0, codec) {
             Ok(d) => {
-                log::info!("decoding with NVDEC");
+                log::info!("decoding {label} with NVDEC");
                 return Ok(Box::new(d));
             }
             Err(e) => errors.push(format!("NVDEC: {e}")),
@@ -1013,7 +1076,7 @@ fn make_h264_decoder(hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
         errors.push("NVDEC: not in this build (cargo feature \"nvidia\")".to_string());
     }
     Err(CodecError::Backend(format!(
-        "no H.264 decoder: {}",
+        "no {label} decoder: {}",
         errors.join("; ")
     )))
 }
@@ -1280,6 +1343,21 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_offers_hevc_only_where_it_is_decoded() {
+        let none = |_: Codec| false;
+        let hevc = |c: Codec| c == Codec::Hevc;
+        let both = CodecSet::of(&[Codec::H264, Codec::Hevc]);
+        assert_eq!(offered_codecs(CodecChoice::Auto, hevc), both);
+        assert_eq!(offered_codecs(CodecChoice::Auto, none), CodecSet::H264);
+        // A choice is passed on as it is.
+        assert_eq!(offered_codecs(CodecChoice::H264, hevc), CodecSet::H264);
+        assert_eq!(
+            offered_codecs(CodecChoice::Hevc, none),
+            CodecSet::of(&[Codec::Hevc])
+        );
+    }
 
     #[test]
     fn host_addresses_get_the_default_port() {

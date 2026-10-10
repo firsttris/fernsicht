@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::Parser;
 use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
-    AudioOutput, ClientConfig, ClientSecurity, DEFAULT_PORT, DecoderChoice, Identity,
+    AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice, Identity,
     OverlayOutput, Trusted, default_state_dir, find_host, pair, refresh_addresses, run,
     with_default_port,
 };
@@ -52,12 +52,17 @@ struct Args {
     /// GPU render node for hardware decoding (VAAPI).
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: String,
-    /// Save the received video to this file (H.264: `ffplay file.h264`).
+    /// Save the received video to this file (`ffplay file.h264`, or
+    /// `file.h265` for HEVC).
     #[arg(long)]
     record: Option<std::path::PathBuf>,
     /// H.264 decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     decoder: DecoderArg,
+    /// Video codec: "auto" (HEVC if this machine decodes it and the host
+    /// encodes it, else H.264), "h264" or "hevc".
+    #[arg(long, value_enum, default_value_t = CodecArg::Auto)]
+    codec: CodecArg,
     /// Do not play the host's sound.
     #[arg(long)]
     no_audio: bool,
@@ -241,6 +246,13 @@ enum DecoderArg {
     Nvdec,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum CodecArg {
+    Auto,
+    H264,
+    Hevc,
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
@@ -283,6 +295,11 @@ fn main() -> anyhow::Result<()> {
             DecoderArg::Auto => DecoderChoice::Auto,
             DecoderArg::Vaapi => DecoderChoice::Vaapi,
             DecoderArg::Nvdec => DecoderChoice::Nvdec,
+        },
+        codec: match args.codec {
+            CodecArg::Auto => CodecChoice::Auto,
+            CodecArg::H264 => CodecChoice::H264,
+            CodecArg::Hevc => CodecChoice::Hevc,
         },
         record: args.record,
         audio: if args.no_audio {

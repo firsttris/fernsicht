@@ -365,6 +365,7 @@ mod vaapi {
         let (w, h) = (1920u32, 1080u32);
         let mut enc = VaapiEncoder::new(&VaapiEncoderConfig {
             render_node: node.clone(),
+            codec: fernsicht_proto::Codec::H264,
             width: w,
             height: h,
             fps: 60,

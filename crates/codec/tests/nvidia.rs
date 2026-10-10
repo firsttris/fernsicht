@@ -17,6 +17,7 @@ use fernsicht_codec::nvidia::{NvdecDecoder, NvencConfig, NvencEncoder};
 use fernsicht_codec::{
     CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind,
 };
+use fernsicht_proto::Codec;
 
 fn nvidia() -> bool {
     let on = std::env::var("FERNSICHT_GPU").as_deref() == Ok("nvidia");
@@ -29,6 +30,7 @@ fn nvidia() -> bool {
 fn config(width: u32, height: u32, fps: u32, kbps: u32) -> NvencConfig {
     NvencConfig {
         gpu: 0,
+        codec: Codec::H264,
         width,
         height,
         fps,
@@ -496,4 +498,168 @@ fn bad_dmabufs_are_rejected_and_the_encoder_keeps_working() {
     }
     enc.encode(&dmabuf_frame(&good, 1), &mut out).unwrap();
     assert!(out.keyframe, "the first good frame is the keyframe");
+}
+
+// --- HEVC ------------------------------------------------------------------
+
+/// NAL unit types in an Annex-B HEVC access unit.
+fn hevc_nal_types(data: &[u8]) -> Vec<u8> {
+    let mut types = Vec::new();
+    let mut i = 0;
+    while i + 3 < data.len() {
+        if data[i..i + 3] == [0, 0, 1] {
+            types.push((data[i + 3] >> 1) & 0x3f);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    types
+}
+
+const HEVC_VPS: u8 = 32;
+const HEVC_SPS: u8 = 33;
+const HEVC_PPS: u8 = 34;
+
+/// Encodes `input` and returns (mean bytes per delta frame, worst PSNR).
+fn quality(codec: Codec, input: &[Frame], kbps: u32) -> (f64, f64) {
+    let f0 = &input[0];
+    let mut enc = NvencEncoder::new(&NvencConfig {
+        codec,
+        ..config(f0.width, f0.height, 60, kbps)
+    })
+    .unwrap();
+    let mut dec = NvdecDecoder::for_codec(0, codec).unwrap();
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let (mut bytes, mut worst) = (0usize, f64::INFINITY);
+    for (i, f) in input.iter().enumerate() {
+        enc.encode(f, &mut out).unwrap();
+        if i > 0 {
+            bytes += out.data.len();
+        }
+        dec.decode(&out.data, &mut d).unwrap();
+        let luma = (f.width * f.height) as usize;
+        worst = worst.min(psnr_y(&f.data, &dec.last_frame_nv12().unwrap(), luma));
+    }
+    (bytes as f64 / (input.len() - 1) as f64, worst)
+}
+
+#[test]
+fn hevc_keyframes_carry_parameter_sets_and_a_late_decoder_joins() {
+    if !nvidia() {
+        return;
+    }
+    let (w, h) = (1280, 720);
+    let mut enc = NvencEncoder::new(&NvencConfig {
+        codec: Codec::Hevc,
+        ..config(w, h, 60, 8_000)
+    })
+    .unwrap();
+    assert_eq!(enc.codec(), Codec::Hevc);
+    let input = frames(w, h, 30);
+    let mut packets = Vec::new();
+    for (i, f) in input.iter().enumerate() {
+        if i == 20 {
+            enc.request_keyframe();
+        }
+        let mut out = EncodedFrame::default();
+        enc.encode(f, &mut out).unwrap();
+        packets.push(out);
+    }
+    let keyframes: Vec<usize> = (0..packets.len())
+        .filter(|&i| packets[i].keyframe)
+        .collect();
+    assert_eq!(keyframes, vec![0, 20]);
+    for k in keyframes {
+        let types = hevc_nal_types(&packets[k].data);
+        for t in [HEVC_VPS, HEVC_SPS, HEVC_PPS] {
+            assert!(types.contains(&t), "keyframe {k} lacks NAL {t}: {types:?}");
+        }
+    }
+    let mut dec = NvdecDecoder::for_codec(0, Codec::Hevc).unwrap();
+    let mut d = DecodedFrame::default();
+    for p in &packets[20..] {
+        dec.decode(&p.data, &mut d).unwrap();
+    }
+    let psnr = psnr_y(
+        &input[29].data,
+        &dec.last_frame_nv12().unwrap(),
+        (w * h) as usize,
+    );
+    assert!(psnr > 30.0, "{psnr:.1} dB after joining at the keyframe");
+    let mut h264 = NvdecDecoder::new(0).unwrap();
+    assert!(h264.decode(&packets[0].data, &mut d).is_err());
+}
+
+#[test]
+fn hevc_is_sharper_than_h264_at_the_same_bitrate() {
+    if !nvidia() {
+        return;
+    }
+    let input = frames(1920, 1080, 60);
+    let (h264_bytes, h264_psnr) = quality(Codec::H264, &input, 4_000);
+    let (hevc_bytes, hevc_psnr) = quality(Codec::Hevc, &input, 4_000);
+    summary("### H.264 und HEVC bei gleicher Bitrate (NVENC, 1080p60, 4 Mbit/s)");
+    summary("| Codec | Ø Delta-Frame | PSNR (Y), schlechtester Frame |\n|---|---|---|");
+    summary(&format!(
+        "| H.264 | {h264_bytes:.0} Bytes | {h264_psnr:.1} dB |"
+    ));
+    summary(&format!(
+        "| HEVC | {hevc_bytes:.0} Bytes | {hevc_psnr:.1} dB |\n"
+    ));
+    assert!(
+        hevc_psnr > h264_psnr - 0.5,
+        "HEVC {hevc_psnr:.1} dB vs H.264 {h264_psnr:.1} dB"
+    );
+}
+
+#[test]
+fn hevc_from_a_dmabuf_keeps_its_colours() {
+    if !nvidia() {
+        return;
+    }
+    let gpu = vulkan();
+    let (w, h) = (1920u32, 1080u32);
+    let image = upload(&gpu, w, h, 0, formats::ABGR2101010);
+    let mut enc = NvencEncoder::new(&NvencConfig {
+        codec: Codec::Hevc,
+        ..config(w, h, 60, 20_000)
+    })
+    .unwrap();
+    let mut dec = NvdecDecoder::for_codec(0, Codec::Hevc).unwrap();
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let mut ms = Vec::new();
+    for i in 0..60 {
+        let t = Instant::now();
+        enc.encode(&dmabuf_frame(&image, i), &mut out).unwrap();
+        ms.push(t.elapsed().as_secs_f64() * 1e3);
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    assert_patch_colours(
+        &dec.last_frame_nv12().unwrap(),
+        w as usize,
+        h as usize,
+        "HEVC AB30",
+    );
+    let p95 = percentile(ms[1..].to_vec(), 0.95);
+    summary(&format!(
+        "- HEVC aus DMA-BUF (AB30, 1080p): Farben ok, Encode Median / p95 {:.2} / {p95:.2} ms\n",
+        percentile(ms[1..].to_vec(), 0.5)
+    ));
+    assert!(p95 < 16.0);
+}
+
+#[test]
+fn nvdec_reports_what_it_decodes() {
+    if !nvidia() {
+        return;
+    }
+    // Pascal and newer decode both in hardware.
+    assert!(fernsicht_codec::nvidia::decodes(0, Codec::H264));
+    assert!(fernsicht_codec::nvidia::decodes(0, Codec::Hevc));
+    assert!(!fernsicht_codec::nvidia::decodes(0, Codec::Synthetic));
+    assert!(
+        !fernsicht_codec::nvidia::decodes(99, Codec::H264),
+        "no such GPU"
+    );
 }

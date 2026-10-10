@@ -196,7 +196,10 @@ describe("Desktop-App", () => {
     expect(called("connect")).toEqual([
       [
         "connect",
-        { id: "k1", settings: { width: 0, height: 0, fps: 60, bitrateMbit: 0, gaming: true } },
+        {
+          id: "k1",
+          settings: { width: 0, height: 0, fps: 60, bitrateMbit: 0, codec: "auto", gaming: true },
+        },
       ],
     ]);
     expect(await screen.findByText(/läuft in einem eigenen Fenster/)).toBeInTheDocument();
@@ -230,6 +233,7 @@ describe("Desktop-App", () => {
     await user.click(await screen.findByRole("radio", { name: "1080p" }));
     await user.click(screen.getByRole("radio", { name: "120 fps" }));
     await user.click(screen.getByRole("radio", { name: "20 Mbit/s" }));
+    await user.click(screen.getByRole("radio", { name: "HEVC" }));
     await user.click(screen.getByRole("link", { name: "Geräte" }));
     const card = (await screen.findByText("zentrale")).closest("article")!;
     await user.click(within(card).getByRole("button", { name: "Desktop" }));
@@ -239,7 +243,14 @@ describe("Desktop-App", () => {
           "connect",
           {
             id: "k1",
-            settings: { width: 1920, height: 1080, fps: 120, bitrateMbit: 20, gaming: false },
+            settings: {
+              width: 1920,
+              height: 1080,
+              fps: 120,
+              bitrateMbit: 20,
+              codec: "hevc",
+              gaming: false,
+            },
           },
         ],
       ]),

@@ -1,4 +1,4 @@
-//! Real H.264 end to end: host agent with a hardware encoder, client with
+//! Real H.264 and HEVC end to end: host agent with a hardware encoder, client with
 //! the matching hardware decoder, through the impaired link. Needs a GPU:
 //! `FERNSICHT_GPU=amd|intel` uses VAAPI (feature `vaapi`), `nvidia` uses
 //! NVENC/NVDEC (feature `nvidia`); skips otherwise. Stage latencies go into
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use fernsicht_client::{ClientConfig, DecoderChoice, RunSummary, run};
+use fernsicht_client::{ClientConfig, CodecChoice, DecoderChoice, RunSummary, run};
 use fernsicht_core::latency::Stage;
 use fernsicht_e2e::{Host, ImpairedLink, Impairment, exclusive};
 use fernsicht_host_agent::{EncoderKind, HostConfig, HostStats};
@@ -51,7 +51,7 @@ fn gpu() -> Option<Gpu> {
     }
 }
 
-fn stream(gpu: &Gpu, down: Impairment) -> (RunSummary, u64) {
+fn stream(gpu: &Gpu, codec: CodecChoice, down: Impairment) -> (RunSummary, u64) {
     let _serial = exclusive();
     let host = Host::start(HostConfig {
         encoder: gpu.encoder.clone(),
@@ -69,6 +69,7 @@ fn stream(gpu: &Gpu, down: Impairment) -> (RunSummary, u64) {
             duration: Some(Duration::from_secs(4)),
             render_node: gpu.render_node.clone(),
             decoder: gpu.decoder,
+            codec,
             ..ClientConfig::default()
         },
         Arc::new(AtomicBool::new(false)),
@@ -122,7 +123,7 @@ fn report(title: &str, s: &RunSummary) {
 #[test]
 fn real_h264_over_loopback() {
     let Some(gpu) = gpu() else { return };
-    let (s, overflows) = stream(&gpu, Impairment::none());
+    let (s, overflows) = stream(&gpu, CodecChoice::H264, Impairment::none());
     report(
         &format!("Echtes H.264 ({}) 1080p60, Loopback", gpu.name),
         &s,
@@ -139,11 +140,44 @@ fn real_h264_over_loopback() {
 #[test]
 fn real_h264_with_one_percent_loss() {
     let Some(gpu) = gpu() else { return };
-    let (s, overflows) = stream(&gpu, Impairment::loss(0.01));
+    let (s, overflows) = stream(&gpu, CodecChoice::H264, Impairment::loss(0.01));
     report(
         &format!("Echtes H.264 ({}) 1080p60, 1 % Paketverlust", gpu.name),
         &s,
     );
+    assert_eq!(s.decode_errors, 0, "{s:?}");
+    assert!(s.receiver.packets_recovered > 0, "{s:?}");
+    assert!(
+        u64::from(s.receiver.frames_dropped) <= overflows,
+        "FEC must hide 1 % loss: {s:?}"
+    );
+    assert!(s.frames_presented >= 4 * 60 * 8 / 10, "{s:?}");
+}
+
+#[test]
+fn hevc_by_default_over_loopback() {
+    let Some(gpu) = gpu() else { return };
+    // Both GPUs under test (RX 7800 XT, GTX 1080) encode and decode HEVC,
+    // so "auto" must end up there.
+    let (s, overflows) = stream(&gpu, CodecChoice::Auto, Impairment::none());
+    report(&format!("HEVC ({}) 1080p60, Loopback", gpu.name), &s);
+    assert_eq!(s.codec, Some(Codec::Hevc), "{s:?}");
+    assert_eq!(s.decode_errors, 0, "{s:?}");
+    assert_eq!(s.receiver.packets_lost, 0, "{s:?}");
+    assert!(u64::from(s.receiver.frames_dropped) <= overflows, "{s:?}");
+    assert!(s.frames_presented >= 4 * 60 * 8 / 10, "{s:?}");
+    assert!(s.total.p95 < 50_000, "{:?}", s.total);
+}
+
+#[test]
+fn hevc_with_one_percent_loss() {
+    let Some(gpu) = gpu() else { return };
+    let (s, overflows) = stream(&gpu, CodecChoice::Hevc, Impairment::loss(0.01));
+    report(
+        &format!("HEVC ({}) 1080p60, 1 % Paketverlust", gpu.name),
+        &s,
+    );
+    assert_eq!(s.codec, Some(Codec::Hevc), "{s:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert!(s.receiver.packets_recovered > 0, "{s:?}");
     assert!(

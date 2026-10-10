@@ -1,4 +1,4 @@
-//! H.264 encode and decode in hardware over VAAPI, via FFmpeg.
+//! H.264 and HEVC encode and decode in hardware over VAAPI, via FFmpeg.
 //!
 //! Works with AMD (radeonsi) and Intel (iHD). Settings follow what Sunshine
 //! uses for low latency:
@@ -25,6 +25,7 @@ use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
+use crate::ff;
 use crate::ff::{
     check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_bt709_limited,
 };
@@ -35,6 +36,15 @@ pub const DEFAULT_RENDER_NODE: &str = "/dev/dri/renderD128";
 
 #[link(name = "va")]
 unsafe extern "C" {
+    fn vaMaxNumProfiles(dpy: ffi::VADisplay) -> c_int;
+    fn vaQueryConfigProfiles(dpy: ffi::VADisplay, profiles: *mut c_int, num: *mut c_int) -> c_int;
+    fn vaMaxNumEntrypoints(dpy: ffi::VADisplay) -> c_int;
+    fn vaQueryConfigEntrypoints(
+        dpy: ffi::VADisplay,
+        profile: c_int,
+        entrypoints: *mut c_int,
+        num: *mut c_int,
+    ) -> c_int;
     /// Blocks until all work on `surface` (here: decoding into it) is done.
     fn vaSyncSurface(dpy: ffi::VADisplay, surface: ffi::VASurfaceID) -> c_int;
     fn vaCreateSurfaces(
@@ -120,6 +130,43 @@ const VA_FOURCC_RGBX: u32 = 0x5842_4752;
 const VA_FOURCC_X2R10G10B10: u32 = 0x3033_5258;
 const VA_FOURCC_X2B10G10R10: u32 = 0x3033_4258;
 
+const VA_PROFILE_H264_HIGH: c_int = 7;
+const VA_PROFILE_HEVC_MAIN: c_int = 17;
+const VA_ENTRYPOINT_VLD: c_int = 1;
+
+/// Whether the GPU behind `render_node` decodes `codec` (H.264 High or
+/// HEVC Main) in hardware. False if the node cannot be opened.
+pub fn decodes(render_node: &str, codec: Codec) -> bool {
+    let profile = match codec {
+        Codec::H264 => VA_PROFILE_H264_HIGH,
+        Codec::Hevc => VA_PROFILE_HEVC_MAIN,
+        _ => return false,
+    };
+    let Ok(device) = VaapiDevice::open(render_node) else {
+        return false;
+    };
+    let dpy = device.display();
+    // SAFETY: queries on an open display into buffers of the reported size.
+    unsafe {
+        let mut profiles = vec![0; vaMaxNumProfiles(dpy).max(0) as usize];
+        let mut n = 0;
+        if vaQueryConfigProfiles(dpy, profiles.as_mut_ptr(), &mut n) != 0 {
+            return false;
+        }
+        profiles.truncate(n.max(0) as usize);
+        if !profiles.contains(&profile) {
+            return false;
+        }
+        let mut entrypoints = vec![0; vaMaxNumEntrypoints(dpy).max(0) as usize];
+        let mut n = 0;
+        if vaQueryConfigEntrypoints(dpy, profile, entrypoints.as_mut_ptr(), &mut n) != 0 {
+            return false;
+        }
+        entrypoints.truncate(n.max(0) as usize);
+        entrypoints.contains(&VA_ENTRYPOINT_VLD)
+    }
+}
+
 /// A VAAPI device (one render node), shared by encoder and decoder contexts.
 pub struct VaapiDevice {
     ctx: *mut ffi::AVBufferRef,
@@ -173,6 +220,8 @@ impl Drop for VaapiDevice {
 #[derive(Clone, Debug)]
 pub struct VaapiEncoderConfig {
     pub render_node: String,
+    /// H.264 or HEVC.
+    pub codec: Codec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -186,6 +235,7 @@ pub struct VaapiEncoder {
     sw: *mut ffi::AVFrame,
     hw: *mut ffi::AVFrame,
     pkt: *mut ffi::AVPacket,
+    codec: Codec,
     width: u32,
     height: u32,
     fps: u32,
@@ -211,11 +261,13 @@ impl VaapiEncoder {
         // Drop; the struct is built incrementally so Drop sees nulls for
         // anything not yet created.
         unsafe {
-            let codec = ffi::avcodec_find_encoder_by_name(c"h264_vaapi".as_ptr());
+            let names = ff::names(cfg.codec, ff::Backend::Vaapi)?;
+            let codec = ffi::avcodec_find_encoder_by_name(names.encoder.as_ptr());
             if codec.is_null() {
-                return Err(CodecError::Backend(
-                    "FFmpeg has no h264_vaapi encoder".into(),
-                ));
+                return Err(CodecError::Backend(format!(
+                    "FFmpeg has no {} encoder",
+                    names.encoder.to_string_lossy()
+                )));
             }
             let mut enc = Self {
                 _device: device,
@@ -224,6 +276,7 @@ impl VaapiEncoder {
                 sw: ffi::av_frame_alloc(),
                 hw: ffi::av_frame_alloc(),
                 pkt: ffi::av_packet_alloc(),
+                codec: cfg.codec,
                 width: cfg.width,
                 height: cfg.height,
                 fps: cfg.fps,
@@ -275,13 +328,13 @@ impl VaapiEncoder {
             for (k, v) in [
                 (c"rc_mode", c"CBR"),
                 (c"async_depth", c"1"),
-                (c"profile", c"high"),
+                (c"profile", names.profile),
             ] {
                 ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
             }
             let r = ffi::avcodec_open2(c, codec, &mut opts);
             ffi::av_dict_free(&mut opts);
-            check("open h264_vaapi", r)?;
+            check(&format!("open {}", names.encoder.to_string_lossy()), r)?;
 
             (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
             (*enc.sw).width = cfg.width as c_int;
@@ -357,7 +410,7 @@ impl VaapiEncoder {
 
 impl Encoder for VaapiEncoder {
     fn codec(&self) -> Codec {
-        Codec::H264
+        self.codec
     }
 
     fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
@@ -936,13 +989,23 @@ unsafe impl Send for VaapiDecoder {}
 static NEXT_DECODER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl VaapiDecoder {
+    /// An H.264 decoder.
     pub fn new(render_node: &str) -> Result<Self, CodecError> {
+        Self::for_codec(render_node, Codec::H264)
+    }
+
+    /// A decoder for `codec` (H.264 or HEVC).
+    pub fn for_codec(render_node: &str, codec: Codec) -> Result<Self, CodecError> {
+        let names = ff::names(codec, ff::Backend::Vaapi)?;
         let device = VaapiDevice::open(render_node)?;
         // SAFETY: see VaapiEncoder::new.
         unsafe {
-            let codec = ffi::avcodec_find_decoder(ffi::AVCodecID::AV_CODEC_ID_H264);
+            let codec = ffi::avcodec_find_decoder(names.id);
             if codec.is_null() {
-                return Err(CodecError::Backend("FFmpeg has no H.264 decoder".into()));
+                return Err(CodecError::Backend(format!(
+                    "FFmpeg has no {} decoder",
+                    names.label
+                )));
             }
             let dec = Self {
                 ctx: ffi::avcodec_alloc_context3(codec),
@@ -972,7 +1035,7 @@ impl VaapiDecoder {
             // Frame threading would delay output by a frame per thread.
             (*dec.ctx).thread_count = 1;
             check(
-                "open H.264 decoder",
+                "open the decoder",
                 ffi::avcodec_open2(dec.ctx, codec, ptr::null_mut()),
             )?;
             Ok(dec)
@@ -1027,7 +1090,7 @@ impl Decoder for VaapiDecoder {
             let r = ffi::avcodec_send_packet(self.ctx, self.pkt);
             if r < 0 {
                 return Err(if r == ffi::AVERROR_INVALIDDATA {
-                    CodecError::Corrupt("invalid H.264 data")
+                    CodecError::Corrupt("invalid video data")
                 } else {
                     ff_err("send packet", r)
                 });

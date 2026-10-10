@@ -97,3 +97,54 @@ pub(crate) unsafe fn is_bt709_limited(frame: *const ffi::AVFrame) -> bool {
     f.color_range == ffi::AVColorRange::AVCOL_RANGE_MPEG
         && f.colorspace == ffi::AVColorSpace::AVCOL_SPC_BT709
 }
+
+/// FFmpeg's names for a codec on one hardware backend.
+pub(crate) struct CodecNames {
+    pub id: ffi::AVCodecID,
+    pub encoder: &'static CStr,
+    /// The profile every hardware decoder takes: H.264 High, HEVC Main
+    /// (8 bit 4:2:0).
+    pub profile: &'static CStr,
+    pub label: &'static str,
+}
+
+/// Hardware encoder backends, as FFmpeg suffixes their encoders.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Backend {
+    #[cfg_attr(not(feature = "vaapi"), allow(dead_code))]
+    Vaapi,
+    #[cfg_attr(not(feature = "nvidia"), allow(dead_code))]
+    Nvenc,
+}
+
+pub(crate) fn names(
+    codec: fernsicht_proto::Codec,
+    backend: Backend,
+) -> Result<CodecNames, CodecError> {
+    use fernsicht_proto::Codec;
+    Ok(match (codec, backend) {
+        (Codec::H264, b) => CodecNames {
+            id: ffi::AVCodecID::AV_CODEC_ID_H264,
+            encoder: match b {
+                Backend::Vaapi => c"h264_vaapi",
+                Backend::Nvenc => c"h264_nvenc",
+            },
+            profile: c"high",
+            label: "H.264",
+        },
+        (Codec::Hevc, b) => CodecNames {
+            id: ffi::AVCodecID::AV_CODEC_ID_HEVC,
+            encoder: match b {
+                Backend::Vaapi => c"hevc_vaapi",
+                Backend::Nvenc => c"hevc_nvenc",
+            },
+            profile: c"main",
+            label: "HEVC",
+        },
+        (other, _) => {
+            return Err(CodecError::Backend(format!(
+                "{other:?} is not supported by the hardware backends"
+            )));
+        }
+    })
+}

@@ -342,6 +342,82 @@ pub struct Hello {
     pub height: u16,
     pub fps: u16,
     pub bitrate_kbps: u32,
+    /// What the client can decode (carried in the prefix flags, which
+    /// clients before codec choice left at 0: H.264 only).
+    pub codecs: CodecSet,
+}
+
+/// A set of real video codecs, e.g. what a client can decode.
+///
+/// On the wire (the flags byte of [`Hello`]): bit 7 says the set is
+/// listed, bits 0–2 are H.264, HEVC, AV1. Without bit 7 the set is H.264
+/// alone, which is what clients before codec choice meant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CodecSet(u8);
+
+impl CodecSet {
+    const LISTED: u8 = 0x80;
+    const KNOWN: u8 = 0b111;
+
+    pub const EMPTY: CodecSet = CodecSet(0);
+    pub const H264: CodecSet = CodecSet(1);
+
+    pub fn of(codecs: &[Codec]) -> Self {
+        codecs.iter().fold(Self::EMPTY, |s, &c| s.with(c))
+    }
+
+    fn bit(codec: Codec) -> u8 {
+        match codec {
+            Codec::Synthetic => 0,
+            Codec::H264 => 1,
+            Codec::Hevc => 2,
+            Codec::Av1 => 4,
+        }
+    }
+
+    pub fn with(self, codec: Codec) -> Self {
+        CodecSet(self.0 | Self::bit(codec))
+    }
+
+    pub fn contains(self, codec: Codec) -> bool {
+        let b = Self::bit(codec);
+        b != 0 && self.0 & b != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn to_flags(self) -> u8 {
+        Self::LISTED | self.0
+    }
+
+    pub fn from_flags(flags: u8) -> Result<Self, DecodeError> {
+        if flags & Self::LISTED == 0 {
+            return if flags == 0 {
+                Ok(Self::H264)
+            } else {
+                Err(DecodeError::Invalid("hello flags without a codec list"))
+            };
+        }
+        let set = flags & !Self::LISTED;
+        if set & !Self::KNOWN != 0 {
+            return Err(DecodeError::Invalid("unknown codec in hello"));
+        }
+        Ok(CodecSet(set))
+    }
+
+    /// The best of `preference` (best first) in this set.
+    pub fn best(self, preference: &[Codec]) -> Option<Codec> {
+        preference.iter().copied().find(|&c| self.contains(c))
+    }
+}
+
+impl Default for CodecSet {
+    /// H.264 alone: what every client can decode.
+    fn default() -> Self {
+        Self::H264
+    }
 }
 
 impl Hello {
@@ -349,7 +425,7 @@ impl Hello {
 
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         let mut w = Writer::new(&mut buf[..Self::LEN]);
-        w.prefix(Kind::Hello, 0);
+        w.prefix(Kind::Hello, self.codecs.to_flags());
         w.u16(self.width);
         w.u16(self.height);
         w.u16(self.fps);
@@ -357,12 +433,13 @@ impl Hello {
         Self::LEN
     }
 
-    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         let h = Hello {
             width: r.u16()?,
             height: r.u16()?,
             fps: r.u16()?,
             bitrate_kbps: r.u32()?,
+            codecs: CodecSet::from_flags(flags)?,
         };
         if h.fps == 0 {
             return Err(DecodeError::Invalid("fps is zero"));
@@ -1162,7 +1239,7 @@ impl<'a> Packet<'a> {
             Kind::Feedback => Packet::Feedback(Feedback::read(flags, &mut r)?),
             Kind::ClockPing => Packet::ClockPing(ClockPing::read(&mut r)?),
             Kind::ClockPong => Packet::ClockPong(ClockPong::read(&mut r)?),
-            Kind::Hello => Packet::Hello(Hello::read(&mut r)?),
+            Kind::Hello => Packet::Hello(Hello::read(flags, &mut r)?),
             Kind::HelloAck => Packet::HelloAck(HelloAck::read(&mut r)?),
             Kind::Bye => Packet::Bye(Bye::read(&mut r)?),
             Kind::Cursor => Packet::Cursor(Cursor::read(flags, &mut r)?),
@@ -1390,6 +1467,7 @@ mod tests {
             height: 1080,
             fps: 60,
             bitrate_kbps: 20_000,
+            codecs: CodecSet::of(&[Codec::H264, Codec::Hevc]),
         };
         let n = hello.encode(&mut buf);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Hello(hello));
@@ -1583,12 +1661,52 @@ mod tests {
     }
 
     #[test]
+    fn codec_sets_on_the_wire() {
+        let both = CodecSet::of(&[Codec::H264, Codec::Hevc]);
+        assert!(both.contains(Codec::H264) && both.contains(Codec::Hevc));
+        assert!(!both.contains(Codec::Av1) && !both.contains(Codec::Synthetic));
+        assert_eq!(CodecSet::from_flags(both.to_flags()), Ok(both));
+        // Clients before codec choice send 0: H.264 alone.
+        assert_eq!(CodecSet::from_flags(0), Ok(CodecSet::H264));
+        // A listed empty set (the client decodes nothing real) stays empty.
+        assert_eq!(CodecSet::from_flags(0x80), Ok(CodecSet::EMPTY));
+        assert!(
+            CodecSet::from_flags(0x01).is_err(),
+            "bits without the list bit"
+        );
+        assert!(CodecSet::from_flags(0x88).is_err(), "unknown codec bit");
+        let pref = [Codec::Av1, Codec::Hevc, Codec::H264];
+        assert_eq!(both.best(&pref), Some(Codec::Hevc));
+        assert_eq!(CodecSet::H264.best(&pref), Some(Codec::H264));
+        assert_eq!(CodecSet::EMPTY.best(&pref), None);
+    }
+
+    #[test]
+    fn hello_from_a_client_before_codec_choice_means_h264() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let n = Hello {
+            width: 1280,
+            height: 720,
+            fps: 60,
+            bitrate_kbps: 0,
+            codecs: CodecSet::of(&[Codec::Hevc]),
+        }
+        .encode(&mut buf);
+        buf[3] = 0; // what older clients put in the flags byte
+        let Packet::Hello(h) = Packet::decode(&buf[..n]).unwrap() else {
+            panic!("not a hello")
+        };
+        assert_eq!(h.codecs, CodecSet::H264);
+    }
+
+    #[test]
     fn hello_with_time_roundtrips() {
         let h = Hello {
             width: 2560,
             height: 1440,
             fps: 60,
             bitrate_kbps: 0,
+            codecs: CodecSet::H264,
         };
         let b = h.encode_with_time(1_760_000_000_123);
         assert_eq!(Hello::decode_with_time(&b), Some((h, 1_760_000_000_123)));

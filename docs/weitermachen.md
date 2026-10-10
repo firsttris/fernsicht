@@ -109,6 +109,12 @@ Danach kam dazu:
      „Diesen Rechner freigeben“.
    - Noch nicht live getestet: das Einrichten mit Passwort-Dialog.
 
+9. **HEVC.** Standard, wo Host und Client es in Hardware können, sonst
+   H.264; Einstellung „Videoformat“ in der App, `--codec` am Client.
+   Details und Messungen in [performance.md](performance.md#3--av1--hevc).
+   Noch nicht live zwischen den beiden Rechnern gesehen: Das Overlay
+   zeigt den Codec; zentrale → bazzite sollte „HEVC“ zeigen.
+
 Gemessene Latenz (frühere Sitzungen):
 
 | Strecke | Glass-to-Glass |

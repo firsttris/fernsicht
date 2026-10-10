@@ -90,9 +90,13 @@ proptest! {
 
     #[test]
     fn session_roundtrip(width: u16, height: u16, fps in 1u16.., bitrate_kbps: u32,
-                         session_id: u32, codec in 0u8..4) {
+                         session_id: u32, codec in 0u8..4, codec_bits in 0u8..8) {
         let mut buf = [0u8; MAX_DATAGRAM];
-        let hello = Hello { width, height, fps, bitrate_kbps };
+        let all = [Codec::H264, Codec::Hevc, Codec::Av1];
+        let listed: Vec<Codec> = all.iter().enumerate()
+            .filter(|(i, _)| codec_bits & (1 << i) != 0).map(|(_, &c)| c).collect();
+        let codecs = CodecSet::of(&listed);
+        let hello = Hello { width, height, fps, bitrate_kbps, codecs };
         let n = hello.encode(&mut buf);
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Hello(hello)));
         let codec = [Codec::Synthetic, Codec::H264, Codec::Hevc, Codec::Av1][codec as usize];

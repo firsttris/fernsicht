@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fernsicht_capture::{Frame, PixelFormat};
-use fernsicht_client::{ClientConfig, PresenterFactory, RunSummary, run, run_with};
+use fernsicht_client::{ClientConfig, CodecChoice, PresenterFactory, RunSummary, run, run_with};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 use fernsicht_codec::{DecodedFrame, EncodedFrame, Encoder, Picture, PictureKind};
 use fernsicht_core::latency::Stage;
@@ -50,6 +50,8 @@ impl Default for Script {
 #[derive(Default)]
 struct Observed {
     hellos: u32,
+    /// The codecs offered in the last Hello.
+    codecs: Option<CodecSet>,
     pings: u32,
     feedback: Vec<Feedback>,
     byes: Vec<Bye>,
@@ -114,8 +116,9 @@ fn serve(sock: UdpSocket, script: Script, stop: &AtomicBool, seen: &Mutex<Observ
             let recv = host_now();
             let mut seen = seen.lock().unwrap();
             match Packet::decode(&buf[..n]) {
-                Ok(Packet::Hello(_)) => {
+                Ok(Packet::Hello(hello)) => {
                     seen.hellos += 1;
+                    seen.codecs = Some(hello.codecs);
                     if seen.hellos > script.ignore_hellos {
                         peer = Some(from);
                         let ack = HelloAck {
@@ -209,6 +212,28 @@ fn client(host: &FakeHost, secs: f32) -> anyhow::Result<RunSummary> {
         },
         Arc::new(AtomicBool::new(false)),
     )
+}
+
+#[test]
+fn the_client_offers_the_codecs_it_was_asked_for() {
+    for (choice, want) in [
+        (CodecChoice::H264, CodecSet::H264),
+        (CodecChoice::Hevc, CodecSet::of(&[Codec::Hevc])),
+    ] {
+        let host = FakeHost::start(Script::default());
+        run(
+            ClientConfig {
+                host: host.addr.clone(),
+                duration: Some(Duration::from_millis(300)),
+                host_timeout: Duration::from_millis(600),
+                codec: choice,
+                ..ClientConfig::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(host.finish().codecs, Some(want), "{choice:?}");
+    }
 }
 
 #[test]
