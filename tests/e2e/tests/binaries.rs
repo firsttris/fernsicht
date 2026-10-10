@@ -146,15 +146,27 @@ fn host_and_client_binaries_stream() {
         .lines()
         .find(|l| l.starts_with("Frames:"))
         .expect("summary line");
-    assert!(frames.contains(", 0 verloren"), "{frames}");
-    let shown: u32 = frames
-        .trim_start_matches("Frames: ")
-        .split(' ')
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
+    // "Frames: N angezeigt, M komplett, L verloren · …"
+    let number_before = |word: &str| -> u32 {
+        let head = &frames[..frames
+            .find(word)
+            .unwrap_or_else(|| panic!("{word}: {frames}"))];
+        head.split(|c: char| !c.is_ascii_digit())
+            .rfind(|t| !t.is_empty())
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let (shown, complete, lost) = (
+        number_before(" angezeigt"),
+        number_before(" komplett"),
+        number_before(" verloren"),
+    );
     assert!(shown >= 120, "{frames}");
+    // FEC hiding 1 % loss exactly is asserted by the scenarios, which can
+    // tell network loss from the host shedding a frame under CPU load. The
+    // binaries only see the total, so allow a stray frame (≤ 1 %).
+    assert!(lost * 100 <= complete, "{frames}");
 }
 
 #[test]
