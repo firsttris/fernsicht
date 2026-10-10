@@ -29,6 +29,8 @@ fn bin(name: &str) -> Command {
 struct HostProcess {
     child: Child,
     addr: String,
+    /// The pairing PIN it showed.
+    pin: String,
 }
 
 impl Drop for HostProcess {
@@ -38,18 +40,38 @@ impl Drop for HostProcess {
     }
 }
 
-/// Starts the host binary on an ephemeral port.
-fn spawn_host() -> HostProcess {
-    let child = bin("fernsicht-host-agent")
-        .args(["--bind", "127.0.0.1:0"])
+/// A fresh directory for keys and paired devices.
+fn state_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("fernsicht-bin-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+/// Starts the host binary on an ephemeral port, in pairing mode.
+fn spawn_host(dir: &std::path::Path) -> HostProcess {
+    let mut child = bin("fernsicht-host-agent")
+        .args(["--bind", "127.0.0.1:0", "--pair", "--state-dir"])
+        .arg(dir)
         .env("RUST_LOG", "info")
         .stderr(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
+    // "Kopplung offen für 5 Minuten. PIN: 123456" comes first on stdout.
+    let stdout = child.stdout.take().unwrap();
+    let mut out_lines = BufReader::new(stdout).lines();
+    let pin_line = out_lines.next().expect("host exited").unwrap();
+    let pin = pin_line
+        .split("PIN: ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no PIN in {pin_line:?}"))
+        .trim()
+        .to_string();
+    std::thread::spawn(move || out_lines.for_each(drop));
     let mut host = HostProcess {
         child,
         addr: String::new(),
+        pin,
     };
     let stderr = host.child.stderr.take().unwrap();
     let mut lines = BufReader::new(stderr).lines();
@@ -99,7 +121,8 @@ fn host_reports_bind_errors() {
     let taken = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = taken.local_addr().unwrap().to_string();
     let out = bin("fernsicht-host-agent")
-        .args(["--bind", &addr])
+        .args(["--bind", &addr, "--state-dir"])
+        .arg(state_dir("bind"))
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -107,8 +130,36 @@ fn host_reports_bind_errors() {
 }
 
 #[test]
-fn host_and_client_binaries_stream() {
-    let host = spawn_host();
+fn host_and_client_binaries_pair_and_stream() {
+    let host = spawn_host(&state_dir("host"));
+    let client_dir = state_dir("client");
+    // Pair with the PIN the host showed.
+    let out = bin("fernsicht-client")
+        .args([
+            "pair",
+            &host.addr,
+            &host.pin,
+            "--name",
+            "test-client",
+            "--state-dir",
+        ])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    let paired = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{paired}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(paired.contains("Gekoppelt mit"), "{paired}");
+    let out = bin("fernsicht-client")
+        .args(["hosts", "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains(&host.addr));
+    // Connect by address (the name works the same).
     let out = bin("fernsicht-client")
         .args([
             &host.addr,
@@ -119,7 +170,9 @@ fn host_and_client_binaries_stream() {
             "--duration",
             "3",
             "--no-audio",
+            "--state-dir",
         ])
+        .arg(&client_dir)
         .args(["--loss", "0.01"])
         .output()
         .unwrap();
@@ -171,13 +224,29 @@ fn host_and_client_binaries_stream() {
 }
 
 #[test]
-fn client_without_host_ends_after_duration() {
-    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let addr = silent.local_addr().unwrap().to_string();
+fn an_unpaired_host_is_refused_with_a_hint() {
+    let dir = state_dir("unpaired");
     let out = bin("fernsicht-client")
-        .args([&addr, "--duration", "1"])
+        .args(["192.0.2.1", "--duration", "1", "--state-dir"])
+        .arg(&dir)
         .output()
         .unwrap();
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Frames: 0 angezeigt"));
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not paired with 192.0.2.1"), "{err}");
+    assert!(err.contains("fernsicht-client pair"), "{err}");
+    // A wrong PIN is said plainly.
+    let host = spawn_host(&state_dir("host-wrong-pin"));
+    let wrong = if host.pin == "000000" {
+        "000001"
+    } else {
+        "000000"
+    };
+    let out = bin("fernsicht-client")
+        .args(["pair", &host.addr, wrong, "--state-dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("wrong PIN"));
 }

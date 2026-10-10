@@ -13,9 +13,11 @@
 
 mod layout;
 
+use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -33,9 +35,13 @@ use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
 use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
 use fernsicht_proto::{
-    AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Hello,
-    HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
+    AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Handshake,
+    Hello, HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
+    Pair, RejectReason, SealedHeader,
 };
+use fernsicht_secure::pairing::HostPairing;
+use fernsicht_secure::session::{Responder, Transport};
+use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
 
 /// Raw frame buffers: producer, slot, consumer.
 const BUFFERS: usize = 3;
@@ -62,6 +68,9 @@ pub struct HostConfig {
     pub input: InputKind,
     /// Sound sent along.
     pub audio: AudioKind,
+    /// Pairing and encryption. `None` (the library default) accepts anyone
+    /// unencrypted: for tests only; the program always sets it.
+    pub security: Option<Arc<HostSecurity>>,
 }
 
 /// Where the sound comes from.
@@ -136,6 +145,7 @@ impl Default for HostConfig {
             encoder: EncoderKind::default(),
             input: InputKind::default(),
             audio: AudioKind::default(),
+            security: None,
         }
     }
 }
@@ -187,6 +197,11 @@ struct Session {
     params: SessionParams,
     codec: Codec,
     peer: SocketAddr,
+    /// Sends to the client (sealed for secure sessions).
+    link: Link,
+    /// The handshake that started it (first message and our answer), to
+    /// answer a retransmission the same.
+    handshake: Option<(Vec<u8>, Vec<u8>)>,
     last_seen: Instant,
     shared: Arc<Shared>,
     loss: LossEstimator,
@@ -226,6 +241,158 @@ impl Session {
     }
 }
 
+/// Sends a session's packets to its client, sealed when the session is
+/// secure. Shared by the session's threads.
+#[derive(Clone)]
+struct Link {
+    socket: Arc<UdpSocket>,
+    peer: SocketAddr,
+    session_id: u32,
+    crypto: Option<Arc<Transport>>,
+}
+
+impl Link {
+    fn send(&self, packet: &[u8]) -> std::io::Result<()> {
+        let Some(crypto) = &self.crypto else {
+            return self.socket.send_to(packet, self.peer).map(|_| ());
+        };
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let (counter, n) = crypto
+            .seal(packet, &mut buf[SealedHeader::LEN..])
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        SealedHeader {
+            session_id: self.session_id,
+            counter,
+        }
+        .write(&mut buf);
+        self.socket
+            .send_to(&buf[..SealedHeader::LEN + n], self.peer)
+            .map(|_| ())
+    }
+}
+
+/// How long pairing mode stays open, and how many wrong PINs it takes.
+pub const PAIRING_OPEN_FOR: Duration = Duration::from_secs(300);
+pub const PAIRING_ATTEMPTS: u8 = 3;
+
+struct PairingWindow {
+    pin: String,
+    until: Instant,
+    attempts_left: u8,
+}
+
+/// Who this host is and whom it lets in. Without it (library default, for
+/// tests) sessions are not encrypted and anyone may connect.
+pub struct HostSecurity {
+    identity: Identity,
+    name: String,
+    trusted: Mutex<Trusted>,
+    /// Where the paired list is saved (none: kept in memory, tests).
+    trusted_path: Option<PathBuf>,
+    pairing: Mutex<Option<PairingWindow>>,
+}
+
+impl std::fmt::Debug for HostSecurity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HostSecurity({}, {:?})", self.name, self.identity.public)
+    }
+}
+
+impl HostSecurity {
+    pub fn new(
+        identity: Identity,
+        name: &str,
+        trusted: Trusted,
+        trusted_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            identity,
+            name: name.to_owned(),
+            trusted: Mutex::new(trusted),
+            trusted_path,
+            pairing: Mutex::new(None),
+        }
+    }
+
+    /// Key and paired clients from `dir` (`host.json`, `clients.json`),
+    /// created on first use.
+    pub fn load(dir: &Path, name: &str) -> anyhow::Result<Self> {
+        let identity =
+            Identity::load_or_create(&dir.join("host.json")).map_err(anyhow::Error::msg)?;
+        let path = dir.join("clients.json");
+        let trusted = Trusted::load(&path).map_err(anyhow::Error::msg)?;
+        Ok(Self::new(identity, name, trusted, Some(path)))
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        self.identity.public
+    }
+
+    /// Lets one client pair with `pin` within [`PAIRING_OPEN_FOR`].
+    pub fn open_pairing(&self, pin: &str) {
+        *self.pairing.lock().unwrap_or_else(|e| e.into_inner()) = Some(PairingWindow {
+            pin: pin.to_owned(),
+            until: Instant::now() + PAIRING_OPEN_FOR,
+            attempts_left: PAIRING_ATTEMPTS,
+        });
+    }
+
+    pub fn paired(&self) -> Vec<Peer> {
+        self.trusted
+            .lock()
+            .map(|t| t.peers.clone())
+            .unwrap_or_default()
+    }
+
+    fn is_paired(&self, key: &PublicKey) -> Option<Peer> {
+        self.trusted.lock().ok()?.get(key).cloned()
+    }
+
+    fn add(&self, peer: Peer) {
+        let mut t = self.trusted.lock().unwrap_or_else(|e| e.into_inner());
+        t.add(peer);
+        if let Some(path) = &self.trusted_path
+            && let Err(e) = t.save(path)
+        {
+            log::error!("saving the paired clients: {e}");
+        }
+    }
+
+    /// The PIN if pairing is open; counts the attempt.
+    fn pairing_attempt(&self) -> Result<String, RejectReason> {
+        let mut w = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
+        match w.as_mut() {
+            Some(p) if p.until > Instant::now() && p.attempts_left > 0 => {
+                p.attempts_left -= 1;
+                Ok(p.pin.clone())
+            }
+            Some(p) if p.attempts_left == 0 => {
+                *w = None;
+                Err(RejectReason::TooManyAttempts)
+            }
+            _ => {
+                *w = None;
+                Err(RejectReason::PairingClosed)
+            }
+        }
+    }
+
+    fn close_pairing(&self) {
+        *self.pairing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// A pairing in progress with one client (retransmissions get the same
+/// answers).
+struct PairingExchange {
+    from: SocketAddr,
+    msg1: Vec<u8>,
+    msg2: Vec<u8>,
+    state: Option<HostPairing>,
+    /// Message 3 and our answer, once paired.
+    done: Option<(Vec<u8>, Vec<u8>)>,
+}
+
 pub struct HostAgent {
     cfg: HostConfig,
     socket: Arc<UdpSocket>,
@@ -256,8 +423,12 @@ impl HostAgent {
     /// Serves sessions until `stop` is set.
     pub fn run(self, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         let mut buf = [0u8; 2048];
+        let mut opened = [0u8; MAX_DATAGRAM];
         let mut out = [0u8; MAX_DATAGRAM];
         let mut session: Option<Session> = None;
+        let mut pairing: Option<PairingExchange> = None;
+        // Newest handshake per client (its clock, ms): older ones are replays.
+        let mut handshake_times: HashMap<PublicKey, u64> = HashMap::new();
 
         while !stop.load(Ordering::Relaxed) {
             if session
@@ -284,7 +455,7 @@ impl HostAgent {
                 }
             };
             let recv_us = now_us();
-            let packet = match Packet::decode(&buf[..len]) {
+            let outer = match Packet::decode(&buf[..len]) {
                 Ok(p) => p,
                 Err(e) => {
                     log::debug!("{from}: dropping datagram: {e}");
@@ -292,29 +463,47 @@ impl HostAgent {
                 }
             };
             let from_peer = session.as_ref().is_some_and(|s| s.peer == from);
-            if from_peer && let Some(s) = session.as_mut() {
+            // Sealed packets of the current session are opened and handled
+            // like plain ones; they are the only authentic packets of a
+            // secure session.
+            let (packet, authentic) = match outer {
+                Packet::Sealed(h, sealed) => {
+                    let Some(s) = session.as_ref() else { continue };
+                    let Some(crypto) = s.link.crypto.as_ref() else {
+                        continue;
+                    };
+                    if !from_peer || h.session_id != s.params.session_id {
+                        continue;
+                    }
+                    let n = match crypto.open(h.counter, sealed, &mut opened) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            log::debug!("{from}: dropping sealed packet: {e}");
+                            continue;
+                        }
+                    };
+                    match Packet::decode(&opened[..n]) {
+                        Ok(inner) => (inner, true),
+                        Err(_) => continue,
+                    }
+                }
+                p => (p, from_peer && self.cfg.security.is_none()),
+            };
+            if authentic && let Some(s) = session.as_mut() {
                 s.last_seen = Instant::now();
             }
 
             match packet {
-                Packet::Hello(hello) => {
+                Packet::Hello(hello) if self.cfg.security.is_none() => {
                     if !from_peer {
                         if let Some(old) = session.take() {
                             log::info!("session {:08x}: replaced by {from}", old.params.session_id);
                             old.stop();
                         }
                         let params = self.negotiate(&hello);
-                        match self.start_session(params, from) {
-                            Ok(s) => {
-                                let p = s.params;
-                                log::info!(
-                                    "session {:08x}: {from} {}x{}@{} {} kbit/s",
-                                    p.session_id,
-                                    p.width,
-                                    p.height,
-                                    p.fps,
-                                    p.bitrate_kbps
-                                );
+                        match self.start_session(params, from, None) {
+                            Ok((s, _)) => {
+                                log_session(&s, &from.to_string());
                                 session = Some(s);
                             }
                             Err(e) => {
@@ -325,17 +514,19 @@ impl HostAgent {
                         }
                     }
                     let Some(s) = session.as_ref() else { continue };
-                    let (p, codec) = (s.params, s.codec);
-                    let ack = HelloAck {
-                        session_id: p.session_id,
-                        width: p.width,
-                        height: p.height,
-                        fps: p.fps,
-                        codec,
-                    };
-                    let n = ack.encode(&mut out);
+                    let n = self.hello_ack(&s.params, s.codec).encode(&mut out);
                     let _ = self.socket.send_to(&out[..n], from);
                 }
+                Packet::Handshake(h) if !h.reply => {
+                    self.on_handshake(
+                        h.message,
+                        from,
+                        &mut session,
+                        &mut handshake_times,
+                        &mut out,
+                    );
+                }
+                Packet::Pair(p) => self.on_pair(p, from, &mut pairing, &mut out),
                 Packet::ClockPing(ping) => {
                     let pong = ClockPong {
                         seq: ping.seq,
@@ -344,16 +535,20 @@ impl HostAgent {
                         host_send_us: now_us(),
                     };
                     let n = pong.encode(&mut out);
-                    let _ = self.socket.send_to(&out[..n], from);
+                    if self.cfg.security.is_none() {
+                        let _ = self.socket.send_to(&out[..n], from);
+                    } else if authentic && let Some(s) = session.as_ref() {
+                        let _ = s.link.send(&out[..n]);
+                    }
                 }
-                Packet::Feedback(fb) if from_peer => {
+                Packet::Feedback(fb) if authentic => {
                     if let Some(s) = session.as_mut()
                         && fb.session_id == s.params.session_id
                     {
                         on_feedback(s, &fb);
                     }
                 }
-                Packet::Input(h, body) if from_peer => {
+                Packet::Input(h, body) if authentic => {
                     let Some(s) = session.as_mut() else { continue };
                     if h.session_id != s.params.session_id {
                         continue;
@@ -364,9 +559,9 @@ impl HostAgent {
                         seq: s.input_seen.last().unwrap_or(0),
                     };
                     let n = ack.encode(&mut out);
-                    let _ = self.socket.send_to(&out[..n], from);
+                    let _ = s.link.send(&out[..n]);
                 }
-                Packet::Bye(bye) if from_peer => {
+                Packet::Bye(bye) if authentic => {
                     if let Some(s) = session.take() {
                         if bye.session_id == s.params.session_id {
                             log::info!("session {:08x}: closed by client", s.params.session_id);
@@ -384,10 +579,160 @@ impl HostAgent {
                 session_id: s.params.session_id,
             }
             .encode(&mut out);
-            let _ = self.socket.send_to(&out[..n], s.peer);
+            let _ = s.link.send(&out[..n]);
             s.stop();
         }
         Ok(())
+    }
+
+    /// A client's first handshake message: a paired client gets a session
+    /// (encrypted from here on), anyone else a "not paired" hint.
+    fn on_handshake(
+        &self,
+        msg: &[u8],
+        from: SocketAddr,
+        session: &mut Option<Session>,
+        times: &mut HashMap<PublicKey, u64>,
+        out: &mut [u8],
+    ) {
+        let Some(sec) = &self.cfg.security else {
+            return;
+        };
+        // A retransmission of the handshake that started this session.
+        if let Some(s) = session.as_ref()
+            && s.peer == from
+            && let Some((first, reply)) = &s.handshake
+            && first.as_slice() == msg
+        {
+            let n = Handshake {
+                reply: true,
+                message: reply,
+            }
+            .encode(out);
+            let _ = self.socket.send_to(&out[..n], from);
+            return;
+        }
+        let responder = match Responder::read(&sec.identity, msg) {
+            Ok(r) => r,
+            Err(e) => {
+                log::debug!("{from}: handshake: {e}");
+                return;
+            }
+        };
+        let Some(client) = sec.is_paired(&responder.client) else {
+            log::warn!(
+                "{from}: refused an unpaired device ({}); pair it with --pair",
+                responder.client.fingerprint()
+            );
+            let n = RejectReason::NotPaired.encode(out);
+            let _ = self.socket.send_to(&out[..n], from);
+            return;
+        };
+        let Some((hello, sent_ms)) = Hello::decode_with_time(&responder.payload) else {
+            return;
+        };
+        if times.get(&client.key).is_some_and(|&t| sent_ms <= t) {
+            log::warn!("{from}: replayed handshake of {} dropped", client.name);
+            return;
+        }
+        times.insert(client.key, sent_ms);
+        if let Some(old) = session.take() {
+            log::info!("session {:08x}: replaced by {from}", old.params.session_id);
+            old.stop();
+        }
+        let params = self.negotiate(&hello);
+        match self.start_session(params, from, Some(responder)) {
+            Ok((mut s, Some(reply))) => {
+                log_session(&s, &format!("{} ({from})", client.name));
+                let n = Handshake {
+                    reply: true,
+                    message: &reply,
+                }
+                .encode(out);
+                let _ = self.socket.send_to(&out[..n], from);
+                s.handshake = Some((msg.to_vec(), reply));
+                *session = Some(s);
+            }
+            Ok((s, None)) => s.stop(),
+            Err(e) => log::error!("session {:08x}: {e:#}", params.session_id),
+        }
+    }
+
+    /// Pairing messages (only while pairing mode is open).
+    fn on_pair(
+        &self,
+        p: Pair<'_>,
+        from: SocketAddr,
+        ex: &mut Option<PairingExchange>,
+        out: &mut [u8],
+    ) {
+        let Some(sec) = &self.cfg.security else {
+            return;
+        };
+        let send = |step: u8, message: &[u8], out: &mut [u8]| {
+            let n = Pair { step, message }.encode(out);
+            let _ = self.socket.send_to(&out[..n], from);
+        };
+        match p.step {
+            1 => {
+                if let Some(e) = ex.as_ref()
+                    && e.from == from
+                    && e.msg1 == p.message
+                {
+                    send(2, &e.msg2, out);
+                    return;
+                }
+                let pin = match sec.pairing_attempt() {
+                    Ok(pin) => pin,
+                    Err(reason) => {
+                        let n = reason.encode(out);
+                        let _ = self.socket.send_to(&out[..n], from);
+                        return;
+                    }
+                };
+                match HostPairing::respond(&pin, &sec.identity, &sec.name, p.message) {
+                    Ok((state, msg2)) => {
+                        send(2, &msg2, out);
+                        *ex = Some(PairingExchange {
+                            from,
+                            msg1: p.message.to_vec(),
+                            msg2,
+                            state: Some(state),
+                            done: None,
+                        });
+                    }
+                    Err(e) => log::debug!("{from}: pairing: {e}"),
+                }
+            }
+            3 => {
+                let Some(e) = ex.as_mut().filter(|e| e.from == from) else {
+                    return;
+                };
+                if let Some((msg3, msg4)) = &e.done {
+                    if msg3.as_slice() == p.message {
+                        send(4, msg4, out);
+                    }
+                    return;
+                }
+                let Some(state) = e.state.take() else { return };
+                match state.finish(p.message) {
+                    Ok((peer, msg4)) => {
+                        log::info!(
+                            "paired with {} ({}, key {})",
+                            peer.name,
+                            from.ip(),
+                            peer.key.fingerprint()
+                        );
+                        sec.add(peer);
+                        sec.close_pairing();
+                        send(4, &msg4, out);
+                        e.done = Some((p.message.to_vec(), msg4));
+                    }
+                    Err(err) => log::warn!("pairing with {from} failed: {err}"),
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The client's wishes capped by the host's limits. A width, height or
@@ -419,7 +764,15 @@ impl HostAgent {
         p
     }
 
-    fn start_session(&self, params: SessionParams, peer: SocketAddr) -> anyhow::Result<Session> {
+    /// Starts a session. With `secure`, the handshake is answered with the
+    /// HelloAck inside and the session's packets are sealed; the answer to
+    /// send is returned.
+    fn start_session(
+        &self,
+        params: SessionParams,
+        peer: SocketAddr,
+        secure: Option<Responder>,
+    ) -> anyhow::Result<(Session, Option<Vec<u8>>)> {
         let loss = LossEstimator::default();
         HostStats::bump(&self.stats.sessions);
         let shared = Arc::new(Shared {
@@ -443,6 +796,23 @@ impl HostAgent {
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
         let input = make_input(&self.cfg.input, source.screen());
+        let (crypto, handshake_reply) = match secure {
+            None => (None, None),
+            Some(responder) => {
+                let mut ack = [0u8; HelloAck::LEN];
+                self.hello_ack(&params, codec).encode(&mut ack);
+                let (transport, reply) = responder
+                    .reply(&ack)
+                    .map_err(|e| anyhow::anyhow!("handshake: {e}"))?;
+                (Some(Arc::new(transport)), Some(reply))
+            }
+        };
+        let link = Link {
+            socket: self.socket.clone(),
+            peer,
+            session_id: params.session_id,
+            crypto,
+        };
         let frame_slot = Arc::new(Slot::new());
         let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
 
@@ -459,8 +829,7 @@ impl HostAgent {
             let (shared, slot) = (shared.clone(), frame_slot.clone());
             let (free_rx, free_tx) = (free_frames_rx, free_frames_tx.clone());
             let cursor = CursorSender::new(
-                self.socket.clone(),
-                peer,
+                link.clone(),
                 params.session_id,
                 (source.width(), source.height()),
             );
@@ -486,10 +855,10 @@ impl HostAgent {
         let audio = match make_audio(self.cfg.audio) {
             Ok(None) => None,
             Ok(Some(source)) => {
-                let (shared, socket) = (shared.clone(), self.socket.clone());
+                let (shared, link) = (shared.clone(), link.clone());
                 let session_id = params.session_id;
                 Some(spawn_hot("audio", move || {
-                    if let Err(e) = audio_loop(source, &shared, &socket, peer, session_id) {
+                    if let Err(e) = audio_loop(source, &shared, &link, session_id) {
                         log::warn!("audio: {e}");
                     }
                 })?)
@@ -500,32 +869,27 @@ impl HostAgent {
             }
         };
         let send = {
-            let (shared, socket) = (shared.clone(), self.socket.clone());
+            let (shared, link) = (shared.clone(), link.clone());
             let pacer = Pacer {
                 rate_bytes_per_sec: self.cfg.pace_bytes_per_sec,
                 burst: 4,
             };
             let loss = LossSim::new(self.cfg.loss, u64::from(params.session_id) | 1);
             spawn_hot("send", move || {
-                if let Err(e) = send_loop(
-                    &shared,
-                    &send_rx,
-                    &free_enc_tx,
-                    &socket,
-                    peer,
-                    params,
-                    pacer,
-                    loss,
-                ) {
+                if let Err(e) =
+                    send_loop(&shared, &send_rx, &free_enc_tx, &link, params, pacer, loss)
+                {
                     log::error!("send: {e:#}");
                 }
             })?
         };
 
-        Ok(Session {
+        let session = Session {
             params,
             codec,
             peer,
+            link,
+            handshake: None,
             last_seen: Instant::now(),
             shared,
             loss,
@@ -537,8 +901,36 @@ impl HostAgent {
             input,
             input_seen: Dedup::default(),
             input_errors: RepeatedError::default(),
-        })
+        };
+        Ok((session, handshake_reply))
     }
+
+    fn hello_ack(&self, p: &SessionParams, codec: Codec) -> HelloAck {
+        HelloAck {
+            session_id: p.session_id,
+            width: p.width,
+            height: p.height,
+            fps: p.fps,
+            codec,
+        }
+    }
+}
+
+fn log_session(s: &Session, who: &str) {
+    let p = s.params;
+    log::info!(
+        "session {:08x}: {who} {}x{}@{} {} kbit/s{}",
+        p.session_id,
+        p.width,
+        p.height,
+        p.fps,
+        p.bitrate_kbps,
+        if s.link.crypto.is_some() {
+            ", encrypted"
+        } else {
+            ""
+        }
+    );
 }
 
 fn on_feedback(s: &mut Session, fb: &Feedback) {
@@ -607,8 +999,7 @@ const CURSOR_SHAPE_REPEAT: Duration = Duration::from_secs(2);
 /// Sends the pointer next to the video: its position with every captured
 /// frame, its image when it changes and every [`CURSOR_SHAPE_REPEAT`].
 struct CursorSender {
-    socket: Arc<UdpSocket>,
-    peer: SocketAddr,
+    link: Link,
     session_id: u32,
     screen: (u16, u16),
     /// Serial of the image last sent, when, and the wait for the repeat.
@@ -617,11 +1008,10 @@ struct CursorSender {
 }
 
 impl CursorSender {
-    fn new(socket: Arc<UdpSocket>, peer: SocketAddr, session_id: u32, screen: (u32, u32)) -> Self {
+    fn new(link: Link, session_id: u32, screen: (u32, u32)) -> Self {
         let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
         Self {
-            socket,
-            peer,
+            link,
             session_id,
             screen: (clamp(screen.0), clamp(screen.1)),
             sent: None,
@@ -661,7 +1051,7 @@ impl CursorSender {
                     offset: (i * CURSOR_CHUNK) as u32,
                 }
                 .encode(chunk, &mut buf);
-                let _ = self.socket.send_to(&buf[..n], self.peer);
+                let _ = self.link.send(&buf[..n]);
             }
             self.sent = Some((c.serial, Instant::now(), next_wait));
         }
@@ -675,7 +1065,7 @@ impl CursorSender {
             screen_height: self.screen.1,
         }
         .encode(&mut buf);
-        let _ = self.socket.send_to(&buf[..n], self.peer);
+        let _ = self.link.send(&buf[..n]);
     }
 }
 
@@ -695,8 +1085,7 @@ fn make_audio(kind: AudioKind) -> Result<Option<Box<dyn AudioSource>>, String> {
 fn audio_loop(
     mut source: Box<dyn AudioSource>,
     shared: &Shared,
-    socket: &UdpSocket,
-    peer: SocketAddr,
+    link: &Link,
     session_id: u32,
 ) -> Result<(), String> {
     let mut encoder = fernsicht_audio::opus::Encoder::new(AUDIO_BITRATE)?;
@@ -714,7 +1103,7 @@ fn audio_loop(
             capture_us: captured_us,
         }
         .encode(&current[..n], &previous, &mut buf);
-        let _ = socket.send_to(&buf[..len], peer);
+        let _ = link.send(&buf[..len]);
         HostStats::bump(&shared.stats.audio_frames_sent);
         previous.clear();
         previous.extend_from_slice(&current[..n]);
@@ -929,8 +1318,7 @@ fn send_loop(
     shared: &Shared,
     queue: &Receiver<EncodedFrame>,
     free_enc: &Sender<EncodedFrame>,
-    socket: &UdpSocket,
-    peer: SocketAddr,
+    link: &Link,
     params: SessionParams,
     pacer: Pacer,
     mut loss: LossSim,
@@ -961,7 +1349,7 @@ fn send_loop(
             if loss.drop_packet() {
                 return Ok(());
             }
-            match socket.send_to(p, peer) {
+            match link.send(p) {
                 Ok(_) => Ok(()),
                 // A full socket buffer is congestion, not a reason to stop.
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),

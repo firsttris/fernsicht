@@ -367,6 +367,29 @@ impl Hello {
     }
 }
 
+impl Hello {
+    /// The first handshake message's payload: this Hello and the client's
+    /// wall clock (ms), so the host can tell a replayed recording (older
+    /// than the last accepted) from a new connection.
+    pub fn encode_with_time(&self, unix_ms: u64) -> [u8; Hello::LEN + 8] {
+        let mut b = [0u8; Hello::LEN + 8];
+        self.encode(&mut b);
+        b[Hello::LEN..].copy_from_slice(&unix_ms.to_le_bytes());
+        b
+    }
+
+    pub fn decode_with_time(b: &[u8]) -> Option<(Hello, u64)> {
+        if b.len() != Hello::LEN + 8 {
+            return None;
+        }
+        let Ok(Packet::Hello(hello)) = Packet::decode(&b[..Hello::LEN]) else {
+            return None;
+        };
+        let ms = u64::from_le_bytes(b[Hello::LEN..].try_into().ok()?);
+        Some((hello, ms))
+    }
+}
+
 /// Session acceptance, host → client.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HelloAck {
@@ -1344,6 +1367,22 @@ mod tests {
         let mut empty = buf[..AudioHeader::LEN].to_vec();
         empty.extend_from_slice(&[0, 0, 0, 0]);
         assert!(Packet::decode(&empty).is_err());
+    }
+
+    #[test]
+    fn hello_with_time_roundtrips() {
+        let h = Hello {
+            width: 2560,
+            height: 1440,
+            fps: 60,
+            bitrate_kbps: 0,
+        };
+        let b = h.encode_with_time(1_760_000_000_123);
+        assert_eq!(Hello::decode_with_time(&b), Some((h, 1_760_000_000_123)));
+        assert_eq!(Hello::decode_with_time(&b[..b.len() - 1]), None);
+        let mut bad = b;
+        bad[0] = 0;
+        assert_eq!(Hello::decode_with_time(&bad), None);
     }
 
     #[test]

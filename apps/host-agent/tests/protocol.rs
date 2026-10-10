@@ -677,3 +677,319 @@ fn input_from_a_stranger_is_ignored() {
     host.shutdown();
     assert!(recorder.0.lock().unwrap().is_empty());
 }
+
+// ── Secure sessions ─────────────────────────────────────────────────────
+
+mod secure {
+    use std::sync::Arc;
+
+    use fernsicht_host_agent::{HostConfig, HostSecurity, InputKind};
+    use fernsicht_input::Recorder;
+    use fernsicht_proto::*;
+    use fernsicht_secure::pairing::ClientPairing;
+    use fernsicht_secure::session::{Initiator, Transport};
+    use fernsicht_secure::{Identity, Trusted};
+
+    use super::{Host, Peer};
+    use std::time::Duration;
+
+    fn security() -> Arc<HostSecurity> {
+        Arc::new(HostSecurity::new(
+            Identity::generate(),
+            "zentrale",
+            Trusted::default(),
+            None,
+        ))
+    }
+
+    /// Pairs `client` through the raw peer; returns the host's key.
+    fn pair(
+        peer: &mut Peer,
+        client: &Identity,
+        pin: &str,
+    ) -> Result<fernsicht_secure::PublicKey, String> {
+        let (mut p, m1) = ClientPairing::start(pin, client, "bazzite");
+        peer.send(|b| {
+            Pair {
+                step: 1,
+                message: &m1,
+            }
+            .encode(b)
+        });
+        let reply = peer
+            .wait_for(Duration::from_secs(2), |p| match p {
+                Packet::Pair(p) if p.step == 2 => Some(Ok(p.message.to_vec())),
+                Packet::Reject(r) => Some(Err(format!("{r:?}"))),
+                _ => None,
+            })
+            .ok_or("no answer")??;
+        let m3 = p.on_reply(&reply).map_err(|e| e.to_string())?;
+        peer.send(|b| {
+            Pair {
+                step: 3,
+                message: &m3,
+            }
+            .encode(b)
+        });
+        let m4 = peer
+            .wait_for(Duration::from_secs(2), |p| match p {
+                Packet::Pair(p) if p.step == 4 => Some(p.message.to_vec()),
+                _ => None,
+            })
+            .ok_or("no step 4")?;
+        Ok(p.on_done(&m4).map_err(|e| e.to_string())?.key)
+    }
+
+    /// Handshake as `client`; returns the session's keys and the ack.
+    fn connect(
+        peer: &mut Peer,
+        client: &Identity,
+        host: &fernsicht_secure::PublicKey,
+        ms: u64,
+    ) -> Option<(Transport, HelloAck, Vec<u8>)> {
+        let hello = Hello {
+            width: 320,
+            height: 240,
+            fps: 30,
+            bitrate_kbps: 500,
+        };
+        let (init, m1) = Initiator::start(client, host, &hello.encode_with_time(ms)).unwrap();
+        peer.send(|b| {
+            Handshake {
+                reply: false,
+                message: &m1,
+            }
+            .encode(b)
+        });
+        let m2 = peer.wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Handshake(h) if h.reply => Some(h.message.to_vec()),
+            _ => None,
+        })?;
+        let (t, payload) = init.finish(&m2).unwrap();
+        let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
+            panic!("no HelloAck inside")
+        };
+        Some((t, ack, m1))
+    }
+
+    fn seal(t: &Transport, session_id: u32, packet: &[u8]) -> Vec<u8> {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let (counter, n) = t.seal(packet, &mut buf[SealedHeader::LEN..]).unwrap();
+        SealedHeader {
+            session_id,
+            counter,
+        }
+        .write(&mut buf);
+        buf[..SealedHeader::LEN + n].to_vec()
+    }
+
+    #[test]
+    fn paired_session_is_encrypted_end_to_end() {
+        let sec = security();
+        sec.open_pairing("424242");
+        let recorder = Recorder::default();
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            input: InputKind::Record(recorder.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        let host_key = pair(&mut peer, &client, "424242").unwrap();
+        assert_eq!(host_key, sec.public_key());
+        assert_eq!(sec.paired()[0].name, "bazzite");
+
+        let (t, ack, _) = connect(&mut peer, &client, &host_key, 1).expect("no handshake answer");
+        assert_eq!((ack.width, ack.height), (320, 240));
+        // From now on everything arrives sealed, and opens to real packets.
+        let mut kinds = std::collections::HashSet::new();
+        let mut opened = [0u8; MAX_DATAGRAM];
+        for _ in 0..200 {
+            let Some((h, sealed)) = peer.wait_for(Duration::from_secs(1), |p| match p {
+                Packet::Sealed(h, s) => Some((h, s.to_vec())),
+                Packet::Video(..) | Packet::Cursor(..) | Packet::CursorShape(..) => {
+                    panic!("plaintext from a secure session")
+                }
+                _ => None,
+            }) else {
+                break;
+            };
+            assert_eq!(h.session_id, ack.session_id);
+            let n = t.open(h.counter, &sealed, &mut opened).expect("opens");
+            kinds.insert(match Packet::decode(&opened[..n]).unwrap() {
+                Packet::Video(..) => "video",
+                Packet::Cursor(..) => "cursor",
+                Packet::CursorShape(..) => "cursor shape",
+                _ => "other",
+            });
+        }
+        assert!(kinds.len() >= 2, "video and pointer inside");
+
+        // Sealed input applies; the same sealed packet again does not.
+        let mut b = [0u8; MAX_DATAGRAM];
+        let n = InputHeader::encode(
+            ack.session_id,
+            &[(
+                1,
+                InputEvent::Key {
+                    code: 30,
+                    pressed: true,
+                },
+            )],
+            &mut b,
+        );
+        let sealed_input = seal(&t, ack.session_id, &b[..n]);
+        peer.sock.send(&sealed_input).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        peer.sock.send(&sealed_input).unwrap();
+        // Plain input in a secure session is ignored.
+        peer.sock.send(&b[..n]).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        host.shutdown();
+        assert_eq!(
+            *recorder.0.lock().unwrap(),
+            vec![InputEvent::Key {
+                code: 30,
+                pressed: true
+            }]
+        );
+    }
+
+    #[test]
+    fn unpaired_devices_are_refused() {
+        let host = Host::start(HostConfig {
+            security: Some(security()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        // Plain Hello: ignored by a secure host.
+        peer.hello(320, 240, 30, 500);
+        assert!(
+            peer.wait_for(Duration::from_millis(400), |p| matches!(
+                p,
+                Packet::HelloAck(_)
+            )
+            .then_some(()))
+                .is_none()
+        );
+        // A handshake from an unknown key: "not paired".
+        let stranger = Identity::generate();
+        let host_key = Identity::generate().public; // wrong guess too
+        let (_, m1) = Initiator::start(&stranger, &host_key, &[0u8; 22]).unwrap();
+        peer.send(|b| {
+            Handshake {
+                reply: false,
+                message: &m1,
+            }
+            .encode(b)
+        });
+        assert!(
+            peer.wait_for(Duration::from_millis(400), |p| matches!(
+                p,
+                Packet::Handshake(_)
+            )
+            .then_some(()))
+                .is_none(),
+            "a handshake for another host is not answered"
+        );
+        host.shutdown();
+    }
+
+    #[test]
+    fn known_host_key_but_unpaired_client_gets_a_hint() {
+        let sec = security();
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let stranger = Identity::generate();
+        let hello = Hello {
+            width: 0,
+            height: 0,
+            fps: 30,
+            bitrate_kbps: 0,
+        };
+        let (_, m1) =
+            Initiator::start(&stranger, &sec.public_key(), &hello.encode_with_time(1)).unwrap();
+        peer.send(|b| {
+            Handshake {
+                reply: false,
+                message: &m1,
+            }
+            .encode(b)
+        });
+        let r = peer.wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Reject(r) => Some(r),
+            _ => None,
+        });
+        assert_eq!(r, Some(RejectReason::NotPaired));
+        host.shutdown();
+    }
+
+    #[test]
+    fn pairing_needs_pairing_mode_and_the_right_pin() {
+        let sec = security();
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        assert_eq!(
+            pair(&mut peer, &client, "123456").unwrap_err(),
+            "PairingClosed"
+        );
+
+        sec.open_pairing("123456");
+        assert_eq!(pair(&mut peer, &client, "654321").unwrap_err(), "wrong PIN");
+        assert_eq!(pair(&mut peer, &client, "111111").unwrap_err(), "wrong PIN");
+        assert_eq!(pair(&mut peer, &client, "222222").unwrap_err(), "wrong PIN");
+        // Three wrong guesses close pairing mode, even for the right PIN.
+        assert_eq!(
+            pair(&mut peer, &client, "123456").unwrap_err(),
+            "TooManyAttempts"
+        );
+        assert!(sec.paired().is_empty());
+        host.shutdown();
+    }
+
+    #[test]
+    fn handshakes_are_answered_once_and_replays_dropped() {
+        let sec = security();
+        sec.open_pairing("000000");
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        let key = pair(&mut peer, &client, "000000").unwrap();
+        let (_, ack, m1) = connect(&mut peer, &client, &key, 1000).unwrap();
+        // The same first message again (lost answer): same session.
+        peer.send(|b| {
+            Handshake {
+                reply: false,
+                message: &m1,
+            }
+            .encode(b)
+        });
+        assert!(
+            peer.wait_for(Duration::from_secs(1), |p| {
+                matches!(p, Packet::Handshake(h) if h.reply).then_some(())
+            })
+            .is_some()
+        );
+        // A new connection with an older clock (a replayed recording of an
+        // earlier handshake would look like this): ignored.
+        let mut other = Peer::new(host.addr);
+        assert!(
+            connect(&mut other, &client, &key, 999).is_none(),
+            "older handshake must be dropped"
+        );
+        // A newer one replaces the session.
+        let (_, ack2, _) = connect(&mut other, &client, &key, 2000).unwrap();
+        assert_ne!(ack.session_id, ack2.session_id);
+        host.shutdown();
+    }
+}

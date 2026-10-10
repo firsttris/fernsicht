@@ -951,6 +951,7 @@ dependencies = [
  "fernsicht-net",
  "fernsicht-proto",
  "fernsicht-render",
+ "fernsicht-secure",
  "log",
  "winit",
 ]
@@ -1006,6 +1007,7 @@ dependencies = [
  "fernsicht-input",
  "fernsicht-net",
  "fernsicht-proto",
+ "fernsicht-secure",
  "log",
  "serde",
  "serde_json",

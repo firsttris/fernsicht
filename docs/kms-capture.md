@@ -26,6 +26,35 @@ Bazzite bringt FFmpeg und libva selbst mit, deshalb laufen die fertigen
 Programme ohne Box. Das ist auch der einfachste Weg zu den root-Rechten:
 `sudo` auf dem Host ist echtes root, in der normalen Box nicht.
 
+### Einmalig: Geräte koppeln
+
+Verbindungen sind verschlüsselt, und nur gekoppelte Geräte werden
+angenommen. Gekoppelt wird einmal pro Client-Rechner, wie bei Bluetooth:
+
+1. Host mit `--pair` starten. Er zeigt eine 6-stellige PIN, die 5 Minuten
+   gilt:
+   ```sh
+   sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi --pair
+   ```
+   ```text
+   Kopplung offen für 5 Minuten. PIN: 482913
+   ```
+2. Auf dem Client-Rechner die PIN eingeben:
+   ```sh
+   fernsicht-client pair 192.168.178.87 482913
+   ```
+   ```text
+   Gekoppelt mit zentrale (192.168.178.87:47800, Schlüssel 3f2a-…).
+   ```
+
+Nach drei falschen PINs schließt der Host die Kopplung; dann einfach neu
+mit `--pair` starten. `fernsicht-client hosts` listet die gekoppelten Hosts,
+`fernsicht-client forget zentrale` vergisst einen.
+
+Die Schlüssel liegen beim Host in `/var/lib/fernsicht` (als root
+gestartet) bzw. `~/.config/fernsicht/host`, beim Client in
+`~/.config/fernsicht`.
+
 **Terminal 1 – Host-Agent**
 
 ```sh
@@ -45,8 +74,11 @@ bauen.
 **Terminal 2 – Client**
 
 ```sh
-~/fernsicht/target/release/fernsicht-client 127.0.0.1:47800
+~/fernsicht/target/release/fernsicht-client zentrale
 ```
+
+Statt des Namens geht auch die Adresse (`192.168.178.87`, Port 47800 ist
+Standard).
 
 Es öffnet sich ein Fenster mit dem Bild, im Titel steht die Latenz. Esc
 schließt es, F11 schaltet auf Vollbild. Auf demselben Rechner zeigt das
@@ -56,12 +88,11 @@ Das ist erwartet.
 Ohne Fenster, mit Aufnahme in eine Datei:
 
 ```sh
-./target/release/fernsicht-client 127.0.0.1:47800 --headless --duration 10 --record ~/fernsicht-test.h264
+./target/release/fernsicht-client zentrale --headless --duration 10 --record ~/fernsicht-test.h264
 ffplay -framerate 60 ~/fernsicht-test.h264
 ```
 
-Von einem zweiten Rechner aus geht es genauso, statt `127.0.0.1` die IP des
-AMD-Rechners. Auf dem NVIDIA-Rechner den Client mit NVDEC bauen
+Von einem zweiten Rechner aus geht es genauso (vorher koppeln). Auf dem NVIDIA-Rechner den Client mit NVDEC bauen
 (`--features nvidia,window`); er nimmt automatisch NVDEC, wenn VAAPI nicht
 geht.
 
@@ -81,9 +112,8 @@ Mit `--input` nimmt der Host Maus und Tastatur des Clients an:
 sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi --input
 ```
 
-**Achtung:** Es gibt noch keine Anmeldung. Solange `--input` an ist, kann
-jeder, der den Port 47800 erreicht, auf diesem Rechner tippen. Nur im
-eigenen Netz verwenden.
+Eingaben nimmt der Host nur von gekoppelten Geräten an, und sie laufen wie
+alles andere verschlüsselt.
 
 Im Client-Fenster gehen Maus und alle Tasten an den Host, auch Esc und F11.
 Der Client selbst hört dann auf:

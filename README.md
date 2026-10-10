@@ -20,7 +20,9 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | 2 – Steuerung | Maus und Tastatur | ✅ zuverlässig über UDP (Wiederholung bis zur Bestätigung, jedes Ereignis genau einmal, getestet bei 30 % Verlust), Host über `uinput` (`--input`, ohne root), absolute Zeigerposition auf den aufgenommenen Monitor umgerechnet (KDE-Monitoranordnung) |
 | | Ton | ✅ was der Host abspielt (PipeWire), Opus 5 ms, jedes Paket trägt den Vorgänger mit (ein Verlust hinterlässt keine Lücke), Jitter-Puffer 15 ms mit Verlustverschleierung und Uhrdrift-Ausgleich; im Test 15 ms Verzögerung, bei 20 % Verlust 2,5 % überbrückt |
 | | Gamepad, Zeigerfang für Spiele | ⏳ offen |
-| 3–5 | Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ offen |
+| 3 – Sicherheit | Kopplung und Verschlüsselung | ✅ einmalig koppeln per 6-stelliger PIN (SPAKE2: kein Offline-Raten, Kopplung schließt nach 3 Fehlversuchen), jede Sitzung mit Noise-IK-Handshake (wie WireGuard), danach alles mit ChaCha20-Poly1305 versiegelt, Wiederholungen werden verworfen; nur gekoppelte Geräte kommen herein |
+| | Internet (NAT), Bitratenanpassung | ⏳ offen |
+| 4–5 | Produkt-Hülle (App, Dienst, Gerätesuche), Web-Viewer | ⏳ in Arbeit |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
@@ -35,21 +37,23 @@ Rechner ohne GPU Transport, FEC, Pacing und Latenz trotzdem echt. Mit
 ```sh
 cargo build --release
 
-# Host
-./target/release/fernsicht-host-agent --bind 0.0.0.0:47800
+# Host, beim ersten Mal mit --pair: zeigt eine PIN zum Koppeln
+./target/release/fernsicht-host-agent --pair
 
-# Client (zweites Terminal oder zweiter Rechner)
-./target/release/fernsicht-client <host-ip>:47800 --fps 60 --bitrate 20000
+# Client (zweites Terminal oder zweiter Rechner): einmal koppeln …
+./target/release/fernsicht-client pair <host-ip> <PIN>
+# … dann per Name oder Adresse verbinden
+./target/release/fernsicht-client <host-name> --fps 60
 # mit 1 % künstlichem Paketverlust
-./target/release/fernsicht-client <host-ip>:47800 --loss 0.01 --duration 10
+./target/release/fernsicht-client <host-name> --loss 0.01 --duration 10
 
 # Echtes H.264 vom Monitor (AMD/Intel, als root: docs/kms-capture.md)
 cargo build --release -p fernsicht-host-agent --features vaapi,kms
 sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi
 cargo build --release -p fernsicht-client --features vaapi,window
-./target/release/fernsicht-client <host-ip>:47800   # Fenster: Esc schließt, F11 Vollbild
+./target/release/fernsicht-client <host-name>   # Fenster, Strg+Alt+Shift+Q beendet
 # ohne Fenster, Video in eine Datei (ffplay -framerate 60 ~/test.h264)
-./target/release/fernsicht-client <host-ip>:47800 --headless --record ~/test.h264
+./target/release/fernsicht-client <host-name> --headless --record ~/test.h264
 
 # NVIDIA (z. B. GTX 1080): Client mit NVDEC, Host mit NVENC (vorerst Testbild)
 cargo build --release -p fernsicht-client --features nvidia,window

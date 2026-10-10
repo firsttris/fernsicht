@@ -3,17 +3,32 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use clap::Parser;
-use fernsicht_client::{AudioOutput, ClientConfig, DecoderChoice, run};
+use fernsicht_client::{
+    AudioOutput, ClientConfig, ClientSecurity, DecoderChoice, Identity, Trusted, default_state_dir,
+    find_host, pair, run, with_default_port,
+};
 use fernsicht_render::overlay::ms;
 
 /// Fernsicht client: shows the host's screen in a window (build feature
 /// "window"; Esc closes, F11 toggles fullscreen) and prints the latency
 /// overlay.
 #[derive(Parser, Debug)]
-#[command(version)]
+#[command(
+    version,
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
+)]
 struct Args {
-    /// Host agent address, e.g. 192.168.1.20:47800.
-    host: String,
+    #[command(subcommand)]
+    command: Option<Command>,
+    /// The paired host: its name or address, e.g. zentrale or
+    /// 192.168.1.20 (port 47800 unless given).
+    #[arg(required = true)]
+    host: Option<String>,
+    /// Where this device's key and paired hosts are kept (default:
+    /// ~/.config/fernsicht).
+    #[arg(long, global = true)]
+    state_dir: Option<std::path::PathBuf>,
     /// Stream size; 0 (default) = the host's screen size.
     #[arg(long, default_value_t = 0)]
     width: u16,
@@ -52,6 +67,79 @@ struct Args {
     headless: bool,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Pair with a host: start it with --pair, then enter the PIN it shows.
+    Pair {
+        /// The host's address, e.g. 192.168.1.20.
+        host: String,
+        /// The PIN the host shows.
+        pin: String,
+        /// How the host will list this device (default: its hostname).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List the paired hosts.
+    Hosts,
+    /// Forget a paired host.
+    Forget {
+        /// Its name or address.
+        host: String,
+    },
+}
+
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_owned())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "client".into())
+}
+
+/// Pairing, listing, forgetting: done, nothing to stream.
+fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
+    let hosts_path = dir.join("hosts.json");
+    let mut hosts = Trusted::load(&hosts_path).map_err(anyhow::Error::msg)?;
+    match command {
+        Command::Pair { host, pin, name } => {
+            let identity =
+                Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;
+            let addr = with_default_port(&host);
+            let peer = pair(&addr, &pin, &identity, &name.unwrap_or_else(hostname))?;
+            println!(
+                "Gekoppelt mit {} ({addr}, Schlüssel {}).",
+                peer.name,
+                peer.key.fingerprint()
+            );
+            println!("Verbinden: fernsicht-client {}", peer.name);
+            hosts.add(peer);
+            hosts.save(&hosts_path).map_err(anyhow::Error::msg)?;
+        }
+        Command::Hosts => {
+            if hosts.peers.is_empty() {
+                println!("Noch keine Hosts gekoppelt (fernsicht-client pair HOST PIN).");
+            }
+            for p in &hosts.peers {
+                println!(
+                    "{}  {}  Schlüssel {}",
+                    p.name,
+                    p.address.as_deref().unwrap_or("?"),
+                    p.key.fingerprint()
+                );
+            }
+        }
+        Command::Forget { host } => {
+            let key = find_host(&hosts, &host)
+                .map(|p| p.key)
+                .ok_or_else(|| anyhow::anyhow!("no paired host {host}"))?;
+            hosts.remove(&key);
+            hosts.save(&hosts_path).map_err(anyhow::Error::msg)?;
+            println!("{host} vergessen.");
+        }
+    }
+    Ok(())
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum DecoderArg {
     Auto,
@@ -62,8 +150,29 @@ enum DecoderArg {
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    let dir = args.state_dir.clone().unwrap_or_else(default_state_dir);
+    if let Some(command) = args.command {
+        return manage(command, &dir);
+    }
+    let wanted = args.host.clone().expect("required by clap");
+    let hosts = Trusted::load(&dir.join("hosts.json")).map_err(anyhow::Error::msg)?;
+    let Some(host) = find_host(&hosts, &wanted).cloned() else {
+        anyhow::bail!(
+            "not paired with {wanted}. Start the host with --pair and run: \
+             fernsicht-client pair {wanted} PIN"
+        );
+    };
+    let identity =
+        Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;
     let cfg = ClientConfig {
-        host: args.host,
+        host: host
+            .address
+            .clone()
+            .unwrap_or_else(|| with_default_port(&wanted)),
+        security: Some(Arc::new(ClientSecurity {
+            identity,
+            host: host.key,
+        })),
         width: args.width,
         height: args.height,
         fps: args.fps,

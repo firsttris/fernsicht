@@ -28,10 +28,14 @@ use fernsicht_input::InputQueue;
 pub use fernsicht_input::{InputEvent, buttons};
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
 use fernsicht_proto::{
-    Bye, ClockPing, Codec, Feedback, Hello, InputHeader, MAX_DATAGRAM, Packet, VideoHeader,
+    Bye, ClockPing, Codec, Feedback, Handshake, Hello, InputHeader, MAX_DATAGRAM, Packet,
+    Pair as PairMsg, RejectReason, SealedHeader, VideoHeader,
 };
 use fernsicht_render::overlay::{self, StreamInfo};
 use fernsicht_render::{HeadlessPresenter, Presenter};
+use fernsicht_secure::pairing::{ClientPairing, PairError};
+use fernsicht_secure::session::{Initiator, Transport};
+pub use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
 
 use crate::cursor::CursorTracker;
 
@@ -66,6 +70,10 @@ pub struct ClientConfig {
     pub input: Option<Arc<InputHandle>>,
     /// Where the host's sound is played.
     pub audio: AudioOutput,
+    /// Our key and the paired host's: the session is authenticated and
+    /// encrypted. `None` (the library default) talks plain, for tests; the
+    /// program always sets it.
+    pub security: Option<Arc<ClientSecurity>>,
     /// Writes the received bitstream here (H.264 Annex B: plays with
     /// `ffplay` or `mpv`). Only frames the decoder gets are written.
     pub record: Option<std::path::PathBuf>,
@@ -88,8 +96,144 @@ impl Default for ClientConfig {
             decoder: DecoderChoice::Auto,
             input: None,
             audio: AudioOutput::Off,
+            security: None,
             record: None,
         }
+    }
+}
+
+/// This device's key and the key of the host it connects to (known from
+/// pairing).
+pub struct ClientSecurity {
+    pub identity: Identity,
+    pub host: PublicKey,
+}
+
+impl std::fmt::Debug for ClientSecurity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ClientSecurity(host {})", self.host.fingerprint())
+    }
+}
+
+/// Sends `packet` to the host: sealed once the session is secure.
+fn send_packet(socket: &UdpSocket, crypto: Option<(&Transport, u32)>, packet: &[u8]) {
+    let Some((t, session_id)) = crypto else {
+        let _ = socket.send(packet);
+        return;
+    };
+    let mut buf = [0u8; MAX_DATAGRAM];
+    if let Ok((counter, n)) = t.seal(packet, &mut buf[SealedHeader::LEN..]) {
+        SealedHeader {
+            session_id,
+            counter,
+        }
+        .write(&mut buf);
+        let _ = socket.send(&buf[..SealedHeader::LEN + n]);
+    }
+}
+
+/// Where this device keeps its key and paired hosts:
+/// `$XDG_CONFIG_HOME/fernsicht`, else `~/.config/fernsicht`.
+pub fn default_state_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("fernsicht")
+}
+
+/// The port hosts listen on unless told otherwise.
+pub const DEFAULT_PORT: u16 = 47800;
+
+/// `host` with the default port if it has none (`zentrale.local` →
+/// `zentrale.local:47800`; IPv6 needs brackets: `[fe80::1]:47800`).
+pub fn with_default_port(host: &str) -> String {
+    let has_port = match host.rsplit_once(':') {
+        Some((h, p)) => p.parse::<u16>().is_ok() && (!h.contains(':') || h.ends_with(']')),
+        None => false,
+    };
+    if has_port {
+        host.to_owned()
+    } else {
+        format!("{host}:{DEFAULT_PORT}")
+    }
+}
+
+/// The paired host meant by `what`: its name or its address.
+pub fn find_host<'a>(trusted: &'a Trusted, what: &str) -> Option<&'a Peer> {
+    let addr = with_default_port(what);
+    trusted.peers.iter().find(|p| p.name == what).or_else(|| {
+        trusted
+            .peers
+            .iter()
+            .find(|p| p.address.as_deref() == Some(addr.as_str()))
+    })
+}
+
+/// How long pairing waits for the host.
+pub const PAIR_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Pairs with the host at `host` using the PIN it shows. Returns the host
+/// to remember (with its address).
+pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::Result<Peer> {
+    let socket = fernsicht_net::socket::bind_udp("0.0.0.0:0").context("bind")?;
+    socket
+        .connect(host)
+        .with_context(|| format!("connect {host}"))?;
+    socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+    let (mut pairing, msg1) = ClientPairing::start(pin, identity, name);
+    let mut out = [0u8; MAX_DATAGRAM];
+    let mut buf = [0u8; 2048];
+    let deadline = Instant::now() + PAIR_TIMEOUT;
+    // Step 1 until step 2 comes, then step 3 until step 4: each resent
+    // every 250 ms, as UDP may lose them.
+    let mut sending: (u8, Vec<u8>) = (1, msg1);
+    let mut last_sent: Option<Instant> = None;
+    loop {
+        if Instant::now() >= deadline {
+            anyhow::bail!("no answer from {host} (is pairing open there, with --pair?)");
+        }
+        if last_sent.is_none_or(|t| t.elapsed() >= HELLO_INTERVAL) {
+            let n = PairMsg {
+                step: sending.0,
+                message: &sending.1,
+            }
+            .encode(&mut out);
+            let _ = socket.send(&out[..n]);
+            last_sent = Some(Instant::now());
+        }
+        let Ok(n) = socket.recv(&mut buf) else {
+            continue;
+        };
+        match Packet::decode(&buf[..n]) {
+            Ok(Packet::Pair(p)) if p.step == 2 && sending.0 == 1 => {
+                let msg3 = pairing.on_reply(p.message).map_err(|e| match e {
+                    PairError::WrongPin => anyhow::anyhow!("wrong PIN"),
+                    other => anyhow::anyhow!("pairing failed: {other}"),
+                })?;
+                sending = (3, msg3);
+                last_sent = None;
+            }
+            Ok(Packet::Pair(p)) if p.step == 4 && sending.0 == 3 => {
+                let mut peer = pairing.on_done(p.message)?;
+                peer.address = Some(host.to_owned());
+                return Ok(peer);
+            }
+            Ok(Packet::Reject(r)) => anyhow::bail!("{}", reject_text(r)),
+            _ => {}
+        }
+    }
+}
+
+/// What a host's rejection means, for people.
+pub fn reject_text(r: RejectReason) -> &'static str {
+    match r {
+        RejectReason::NotPaired => {
+            "this device is not paired with the host (pair it: host with --pair, then \"fernsicht-client pair HOST PIN\")"
+        }
+        RejectReason::PairingClosed => "the host is not in pairing mode (start it with --pair)",
+        RejectReason::TooManyAttempts => "too many wrong PINs: pairing mode closed; open it again",
     }
 }
 
@@ -466,6 +610,22 @@ fn network_loop(
     let mut overflowed = 0u64;
     let mut acked_at: Option<Instant> = None;
     let mut video_seen = false;
+    let mut opened = [0u8; MAX_DATAGRAM];
+    // Secure: the handshake in flight, then the session's keys.
+    let mut handshake: Option<(Initiator, Vec<u8>)> = match &cfg.security {
+        Some(sec) => {
+            let unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            let payload = hello.encode_with_time(unix_ms);
+            Some(
+                Initiator::start(&sec.identity, &sec.host, &payload)
+                    .map_err(|e| anyhow::anyhow!("handshake: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    let mut crypto: Option<Arc<Transport>> = None;
 
     loop {
         if stop.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
@@ -482,10 +642,19 @@ fn network_loop(
             anyhow::bail!("no packets from {} for {:?}", cfg.host, cfg.host_timeout);
         }
         if session.is_none() && last_hello.is_none_or(|t| t.elapsed() >= HELLO_INTERVAL) {
-            let n = hello.encode(&mut out);
+            let n = match &handshake {
+                Some((_, msg1)) => Handshake {
+                    reply: false,
+                    message: msg1,
+                }
+                .encode(&mut out),
+                None => hello.encode(&mut out),
+            };
             let _ = socket.send(&out[..n]);
             last_hello = Some(Instant::now());
         }
+        // Sealed with the session's keys once secure.
+        let seal_with = crypto.as_deref().zip(session.map(|(id, _)| id));
         // Ping fast until the clock offset settles, then slowly to track drift.
         let ping_every = if ping_seq < 20 {
             Duration::from_millis(50)
@@ -500,16 +669,18 @@ fn network_loop(
                 .and_then(|mut q| q.due(Instant::now()));
             if let Some(events) = due {
                 let n = InputHeader::encode(session_id, &events, &mut out);
-                let _ = socket.send(&out[..n]);
+                send_packet(socket, seal_with, &out[..n]);
             }
         }
-        if last_ping.is_none_or(|t| t.elapsed() >= ping_every) {
+        // A secure host answers sealed pings only, so wait for the session.
+        let can_ping = cfg.security.is_none() || seal_with.is_some();
+        if can_ping && last_ping.is_none_or(|t| t.elapsed() >= ping_every) {
             let ping = ClockPing {
                 seq: ping_seq,
                 client_send_us: now_us(),
             };
             let n = ping.encode(&mut out);
-            let _ = socket.send(&out[..n]);
+            send_packet(socket, seal_with, &out[..n]);
             ping_seq += 1;
             last_ping = Some(Instant::now());
         }
@@ -530,7 +701,7 @@ fn network_loop(
                 packets_recovered: s.packets_recovered,
             };
             let n = fb.encode(&mut out);
-            let _ = socket.send(&out[..n]);
+            send_packet(socket, seal_with, &out[..n]);
             rates.add(&s);
             if rates.started.elapsed() >= OVERLAY_INTERVAL
                 && let Ok(mut i) = info.lock()
@@ -557,8 +728,44 @@ fn network_loop(
         };
         let now = now_us();
         last_packet = Instant::now();
-        let Ok(packet) = Packet::decode(&buf[..len]) else {
+        let Ok(outer) = Packet::decode(&buf[..len]) else {
             continue;
+        };
+        // A secure session: only sealed packets count (opened here), plus
+        // the handshake's answer and rejections.
+        let packet = match (outer, cfg.security.is_some()) {
+            (Packet::Sealed(h, sealed), true) => {
+                let (Some(t), Some((id, _))) = (crypto.as_deref(), session) else {
+                    continue;
+                };
+                if h.session_id != id {
+                    continue;
+                }
+                let Ok(n) = t.open(h.counter, sealed, &mut opened) else {
+                    continue;
+                };
+                let Ok(inner) = Packet::decode(&opened[..n]) else {
+                    continue;
+                };
+                inner
+            }
+            (Packet::Handshake(h), true) if h.reply => {
+                let Some((initiator, _)) = handshake.take() else {
+                    continue;
+                };
+                let (transport, payload) = match initiator.finish(h.message) {
+                    Ok(r) => r,
+                    Err(e) => anyhow::bail!("handshake with {} failed: {e}", cfg.host),
+                };
+                let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
+                    anyhow::bail!("handshake with {}: no session in the answer", cfg.host);
+                };
+                crypto = Some(Arc::new(transport));
+                Packet::HelloAck(ack)
+            }
+            (Packet::Reject(r), true) => anyhow::bail!("{}: {}", cfg.host, reject_text(r)),
+            (_, true) => continue,
+            (p, false) => p,
         };
         match packet {
             Packet::HelloAck(ack) => {
@@ -657,7 +864,11 @@ fn network_loop(
 
     if let Some((session_id, _)) = session {
         let n = Bye { session_id }.encode(&mut out);
-        let _ = socket.send(&out[..n]);
+        send_packet(
+            socket,
+            crypto.as_deref().map(|t| (t, session_id)),
+            &out[..n],
+        );
     }
     Ok(NetOutcome {
         receiver: reassembler.totals(),
@@ -1021,6 +1232,41 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput) -> AudioSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_addresses_get_the_default_port() {
+        assert_eq!(with_default_port("zentrale"), "zentrale:47800");
+        assert_eq!(with_default_port("192.168.178.87"), "192.168.178.87:47800");
+        assert_eq!(
+            with_default_port("192.168.178.87:1234"),
+            "192.168.178.87:1234"
+        );
+        assert_eq!(with_default_port("[fe80::1]:47800"), "[fe80::1]:47800");
+        assert_eq!(with_default_port("[fe80::1]"), "[fe80::1]:47800");
+        assert_eq!(with_default_port("fe80::1"), "fe80::1:47800");
+    }
+
+    #[test]
+    fn hosts_are_found_by_name_or_address() {
+        let mut t = Trusted::default();
+        t.add(Peer {
+            name: "zentrale".into(),
+            key: Identity::generate().public,
+            address: Some("192.168.178.87:47800".into()),
+            paired_at: 0,
+        });
+        assert!(find_host(&t, "zentrale").is_some());
+        assert!(find_host(&t, "192.168.178.87").is_some());
+        assert!(find_host(&t, "192.168.178.87:47800").is_some());
+        assert!(find_host(&t, "192.168.178.88").is_none());
+        assert!(find_host(&t, "bazzite").is_none());
+    }
+
+    #[test]
+    fn the_state_dir_follows_xdg() {
+        let d = default_state_dir();
+        assert!(d.ends_with("fernsicht"), "{d:?}");
+    }
 
     #[test]
     fn window_positions_map_onto_the_stream() {

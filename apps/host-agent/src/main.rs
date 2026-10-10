@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
-use fernsicht_host_agent::{AudioKind, CaptureKind, EncoderKind, HostAgent, HostConfig, InputKind};
+use fernsicht_host_agent::{
+    AudioKind, CaptureKind, EncoderKind, HostAgent, HostConfig, HostSecurity, InputKind,
+    PAIRING_OPEN_FOR,
+};
 
 /// Fernsicht host agent (phase 1: test pattern or KMS capture, synthetic or
 /// VAAPI H.264 over UDP).
@@ -46,6 +49,14 @@ struct Args {
     /// off with the test pattern.
     #[arg(long, value_enum)]
     audio: Option<AudioArg>,
+    /// Open pairing for 5 minutes: shows a PIN to enter on the new device
+    /// (fernsicht-client pair HOST PIN).
+    #[arg(long)]
+    pair: bool,
+    /// Where the host's key and paired clients are kept (default:
+    /// /var/lib/fernsicht as root, else ~/.config/fernsicht/host).
+    #[arg(long)]
+    state_dir: Option<std::path::PathBuf>,
     /// Accept mouse and keyboard from the client (virtual devices through
     /// /dev/uinput). There is no authentication yet: anyone who reaches the
     /// port can then type on this machine. Only in a trusted LAN.
@@ -80,6 +91,31 @@ enum EncoderArg {
     Synthetic,
     Vaapi,
     Nvenc,
+}
+
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_owned())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "host".into())
+}
+
+/// Root (a service, or sudo for KMS capture) keeps its key in /var/lib;
+/// a user in ~/.config.
+fn default_state_dir() -> std::path::PathBuf {
+    if std::fs::metadata("/proc/self").is_ok_and(|m| {
+        use std::os::unix::fs::MetadataExt;
+        m.uid() == 0
+    }) {
+        return "/var/lib/fernsicht".into();
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| ".".into());
+    base.join("fernsicht").join("host")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -121,6 +157,26 @@ fn main() -> anyhow::Result<()> {
             },
         },
         ..HostConfig::default()
+    };
+    let dir = args.state_dir.clone().unwrap_or_else(default_state_dir);
+    let security = HostSecurity::load(&dir, &hostname())?;
+    log::info!(
+        "host key {} ({}), {} paired client(s)",
+        security.public_key().fingerprint(),
+        dir.display(),
+        security.paired().len()
+    );
+    if args.pair {
+        let pin = fernsicht_secure::pairing::new_pin();
+        security.open_pairing(&pin);
+        println!(
+            "Kopplung offen für {} Minuten. PIN: {pin}",
+            PAIRING_OPEN_FOR.as_secs() / 60
+        );
+    }
+    let cfg = HostConfig {
+        security: Some(std::sync::Arc::new(security)),
+        ..cfg
     };
     let agent = HostAgent::bind(cfg)?;
     log::info!("listening on {}", agent.local_addr()?);
