@@ -7,14 +7,19 @@ ARG FEDORA_VERSION=44
 FROM registry.fedoraproject.org/fedora-toolbox:${FEDORA_VERSION}
 ARG FEDORA_VERSION
 
-# Fedora's own Mesa VA driver and FFmpeg ship without H.264/HEVC (patents).
-# RPM Fusion's "freeworld" Mesa and full FFmpeg (incl. NVENC/NVDEC via
-# dlopen) are what Bazzite itself uses.
+# Fedora's own Mesa (VA and Vulkan Video) and FFmpeg ship without H.264/HEVC
+# (patents). RPM Fusion's "freeworld" Mesa and full FFmpeg (incl. NVENC/NVDEC
+# via dlopen) are what Bazzite itself uses.
 RUN dnf install -y \
       "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${FEDORA_VERSION}.noarch.rpm" \
     && dnf install -y --allowerasing \
       mesa-va-drivers-freeworld mesa-vulkan-drivers \
       ffmpeg ffmpeg-devel \
+    && if dnf list --available mesa-vulkan-drivers-freeworld >/dev/null 2>&1; then \
+         dnf install -y --allowerasing mesa-vulkan-drivers-freeworld; \
+       else \
+         echo "RPM Fusion has no mesa-vulkan-drivers-freeworld: Vulkan Video without H.264/HEVC"; \
+       fi \
     && dnf install -y \
       gcc gcc-c++ clang pkgconf-pkg-config cmake git jq \
       libva-devel libva-utils libdrm-devel pipewire-devel \
