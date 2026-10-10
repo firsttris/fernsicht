@@ -177,6 +177,8 @@ struct Shared {
     stats: Arc<HostStats>,
     running: AtomicBool,
     keyframe_requested: AtomicBool,
+    /// The client lacks the pointer image.
+    cursor_requested: AtomicBool,
     /// Loss rate FEC is sized for, as `f32` bits.
     fec_loss: AtomicU32,
 }
@@ -424,6 +426,7 @@ impl HostAgent {
             stats: self.stats.clone(),
             running: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(true),
+            cursor_requested: AtomicBool::new(false),
             fec_loss: AtomicU32::new(loss.estimate().to_bits()),
         });
         // Source and encoder come first: if the screen or the GPU is
@@ -546,6 +549,9 @@ fn on_feedback(s: &mut Session, fb: &Feedback) {
     if fb.request_keyframe {
         s.shared.keyframe_requested.store(true, Ordering::Relaxed);
     }
+    if fb.request_cursor {
+        s.shared.cursor_requested.store(true, Ordering::Relaxed);
+    }
     log::debug!(
         "feedback: loss {:.2} % recovered {} dropped {} → FEC sized for {:.1} %",
         fb.loss_ratio() * 100.0,
@@ -582,7 +588,8 @@ fn capture_loop(
         // Right away, not after encoding: the pointer is the one thing the
         // client can show before the frame it belongs to arrives.
         if let Some(c) = &frame.cursor {
-            cursor.send(c);
+            let asked = shared.cursor_requested.swap(false, Ordering::Relaxed);
+            cursor.send(c, asked);
         }
         if let Some(skipped) = slot.put(frame) {
             let _ = free_tx.send(skipped);
@@ -622,7 +629,8 @@ impl CursorSender {
         }
     }
 
-    fn send(&mut self, c: &CursorState) {
+    /// `asked`: the client said it lacks the image; send it now.
+    fn send(&mut self, c: &CursorState, asked: bool) {
         let mut buf = [0u8; MAX_DATAGRAM];
         let img = &c.image;
         let fits = (1..=u32::from(MAX_CURSOR_SIZE)).contains(&img.width)
@@ -636,6 +644,8 @@ impl CursorSender {
             return;
         }
         let repeat = match self.sent {
+            // Asked for: right away (feedback comes every 100 ms at most).
+            Some((serial, _, wait)) if serial == c.serial && asked => Some(wait),
             Some((serial, at, wait)) if serial == c.serial => {
                 (at.elapsed() >= wait).then(|| (wait * 2).min(CURSOR_SHAPE_REPEAT))
             }

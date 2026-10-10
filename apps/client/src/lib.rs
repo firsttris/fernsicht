@@ -521,6 +521,7 @@ fn network_loop(
                 session_id,
                 request_keyframe: reassembler.needs_keyframe()
                     || pipe.need_keyframe.load(Ordering::Relaxed),
+                request_cursor: pipe.cursor.lock().is_ok_and(|t| t.needs_shape()),
                 highest_frame_id: s.highest_frame_id,
                 frames_completed: s.frames_completed,
                 frames_dropped: s.frames_dropped,

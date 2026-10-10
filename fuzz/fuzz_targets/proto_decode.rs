@@ -2,7 +2,7 @@
 //! something that parses back to the same packet.
 #![no_main]
 
-use fernsicht_proto::{InputHeader, MAX_DATAGRAM, Packet, VideoHeader};
+use fernsicht_proto::{InputHeader, MAX_DATAGRAM, Packet, SealedHeader, VideoHeader};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -30,6 +30,14 @@ fuzz_target!(|data: &[u8]| {
         }
         Packet::InputAck(p) => p.encode(&mut buf),
         Packet::Audio(h, frame, previous) => h.encode(frame, previous, &mut buf),
+        Packet::Handshake(h) => h.encode(&mut buf),
+        Packet::Sealed(h, sealed) => {
+            h.write(&mut buf);
+            buf[SealedHeader::LEN..SealedHeader::LEN + sealed.len()].copy_from_slice(sealed);
+            SealedHeader::LEN + sealed.len()
+        }
+        Packet::Pair(p) => p.encode(&mut buf),
+        Packet::Reject(r) => r.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

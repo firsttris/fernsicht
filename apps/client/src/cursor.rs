@@ -76,6 +76,17 @@ impl CursorTracker {
         self.position = Some(c);
     }
 
+    /// The host announced a pointer image we do not have (complete).
+    pub(crate) fn needs_shape(&self) -> bool {
+        self.position.is_some_and(|c| {
+            c.shape_serial != 0
+                && self
+                    .shape
+                    .as_ref()
+                    .is_none_or(|(s, _)| *s != c.shape_serial)
+        })
+    }
+
     /// What to draw. Until the image of a new shape is complete, the
     /// previous one stands in.
     pub(crate) fn overlay(&self) -> Option<CursorOverlay> {
@@ -174,6 +185,20 @@ mod tests {
         assert_eq!((o.serial, o.image.width), (1, 16));
         feed(&mut t, 2, 20, 20, &hand, None);
         assert_eq!(t.overlay().unwrap().serial, 2);
+    }
+
+    #[test]
+    fn a_missing_image_is_asked_for() {
+        let mut t = CursorTracker::default();
+        assert!(!t.needs_shape(), "nothing announced yet");
+        t.on_position(at(0, 0, 3, true));
+        assert!(t.needs_shape());
+        feed(&mut t, 3, 8, 8, &image(8, 8, 0), Some(0));
+        assert!(t.needs_shape(), "incomplete");
+        feed(&mut t, 3, 8, 8, &image(8, 8, 0), None);
+        assert!(!t.needs_shape());
+        t.on_position(at(0, 0, 4, false));
+        assert!(t.needs_shape(), "a new shape, even while hidden");
     }
 
     #[test]

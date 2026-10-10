@@ -64,11 +64,11 @@ proptest! {
 
     #[test]
     fn feedback_roundtrip(
-        session_id: u32, request_keyframe: bool, highest_frame_id: u32,
+        session_id: u32, request_keyframe: bool, request_cursor: bool, highest_frame_id: u32,
         frames_completed: u32, frames_dropped: u32,
         packets_received: u32, packets_lost: u32, packets_recovered: u32,
     ) {
-        let fb = Feedback { session_id, request_keyframe, highest_frame_id, frames_completed,
+        let fb = Feedback { session_id, request_keyframe, request_cursor, highest_frame_id, frames_completed,
             frames_dropped, packets_received, packets_lost, packets_recovered };
         let mut buf = [0u8; Feedback::LEN];
         let n = fb.encode(&mut buf);
@@ -185,13 +185,21 @@ proptest! {
             }
             Packet::InputAck(p) => p.encode(&mut buf),
             Packet::Audio(h, frame, previous) => h.encode(frame, previous, &mut buf),
+            Packet::Handshake(h) => h.encode(&mut buf),
+            Packet::Sealed(h, sealed) => {
+                h.write(&mut buf);
+                buf[SealedHeader::LEN..SealedHeader::LEN + sealed.len()].copy_from_slice(sealed);
+                SealedHeader::LEN + sealed.len()
+            }
+            Packet::Pair(p) => p.encode(&mut buf),
+            Packet::Reject(r) => r.encode(&mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }
 
     /// Valid prefix plus random body: exercises the per-kind validation.
     #[test]
-    fn random_bodies_are_safe(kind in 1u8..=12, flags: u8,
+    fn random_bodies_are_safe(kind in 1u8..=16, flags: u8,
                               body in proptest::collection::vec(any::<u8>(), 0..96)) {
         let mut bytes = vec![MAGIC, VERSION, kind, flags];
         bytes.extend_from_slice(&body);

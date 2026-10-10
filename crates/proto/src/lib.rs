@@ -26,11 +26,12 @@ pub const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 /// Largest FEC group (data + recovery shards).
 pub const MAX_GROUP_SHARDS: u32 = 1024;
 
-/// Default shard size: largest even payload that fits [`MAX_DATAGRAM`].
-pub const DEFAULT_SHARD_SIZE: usize = (MAX_DATAGRAM - VideoHeader::LEN) & !1;
+/// Default shard size: largest even payload whose video packet still fits
+/// a datagram once sealed ([`MAX_PLAIN`]).
+pub const DEFAULT_SHARD_SIZE: usize = (MAX_PLAIN - VideoHeader::LEN) & !1;
 
 const _: () = assert!(DEFAULT_SHARD_SIZE.is_multiple_of(2));
-const _: () = assert!(VideoHeader::LEN + DEFAULT_SHARD_SIZE <= MAX_DATAGRAM);
+const _: () = assert!(VideoHeader::LEN + DEFAULT_SHARD_SIZE <= MAX_PLAIN);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -47,6 +48,10 @@ pub enum Kind {
     Input = 10,
     InputAck = 11,
     Audio = 12,
+    Handshake = 13,
+    Sealed = 14,
+    Pair = 15,
+    Reject = 16,
 }
 
 impl Kind {
@@ -64,6 +69,10 @@ impl Kind {
             10 => Kind::Input,
             11 => Kind::InputAck,
             12 => Kind::Audio,
+            13 => Kind::Handshake,
+            14 => Kind::Sealed,
+            15 => Kind::Pair,
+            16 => Kind::Reject,
             _ => return None,
         })
     }
@@ -116,6 +125,7 @@ pub struct VideoHeader {
 
 const FLAG_KEYFRAME: u8 = 0x01;
 const FLAG_REQUEST_KEYFRAME: u8 = 0x01;
+const FLAG_REQUEST_CURSOR: u8 = 0x02;
 
 impl VideoHeader {
     pub const LEN: usize = PREFIX_LEN + 44;
@@ -205,6 +215,8 @@ impl VideoHeader {
 pub struct Feedback {
     pub session_id: u32,
     pub request_keyframe: bool,
+    /// The client lacks the current pointer image: send it now.
+    pub request_cursor: bool,
     pub highest_frame_id: u32,
     pub frames_completed: u32,
     pub frames_dropped: u32,
@@ -217,11 +229,13 @@ impl Feedback {
     pub const LEN: usize = PREFIX_LEN + 28;
 
     pub fn encode(&self, buf: &mut [u8]) -> usize {
-        let flags = if self.request_keyframe {
-            FLAG_REQUEST_KEYFRAME
-        } else {
-            0
-        };
+        let mut flags = 0;
+        if self.request_keyframe {
+            flags |= FLAG_REQUEST_KEYFRAME;
+        }
+        if self.request_cursor {
+            flags |= FLAG_REQUEST_CURSOR;
+        }
         let mut w = Writer::new(&mut buf[..Self::LEN]);
         w.prefix(Kind::Feedback, flags);
         w.u32(self.session_id);
@@ -237,6 +251,7 @@ impl Feedback {
     fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Feedback {
             request_keyframe: flags & FLAG_REQUEST_KEYFRAME != 0,
+            request_cursor: flags & FLAG_REQUEST_CURSOR != 0,
             session_id: r.u32()?,
             highest_frame_id: r.u32()?,
             frames_completed: r.u32()?,
@@ -785,6 +800,116 @@ impl AudioHeader {
     }
 }
 
+/// Largest Noise handshake message carried.
+pub const MAX_HANDSHAKE: usize = 1024;
+/// Largest pairing message carried.
+pub const MAX_PAIR: usize = 256;
+
+/// One step of a Noise handshake (see the `fernsicht-secure` crate):
+/// `reply` false for the client's first message, true for the host's
+/// answer. The bytes are opaque here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Handshake<'a> {
+    pub reply: bool,
+    pub message: &'a [u8],
+}
+
+const FLAG_REPLY: u8 = 0x01;
+
+impl Handshake<'_> {
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            !self.message.is_empty() && self.message.len() <= MAX_HANDSHAKE,
+            "handshake size"
+        );
+        let len = PREFIX_LEN + self.message.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Handshake, if self.reply { FLAG_REPLY } else { 0 });
+        w.bytes(self.message);
+        len
+    }
+}
+
+/// An encrypted packet of a session: `counter` is its nonce; the opened
+/// contents are a whole packet of another kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SealedHeader {
+    pub session_id: u32,
+    pub counter: u64,
+}
+
+impl SealedHeader {
+    pub const LEN: usize = PREFIX_LEN + 12;
+
+    /// Writes the header; the sealed bytes go right after it.
+    pub fn write(&self, buf: &mut [u8]) {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::Sealed, 0);
+        w.u32(self.session_id);
+        w.u64(self.counter);
+    }
+}
+
+/// Bytes sealing adds to a packet: header and the 16-byte tag.
+pub const SEALED_OVERHEAD: usize = SealedHeader::LEN + 16;
+/// Largest packet that still fits a datagram once sealed.
+pub const MAX_PLAIN: usize = MAX_DATAGRAM - SEALED_OVERHEAD;
+
+/// One step (1–4) of pairing with a PIN; the bytes are opaque here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pair<'a> {
+    pub step: u8,
+    pub message: &'a [u8],
+}
+
+impl Pair<'_> {
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(
+            (1..=4).contains(&self.step)
+                && !self.message.is_empty()
+                && self.message.len() <= MAX_PAIR,
+            "pairing message"
+        );
+        let len = PREFIX_LEN + self.message.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Pair, self.step);
+        w.bytes(self.message);
+        len
+    }
+}
+
+/// Why the host turned a request down, host → client, unauthenticated: a
+/// hint for the user, never trusted for anything else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RejectReason {
+    /// This client is not paired with the host.
+    NotPaired = 1,
+    /// The host is not in pairing mode.
+    PairingClosed = 2,
+    /// Too many wrong PINs: pairing mode was closed.
+    TooManyAttempts = 3,
+}
+
+impl RejectReason {
+    fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            1 => RejectReason::NotPaired,
+            2 => RejectReason::PairingClosed,
+            3 => RejectReason::TooManyAttempts,
+            _ => return None,
+        })
+    }
+
+    pub fn encode(self, buf: &mut [u8]) -> usize {
+        let len = PREFIX_LEN + 1;
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Reject, 0);
+        w.u8(self as u8);
+        len
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -803,6 +928,11 @@ pub enum Packet<'a> {
     InputAck(InputAck),
     /// Header, frame `seq`, frame `seq - 1` (may be empty).
     Audio(AudioHeader, &'a [u8], &'a [u8]),
+    Handshake(Handshake<'a>),
+    /// Header and the sealed bytes (open them with the session's keys).
+    Sealed(SealedHeader, &'a [u8]),
+    Pair(Pair<'a>),
+    Reject(RejectReason),
 }
 
 impl<'a> Packet<'a> {
@@ -851,6 +981,48 @@ impl<'a> Packet<'a> {
             Kind::Audio => {
                 let (h, frame, previous) = AudioHeader::read(&mut r)?;
                 Packet::Audio(h, frame, previous)
+            }
+            Kind::Handshake => {
+                if flags & !FLAG_REPLY != 0 {
+                    return Err(DecodeError::Invalid("handshake flags"));
+                }
+                let message = r.rest();
+                if message.is_empty() || message.len() > MAX_HANDSHAKE {
+                    return Err(DecodeError::Invalid("handshake size"));
+                }
+                Packet::Handshake(Handshake {
+                    reply: flags & FLAG_REPLY != 0,
+                    message,
+                })
+            }
+            Kind::Sealed => {
+                let h = SealedHeader {
+                    session_id: r.u32()?,
+                    counter: r.u64()?,
+                };
+                let sealed = r.rest();
+                if sealed.len() < 16 {
+                    return Err(DecodeError::Invalid("sealed packet too short"));
+                }
+                Packet::Sealed(h, sealed)
+            }
+            Kind::Pair => {
+                let message = r.rest();
+                if !(1..=4).contains(&flags) || message.is_empty() || message.len() > MAX_PAIR {
+                    return Err(DecodeError::Invalid("pairing message"));
+                }
+                Packet::Pair(Pair {
+                    step: flags,
+                    message,
+                })
+            }
+            Kind::Reject => {
+                let reason = RejectReason::from_u8(r.u8()?)
+                    .ok_or(DecodeError::Invalid("unknown reject reason"))?;
+                if !r.is_empty() {
+                    return Err(DecodeError::Invalid("trailing bytes after reject"));
+                }
+                Packet::Reject(reason)
             }
         })
     }
@@ -949,6 +1121,7 @@ mod tests {
         let fb = Feedback {
             session_id: 7,
             request_keyframe: true,
+            request_cursor: true,
             highest_frame_id: 99,
             frames_completed: 60,
             frames_dropped: 1,
@@ -1171,6 +1344,70 @@ mod tests {
         let mut empty = buf[..AudioHeader::LEN].to_vec();
         empty.extend_from_slice(&[0, 0, 0, 0]);
         assert!(Packet::decode(&empty).is_err());
+    }
+
+    #[test]
+    fn security_packets_roundtrip() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        for reply in [false, true] {
+            let h = Handshake {
+                reply,
+                message: &[7u8; 96],
+            };
+            let n = h.encode(&mut buf);
+            assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Handshake(h));
+        }
+        let s = SealedHeader {
+            session_id: 9,
+            counter: u64::MAX - 1,
+        };
+        s.write(&mut buf);
+        buf[SealedHeader::LEN..SealedHeader::LEN + 40].fill(3);
+        assert_eq!(
+            Packet::decode(&buf[..SealedHeader::LEN + 40]).unwrap(),
+            Packet::Sealed(s, &[3u8; 40][..])
+        );
+        assert!(
+            Packet::decode(&buf[..SealedHeader::LEN + 15]).is_err(),
+            "shorter than a tag"
+        );
+        for step in 1..=4 {
+            let p = Pair {
+                step,
+                message: &[1, 2, 3],
+            };
+            let n = p.encode(&mut buf);
+            assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Pair(p));
+        }
+        for r in [
+            RejectReason::NotPaired,
+            RejectReason::PairingClosed,
+            RejectReason::TooManyAttempts,
+        ] {
+            let n = r.encode(&mut buf);
+            assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Reject(r));
+        }
+        // Broken ones.
+        assert!(
+            Packet::decode(&[MAGIC, VERSION, Kind::Handshake as u8, 0]).is_err(),
+            "empty"
+        );
+        assert!(
+            Packet::decode(&[MAGIC, VERSION, Kind::Handshake as u8, 2, 1]).is_err(),
+            "flags"
+        );
+        assert!(
+            Packet::decode(&[MAGIC, VERSION, Kind::Pair as u8, 5, 1]).is_err(),
+            "step"
+        );
+        assert!(
+            Packet::decode(&[MAGIC, VERSION, Kind::Pair as u8, 0, 1]).is_err(),
+            "step 0"
+        );
+        assert!(Packet::decode(&[MAGIC, VERSION, Kind::Reject as u8, 0, 9]).is_err());
+        assert!(Packet::decode(&[MAGIC, VERSION, Kind::Reject as u8, 0, 1, 0]).is_err());
+        // Everything sealed fits a datagram.
+        assert_eq!(MAX_PLAIN + SEALED_OVERHEAD, MAX_DATAGRAM);
     }
 
     #[test]
