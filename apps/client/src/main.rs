@@ -315,6 +315,7 @@ fn main() -> anyhow::Result<()> {
     let (commands_tx, commands) = crossbeam_channel::unbounded();
     if args.app {
         let (stop, muted) = (stop.clone(), cfg.muted.clone());
+        let monitors = cfg.monitors.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
             for line in std::io::stdin().lock().lines().map_while(Result::ok) {
@@ -327,12 +328,15 @@ fn main() -> anyhow::Result<()> {
                     "desktop" => {
                         let _ = commands_tx.send(AppCommand::Mode(false));
                     }
-                    line => match fernsicht_client::parse_keys_command(line) {
-                        Some(codes) => {
+                    line => {
+                        if let Some(codes) = fernsicht_client::parse_keys_command(line) {
                             let _ = commands_tx.send(AppCommand::Keys(codes));
+                        } else if let Some(r) = fernsicht_client::parse_monitor_command(line) {
+                            monitors.request(r);
+                        } else {
+                            log::debug!("unknown command {line:?}");
                         }
-                        None => log::debug!("unknown command {line:?}"),
-                    },
+                    }
                 }
             }
             // The app let go of stdin: the session is over.
@@ -491,6 +495,8 @@ mod window {
         focused: bool,
         /// Passes the desktop's shortcuts (Meta, Alt+Tab) to the host.
         shortcuts: Option<crate::shortcuts::ShortcutLock>,
+        /// The host's monitors; Ctrl+Alt+Shift+←/→ switches.
+        monitors: Arc<fernsicht_client::MonitorControl>,
     }
 
     fn mouse_button(b: MouseButton) -> Option<u16> {
@@ -564,7 +570,8 @@ mod window {
 
         /// Client commands. With input going to the host, Esc and F11
         /// belong to the host, so the client's own keys are
-        /// Ctrl+Alt+Shift+Q (quit) and Ctrl+Alt+Shift+F (fullscreen).
+        /// Ctrl+Alt+Shift+Q (quit), Ctrl+Alt+Shift+F (fullscreen) and
+        /// Ctrl+Alt+Shift+←/→ (the host's other monitors).
         /// Returns whether the key was used here.
         fn command(&mut self, event_loop: &ActiveEventLoop, key: &KeyEvent) -> bool {
             if key.state != ElementState::Pressed || key.repeat {
@@ -587,6 +594,16 @@ mod window {
                 }
                 (true, true, KeyCode::KeyM) => {
                     self.capture(!self.captured);
+                    true
+                }
+                (_, true, KeyCode::ArrowRight) | (false, _, KeyCode::PageDown) => {
+                    self.monitors
+                        .request(fernsicht_client::MonitorRequest::Next);
+                    true
+                }
+                (_, true, KeyCode::ArrowLeft) | (false, _, KeyCode::PageUp) => {
+                    self.monitors
+                        .request(fernsicht_client::MonitorRequest::Previous);
                     true
                 }
                 _ => false,
@@ -768,6 +785,7 @@ mod window {
     ) -> anyhow::Result<RunSummary> {
         let input = options.send_input.then(|| Arc::new(InputHandle::default()));
         cfg.input = input.clone();
+        let monitors = cfg.monitors.clone();
         let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
         // Mode switches from the app arrive on another thread.
         let proxy = event_loop.create_proxy();
@@ -809,6 +827,7 @@ mod window {
             motion_rest: (0.0, 0.0),
             focused: false,
             shortcuts: None,
+            monitors,
         };
         event_loop.run_app(&mut app)?;
         app.stop.store(true, Ordering::Relaxed);

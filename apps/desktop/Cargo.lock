@@ -1328,6 +1328,7 @@ dependencies = [
  "fernsicht-secure",
  "libc",
  "log",
+ "serde_json",
 ]
 
 [[package]]

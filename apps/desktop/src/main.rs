@@ -67,6 +67,11 @@ async fn send_keys(backend: Shared<'_>, codes: Vec<u16>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn select_monitor(backend: Shared<'_>, index: u8) -> Result<(), String> {
+    blocking(&backend, move |b| b.command(&format!("monitor {index}"))).await
+}
+
+#[tauri::command]
 async fn set_mode(backend: Shared<'_>, gaming: bool) -> Result<(), String> {
     blocking(&backend, move |b| {
         b.command(if gaming { "gaming" } else { "desktop" })
@@ -143,6 +148,7 @@ fn main() {
             set_muted,
             set_mode,
             send_keys,
+            select_monitor,
             session,
             disconnect,
             this_machine,

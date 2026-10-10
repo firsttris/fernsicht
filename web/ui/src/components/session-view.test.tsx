@@ -65,6 +65,32 @@ describe("SessionView", () => {
     expect(onSendKeys).toHaveBeenCalledOnce();
   });
 
+  it("switches between the host's monitors", async () => {
+    const onSelectMonitor = vi.fn();
+    const monitors = {
+      current: 0,
+      list: [
+        { name: "DP-2", width: 2560, height: 1440 },
+        { name: "DP-1", width: 1920, height: 1080 },
+      ],
+    };
+    const { user } = setup({ monitors, onSelectMonitor });
+    await user.click(screen.getByRole("button", { name: "Bildschirm wählen" }));
+    expect(
+      screen.getByRole("menuitemradio", { name: /Bildschirm 1 · DP-2 · 2560×1440/ }),
+    ).toHaveAttribute("aria-checked", "true");
+    await user.click(screen.getByRole("menuitemradio", { name: /Bildschirm 2 · DP-1/ }));
+    expect(onSelectMonitor).toHaveBeenCalledWith(1);
+  });
+
+  it("offers no monitor menu for a single monitor", () => {
+    setup({
+      monitors: { current: 0, list: [{ name: "DP-1", width: 1920, height: 1080 }] },
+      onSelectMonitor: vi.fn(),
+    });
+    expect(screen.queryByRole("button", { name: "Bildschirm wählen" })).not.toBeInTheDocument();
+  });
+
   it("has no keys menu or fullscreen button without a handler", () => {
     setup();
     expect(screen.queryByRole("button", { name: "Tasten senden" })).not.toBeInTheDocument();
@@ -122,8 +148,27 @@ describe("SessionView", () => {
   });
 
   it("labels every icon-only button", () => {
-    setup();
-    for (const name of ["Bildschirm wählen", "Zwischenablage", "Dateien senden", "Einstellungen"]) {
+    setup({
+      monitors: {
+        current: 0,
+        list: [
+          { name: "DP-2", width: 2560, height: 1440 },
+          { name: "DP-1", width: 2560, height: 1440 },
+        ],
+      },
+      onSelectMonitor: vi.fn(),
+      onSendKeys: vi.fn(),
+      onFullscreenChange: vi.fn(),
+    });
+    for (const name of [
+      "Bildschirm wählen",
+      "Tasten senden",
+      "Zwischenablage",
+      "Dateien senden",
+      "Ton ausschalten",
+      "Vollbild",
+      "Einstellungen",
+    ]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
   });

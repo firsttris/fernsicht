@@ -151,7 +151,7 @@ Monitor landet. In der Ausgabe steht `pointer input mapped to DP-1: …`.
 | Option | Bedeutung |
 |---|---|
 | `--kms-card /dev/dri/card1` | Grafikkarte wählen (Standard: die erste mit aktivem Monitor) |
-| `--kms-connector DP-1` | Monitor wählen. Namen: `ls /sys/class/drm` zeigt z. B. `card1-DP-1` → `DP-1` |
+| `--kms-connector DP-1` | Monitor, mit dem eine Sitzung beginnt. Namen: `ls /sys/class/drm` zeigt z. B. `card1-DP-1` → `DP-1`. Während der Sitzung wechselt man mit „Bildschirm wählen“ in der Toolbar oder Strg+Alt+Shift+←/→ im App-Fenster |
 | `--max-width/--max-height` | Obergrenze der Stream-Auflösung; der Encoder skaliert den Monitor darauf |
 
 ## Wenn es nicht klappt

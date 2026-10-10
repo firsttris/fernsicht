@@ -203,6 +203,17 @@ Live bestätigt (10.10.2026, laut Benutzer):
      die Tastatur (Keyboard Lock, Esc gedrückt halten zum Verlassen).
    - Beide: Menü „Tasten senden“ (Tastatur-Symbol in der Toolbar) mit
      Strg+Alt+Entf, Windows-Taste, Windows+W, Alt+Tab, Alt+F4, Druck.
+10. **Monitor wechseln.** Gebaut, nie live gesehen. Der Host meldet seine
+    Monitore (Paket `Monitors`, im Browser JSON), der Client wählt
+    (`SelectMonitor`). Der Aufnahme-Thread öffnet dann den anderen
+    Monitor auf derselben Karte und schickt ein Keyframe; die
+    Mausumrechnung zieht nach (`FollowScreen`). Bedienung: „Bildschirm
+    wählen“ in der Toolbar (ab zwei Monitoren), im App-Fenster
+    Strg+Alt+Shift+←/→. Prüfen auf der zentrale (DP-2 links, DP-1
+    rechts): Wechsel in beide Richtungen, Maus landet auf dem gezeigten
+    Monitor, Zeiger an der richtigen Stelle. Ein Monitor anderer Größe
+    wird auf die Stream-Größe vom Sitzungsbeginn skaliert (verzerrt, wenn
+    das Seitenverhältnis abweicht).
 
 ## Offene Aufgaben, nach Wichtigkeit
 

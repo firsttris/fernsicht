@@ -2,7 +2,7 @@
 //! something that parses back to the same packet.
 #![no_main]
 
-use fernsicht_proto::{InputHeader, MAX_DATAGRAM, Packet, SealedHeader, VideoHeader};
+use fernsicht_proto::{InputHeader, MAX_DATAGRAM, Monitors, Packet, SealedHeader, VideoHeader};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -40,6 +40,11 @@ fuzz_target!(|data: &[u8]| {
         Packet::Reject(r) => r.encode(&mut buf),
         Packet::Discover(d) => d.encode(&mut buf),
         Packet::Announce(a) => a.encode(&mut buf),
+        Packet::Monitors(m) => {
+            let list: Vec<_> = m.iter().collect();
+            Monitors::encode(m.session_id, m.current, &list, &mut buf)
+        }
+        Packet::SelectMonitor(p) => p.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

@@ -1,7 +1,6 @@
 import { Keyboard } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
 
-import { Button } from "./button";
+import { MenuButton } from "./menu-button";
 
 /** A key combination for the host, as Linux key codes (pressed in order). */
 export interface KeyCombo {
@@ -29,59 +28,11 @@ export const KEY_COMBOS: KeyCombo[] = [
 
 /** Toolbar button with a menu of key combinations to send to the host. */
 export function SendKeysMenu({ onSend }: { onSend: (codes: number[]) => void }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    const onPointer = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("pointerdown", onPointer);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("pointerdown", onPointer);
-    };
-  }, [open]);
-
   return (
-    <div ref={root} className="relative">
-      <Button
-        size="icon"
-        variant="ghost"
-        aria-label="Tasten senden"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <Keyboard size={16} />
-      </Button>
-      {open && (
-        <div
-          role="menu"
-          aria-label="Tasten senden"
-          className="absolute top-full left-1/2 z-10 mt-2 flex min-w-44 -translate-x-1/2 flex-col rounded-lg border border-border bg-overlay p-1 backdrop-blur"
-        >
-          {KEY_COMBOS.map((k) => (
-            <button
-              key={k.label}
-              type="button"
-              role="menuitem"
-              className="cursor-pointer rounded-md border-0 bg-transparent px-3 py-1.5 text-left text-sm text-foreground hover:bg-secondary"
-              onClick={() => {
-                onSend(k.codes);
-                setOpen(false);
-              }}
-            >
-              {k.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <MenuButton
+      label="Tasten senden"
+      icon={<Keyboard size={16} />}
+      items={KEY_COMBOS.map((k) => ({ label: k.label, onSelect: () => onSend(k.codes) }))}
+    />
   );
 }

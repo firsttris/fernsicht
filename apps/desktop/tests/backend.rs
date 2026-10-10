@@ -81,13 +81,14 @@ fn find_pair_connect_and_forget() {
     app.extra_targets = vec![addr];
     app.discovery_wait = Duration::from_millis(300);
 
-    // Found, not paired yet.
+    // Found, not paired yet. By key: a real host in the LAN may be called
+    // "zentrale" too.
+    let id = sec.public_key().fingerprint();
     let list = app.devices().unwrap();
-    let zentrale = list.iter().find(|d| d.name == "zentrale").expect("found");
+    let zentrale = list.iter().find(|d| d.id == id).expect("found");
+    assert_eq!(zentrale.name, "zentrale");
     assert!(zentrale.online && !zentrale.paired && !zentrale.pairing);
     assert_eq!(zentrale.os, "Bazzite");
-    let id = zentrale.id.clone();
-    assert_eq!(id, sec.public_key().fingerprint());
 
     // "This machine" runs the host: the app opens pairing there.
     let me = app.this_machine();

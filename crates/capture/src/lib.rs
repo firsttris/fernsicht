@@ -103,13 +103,15 @@ pub enum CaptureError {
     Backend(String),
 }
 
-/// The captured monitor, for mapping input onto it.
+/// The captured monitor, for mapping input onto it and offering the others.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenInfo {
     /// Connector name as the kernel and compositors call it, e.g. `DP-1`.
     pub connector: String,
     /// All monitors that are on, captured or not.
     pub active: Vec<String>,
+    /// Their sizes (mode), in the order of `active`.
+    pub sizes: Vec<(u32, u32)>,
 }
 
 pub trait FrameSource: Send {
@@ -123,6 +125,14 @@ pub trait FrameSource: Send {
     /// Which monitor is captured, if the source shows one.
     fn screen(&self) -> Option<ScreenInfo> {
         None
+    }
+
+    /// Shows another monitor (by connector name, one of
+    /// [`ScreenInfo::active`]) from the next frame on.
+    fn switch_to(&mut self, connector: &str) -> Result<(), CaptureError> {
+        Err(CaptureError::Backend(format!(
+            "this source shows one picture only, not {connector}"
+        )))
     }
 
     /// A frame buffer matching this source.

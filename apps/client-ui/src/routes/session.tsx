@@ -51,6 +51,8 @@ export function SessionPage() {
       }}
       onMuteChange={(muted) => void actions.setMuted(muted)}
       onSendKeys={(codes) => void actions.sendKeys(codes)}
+      monitors={session?.stats?.monitors}
+      onSelectMonitor={(i) => void actions.selectMonitor(i)}
       onDisconnect={() => void actions.disconnect().then(back)}
     >
       {app ? <NativeWindowNotice name={name} /> : undefined}

@@ -140,6 +140,9 @@ pub struct KmsCapture {
     /// The cursor plane of our CRTC, if the driver has one.
     cursor: Option<CursorPlane>,
     screen: ScreenInfo,
+    /// How this capture was opened, for switching monitors on its card.
+    card_path: PathBuf,
+    fps: u32,
     width: u32,
     height: u32,
     refresh: Duration,
@@ -194,10 +197,13 @@ impl KmsCapture {
 
         let mut crtcs = Vec::new();
         let mut refresh = std::collections::HashMap::new();
+        let mut mode_size = std::collections::HashMap::new();
         for (index, &h) in res.crtcs().iter().enumerate() {
             let info = card.get_crtc(h).map_err(|e| backend("read CRTC", e))?;
             if let Some(mode) = info.mode() {
                 refresh.insert(u32::from(h), mode.vrefresh());
+                let (w, h2) = mode.size();
+                mode_size.insert(u32::from(h), (u32::from(w), u32::from(h2)));
             }
             crtcs.push(CrtcCandidate {
                 id: h.into(),
@@ -253,6 +259,14 @@ impl KmsCapture {
                 .filter(|c| c.active)
                 .flat_map(|c| c.connectors.iter().cloned())
                 .collect(),
+            sizes: crtcs
+                .iter()
+                .filter(|c| c.active)
+                .flat_map(|c| {
+                    let size = mode_size.get(&c.id).copied().unwrap_or_default();
+                    c.connectors.iter().map(move |_| size)
+                })
+                .collect(),
         };
         if cursor.is_none() {
             log::info!("no cursor plane for the captured display; the pointer is not reported");
@@ -260,6 +274,8 @@ impl KmsCapture {
         let mut cap = Self {
             cursor,
             screen,
+            card_path: path.to_path_buf(),
+            fps: cfg.fps,
             card,
             sel,
             width: 0,
@@ -628,6 +644,28 @@ impl FrameSource for KmsCapture {
 
     fn screen(&self) -> Option<ScreenInfo> {
         Some(self.screen.clone())
+    }
+
+    /// Opens the same card again for `connector`; the old capture stays
+    /// if that fails.
+    fn switch_to(&mut self, connector: &str) -> Result<(), CaptureError> {
+        if !self.screen.active.iter().any(|c| c == connector) {
+            return Err(CaptureError::Backend(format!(
+                "{connector} is not an active monitor ({:?})",
+                self.screen.active
+            )));
+        }
+        let next = Self::open_card(
+            &self.card_path,
+            &KmsConfig {
+                card: Some(self.card_path.clone()),
+                connector: Some(connector.into()),
+                fps: self.fps,
+            },
+        )?;
+        log::info!("now capturing {connector}, {}×{}", next.width, next.height);
+        *self = next;
+        Ok(())
     }
 
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError> {

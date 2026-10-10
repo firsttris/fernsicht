@@ -4,7 +4,13 @@
  * In gaming mode a click captures the pointer (relative movement, as games
  * want it).
  */
-import { Button, type SessionMode, type SessionStats, SessionView } from "@fernsicht/ui";
+import {
+  Button,
+  type HostMonitors,
+  type SessionMode,
+  type SessionStats,
+  SessionView,
+} from "@fernsicht/ui";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -34,6 +40,7 @@ export function LiveSessionPage({
   const [ended, setEnded] = useState(false);
   const [size, setSize] = useState({ width: session.width, height: session.height });
   const [fullscreen, setFullscreen] = useFullscreen();
+  const [monitors, setMonitors] = useState<HostMonitors>();
 
   // The overlay, once per second; the host's share comes on the channel.
   useEffect(() => {
@@ -43,7 +50,9 @@ export function LiveSessionPage({
       if (typeof e.data !== "string") return;
       try {
         const v = JSON.parse(e.data) as HostStats & { type?: string };
-        if (v.type === "stats") {
+        if (v.type === "monitors") {
+          setMonitors(v as unknown as HostMonitors);
+        } else if (v.type === "stats") {
           host = v;
           if (v.width && v.height) setSize({ width: v.width, height: v.height });
         }
@@ -101,6 +110,8 @@ export function LiveSessionPage({
       onModeChange={onModeChange}
       fullscreen={fullscreen}
       onFullscreenChange={setFullscreen}
+      monitors={monitors}
+      onSelectMonitor={(i) => session.send({ t: "monitor", i })}
       onSendKeys={(codes) => {
         // Pressed in order, released in reverse, like a person would.
         for (const c of codes) session.send({ t: "k", c, p: true });

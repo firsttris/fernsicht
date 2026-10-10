@@ -492,6 +492,14 @@ enum Target {
     Pad(u8),
 }
 
+impl Uinput {
+    /// Maps absolute positions onto another part of the desktop (the
+    /// session now shows another monitor).
+    pub fn set_area(&mut self, area: AbsArea) {
+        self.area = area;
+    }
+}
+
 impl InputSink for Uinput {
     fn inject(&mut self, event: &InputEvent) -> Result<(), String> {
         match *event {

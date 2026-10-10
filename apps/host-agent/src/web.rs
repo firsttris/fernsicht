@@ -364,6 +364,7 @@ impl RtcSession {
                         .keyframe_requested
                         .store(true, Ordering::Relaxed);
                 }
+                Some(Command::Monitor(i)) => self.shared.select_monitor(i),
                 Some(Command::Bye) => {
                     log::info!("web session: browser said goodbye");
                     return false;
@@ -491,6 +492,8 @@ pub(crate) enum Command {
     /// Let go of everything (the page lost focus).
     ReleaseAll,
     Keyframe,
+    /// Show another monitor (index in the list the browser got).
+    Monitor(u8),
     /// The browser ends the session.
     Bye,
 }
@@ -553,6 +556,10 @@ pub(crate) fn parse_input(data: &[u8]) -> Option<Command> {
         "release" => return Some(Command::ReleaseAll),
         "keyframe" => return Some(Command::Keyframe),
         "bye" => return Some(Command::Bye),
+        "monitor" => {
+            let max = fernsicht_proto::MAX_MONITORS as i64 - 1;
+            return Some(Command::Monitor(int("i", 0, max)? as u8));
+        }
         _ => return None,
     };
     Some(Command::Event(event))
@@ -915,6 +922,9 @@ mod tests {
         assert_eq!(p(r#"{"t":"release"}"#), Some(Command::ReleaseAll));
         assert_eq!(p(r#"{"t":"keyframe"}"#), Some(Command::Keyframe));
         assert_eq!(p(r#"{"t":"bye"}"#), Some(Command::Bye));
+        assert_eq!(p(r#"{"t":"monitor","i":1}"#), Some(Command::Monitor(1)));
+        assert_eq!(p(r#"{"t":"monitor","i":8}"#), None);
+        assert_eq!(p(r#"{"t":"monitor"}"#), None);
         // Out of range, missing, wrong type, unknown, not JSON.
         for bad in [
             r#"{"t":"m","x":70000,"y":0}"#,

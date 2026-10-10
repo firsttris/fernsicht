@@ -30,7 +30,7 @@ pub use fernsicht_input::{InputEvent, buttons};
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
 use fernsicht_proto::{
     Bye, ClockPing, Codec, CodecSet, Feedback, Handshake, Hello, InputHeader, MAX_DATAGRAM, Packet,
-    Pair as PairMsg, RejectReason, SealedHeader, VideoHeader,
+    Pair as PairMsg, RejectReason, SealedHeader, SelectMonitor, VideoHeader,
 };
 use fernsicht_render::overlay::{self, StreamInfo};
 use fernsicht_render::{HeadlessPresenter, Presenter};
@@ -76,6 +76,8 @@ pub struct ClientConfig {
     pub audio: AudioOutput,
     /// Sound muted (silence is played instead, so the timing stays).
     pub muted: Arc<AtomicBool>,
+    /// The host's monitors as it reports them, and switches asked for.
+    pub monitors: Arc<MonitorControl>,
     /// Our key and the paired host's: the session is authenticated and
     /// encrypted. `None` (the library default) talks plain, for tests; the
     /// program always sets it.
@@ -104,6 +106,7 @@ impl Default for ClientConfig {
             input: None,
             audio: AudioOutput::Off,
             muted: Arc::default(),
+            monitors: Arc::default(),
             security: None,
             record: None,
         }
@@ -356,6 +359,100 @@ pub fn window_to_stream(
     Some((q(u), q(v)))
 }
 
+/// The host's monitors, as its last [`fernsicht_proto::Monitors`] said.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonitorList {
+    /// Index of the one shown.
+    pub current: u8,
+    /// Name (connector), width, height.
+    pub list: Vec<(String, u16, u16)>,
+}
+
+impl MonitorList {
+    /// The index `request` means in this list, if any.
+    pub fn resolve(&self, request: MonitorRequest) -> Option<u8> {
+        let n = self.list.len() as u8;
+        if n == 0 {
+            return None;
+        }
+        Some(match request {
+            MonitorRequest::Index(i) if i < n => i,
+            MonitorRequest::Index(_) => return None,
+            MonitorRequest::Next => (self.current + 1) % n,
+            MonitorRequest::Previous => (self.current + n - 1) % n,
+        })
+    }
+
+    /// For the app's overlay JSON.
+    pub fn json(&self) -> String {
+        let list: Vec<String> = self
+            .list
+            .iter()
+            .map(|(name, w, h)| {
+                format!(
+                    "{{\"name\":{},\"width\":{w},\"height\":{h}}}",
+                    serde_json::Value::from(name.as_str())
+                )
+            })
+            .collect();
+        format!(
+            "{{\"current\":{},\"list\":[{}]}}",
+            self.current,
+            list.join(",")
+        )
+    }
+}
+
+/// Which monitor to show next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonitorRequest {
+    Index(u8),
+    Next,
+    Previous,
+}
+
+/// Shared between the network thread (fills the list, sends requests) and
+/// the window or the app (reads the list, asks for switches).
+#[derive(Debug, Default)]
+pub struct MonitorControl {
+    list: Mutex<Option<MonitorList>>,
+    request: Mutex<Option<MonitorRequest>>,
+}
+
+impl MonitorControl {
+    pub fn list(&self) -> Option<MonitorList> {
+        self.list.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn request(&self, r: MonitorRequest) {
+        *self.request.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    }
+
+    fn set_list(&self, list: MonitorList) {
+        *self.list.lock().unwrap_or_else(|e| e.into_inner()) = Some(list);
+    }
+
+    fn take_request(&self) -> Option<MonitorRequest> {
+        self.request
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+}
+
+/// The app's "monitor 1" command.
+pub fn parse_monitor_command(line: &str) -> Option<MonitorRequest> {
+    match line.strip_prefix("monitor ")?.trim() {
+        "next" => Some(MonitorRequest::Next),
+        "previous" => Some(MonitorRequest::Previous),
+        n => n
+            .parse::<u8>()
+            .ok()
+            .filter(|&i| usize::from(i) < fernsicht_proto::MAX_MONITORS)
+            .map(MonitorRequest::Index),
+    }
+}
+
 /// Most keys in one combination sent from a menu.
 pub const MAX_CHORD: usize = 6;
 
@@ -591,6 +688,7 @@ pub fn run_with(
     let presenter = {
         let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
         let cursor = cursor.clone();
+        let monitors = cfg.monitors.clone();
         let print = cfg.print_overlay;
         let hw = Hw {
             render_node: cfg.render_node.clone(),
@@ -611,6 +709,7 @@ pub fn run_with(
                 record.as_mut().map(|w| w as &mut dyn std::io::Write),
                 presenter.as_mut(),
                 &cursor,
+                &monitors,
             );
             if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
                 log::error!("recording: {e}");
@@ -812,6 +911,18 @@ fn network_loop(
             ping_seq += 1;
             last_ping = Some(Instant::now());
         }
+        if let Some((session_id, _)) = session
+            && let Some(request) = cfg.monitors.take_request()
+        {
+            match cfg.monitors.list().and_then(|l| l.resolve(request)) {
+                Some(index) => {
+                    let n = SelectMonitor { session_id, index }.encode(&mut out);
+                    send_packet(socket, seal_with, &out[..n]);
+                    log::info!("asked the host for monitor {index}");
+                }
+                None => log::info!("no monitor for {request:?} (the host listed none or fewer)"),
+            }
+        }
         if let Some((session_id, codec)) = session
             && last_feedback.elapsed() >= FEEDBACK_INTERVAL
         {
@@ -934,6 +1045,17 @@ fn network_loop(
                         frame: frame.to_vec(),
                         previous: previous.to_vec(),
                         captured_local: h.capture_us as i64 - clock.offset_us(),
+                    });
+                }
+            }
+            Packet::Monitors(m) => {
+                if session.is_some_and(|(id, _)| id == m.session_id) {
+                    cfg.monitors.set_list(MonitorList {
+                        current: m.current,
+                        list: m
+                            .iter()
+                            .map(|e| (e.name.to_string(), e.width, e.height))
+                            .collect(),
                     });
                 }
             }
@@ -1151,6 +1273,7 @@ fn present_loop(
     mut record: Option<&mut dyn std::io::Write>,
     presenter: &mut dyn Presenter,
     cursor: &Mutex<CursorTracker>,
+    monitors: &MonitorControl,
 ) -> PresentResult {
     // Created on the first frame, from the codec the host announced.
     let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
@@ -1252,7 +1375,14 @@ fn present_loop(
                     }
                     println!();
                 }
-                OverlayOutput::Json => println!("{}", overlay::json(&r.stats, &info)),
+                OverlayOutput::Json => {
+                    let mut json = overlay::json(&r.stats, &info);
+                    if let Some(m) = monitors.list() {
+                        json.pop();
+                        json.push_str(&format!(",\"monitors\":{}}}", m.json()));
+                    }
+                    println!("{json}");
+                }
             }
             last_overlay = Instant::now();
         }
@@ -1393,6 +1523,48 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_requests_are_resolved_against_the_list() {
+        let l = MonitorList {
+            current: 1,
+            list: vec![
+                ("DP-2".into(), 2560, 1440),
+                ("DP-1".into(), 2560, 1440),
+                ("HDMI-A-1".into(), 1920, 1080),
+            ],
+        };
+        assert_eq!(l.resolve(MonitorRequest::Next), Some(2));
+        assert_eq!(l.resolve(MonitorRequest::Previous), Some(0));
+        assert_eq!(l.resolve(MonitorRequest::Index(2)), Some(2));
+        assert_eq!(l.resolve(MonitorRequest::Index(3)), None);
+        let last = MonitorList {
+            current: 2,
+            ..l.clone()
+        };
+        assert_eq!(last.resolve(MonitorRequest::Next), Some(0), "wraps around");
+        assert_eq!(MonitorList::default().resolve(MonitorRequest::Next), None);
+        let v: serde_json::Value = serde_json::from_str(&l.json()).unwrap();
+        assert_eq!(v["current"], 1);
+        assert_eq!(v["list"][2]["name"], "HDMI-A-1");
+        assert_eq!(v["list"][0]["width"], 2560);
+
+        assert_eq!(
+            parse_monitor_command("monitor 2"),
+            Some(MonitorRequest::Index(2))
+        );
+        assert_eq!(
+            parse_monitor_command("monitor next"),
+            Some(MonitorRequest::Next)
+        );
+        assert_eq!(
+            parse_monitor_command("monitor previous"),
+            Some(MonitorRequest::Previous)
+        );
+        for bad in ["monitor", "monitor 8", "monitor -1", "monitor x", "keys 1"] {
+            assert_eq!(parse_monitor_command(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn key_combinations_from_the_menu() {

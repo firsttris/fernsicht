@@ -54,6 +54,8 @@ pub enum Kind {
     Reject = 16,
     Discover = 17,
     Announce = 18,
+    Monitors = 19,
+    SelectMonitor = 20,
 }
 
 impl Kind {
@@ -77,6 +79,8 @@ impl Kind {
             16 => Kind::Reject,
             17 => Kind::Discover,
             18 => Kind::Announce,
+            19 => Kind::Monitors,
+            20 => Kind::SelectMonitor,
             _ => return None,
         })
     }
@@ -1187,6 +1191,142 @@ fn read_text<'a>(r: &mut Reader<'a>, max: usize) -> Result<&'a str, DecodeError>
     std::str::from_utf8(r.take_slice(n)?).map_err(|_| DecodeError::Invalid("announce text"))
 }
 
+/// Most monitors a host lists.
+pub const MAX_MONITORS: usize = 8;
+/// Longest monitor (connector) name, e.g. `HDMI-A-1`.
+pub const MAX_MONITOR_NAME: usize = 16;
+
+/// One of the host's monitors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Monitor<'a> {
+    /// Connector name, e.g. `DP-1`.
+    pub name: &'a str,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// The host's monitors and which one the session shows, host → client.
+/// Sent when the session starts and after every switch. Entries are
+/// checked when the packet is parsed; iterate with [`Monitors::iter`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Monitors<'a> {
+    pub session_id: u32,
+    /// Index of the monitor shown.
+    pub current: u8,
+    count: u8,
+    entries: &'a [u8],
+}
+
+impl<'a> Monitors<'a> {
+    /// Encodes the list; panics on more than [`MAX_MONITORS`] monitors, an
+    /// empty or too long name, or `current` out of range.
+    pub fn encode(session_id: u32, current: u8, monitors: &[Monitor<'_>], buf: &mut [u8]) -> usize {
+        assert!(
+            !monitors.is_empty()
+                && monitors.len() <= MAX_MONITORS
+                && usize::from(current) < monitors.len()
+                && monitors
+                    .iter()
+                    .all(|m| !m.name.is_empty() && m.name.len() <= MAX_MONITOR_NAME),
+            "monitor list out of range"
+        );
+        let len = PREFIX_LEN + 5 + monitors.iter().map(|m| 1 + m.name.len() + 4).sum::<usize>();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Monitors, monitors.len() as u8);
+        w.u32(session_id);
+        w.u8(current);
+        for m in monitors {
+            w.u8(m.name.len() as u8);
+            w.bytes(m.name.as_bytes());
+            w.u16(m.width);
+            w.u16(m.height);
+        }
+        len
+    }
+
+    fn read(count: u8, mut r: Reader<'a>) -> Result<Self, DecodeError> {
+        let session_id = r.u32()?;
+        let current = r.u8()?;
+        let entries = r.rest();
+        if count == 0 || usize::from(count) > MAX_MONITORS || current >= count {
+            return Err(DecodeError::Invalid("monitor count"));
+        }
+        let m = Monitors {
+            session_id,
+            current,
+            count,
+            entries,
+        };
+        // Walk the entries once: what iter() later trusts.
+        let mut e = Reader::new(entries);
+        for _ in 0..count {
+            read_monitor(&mut e)?;
+        }
+        if !e.is_empty() {
+            return Err(DecodeError::Invalid("trailing bytes after monitors"));
+        }
+        Ok(m)
+    }
+
+    pub fn len(&self) -> usize {
+        usize::from(self.count)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Monitor<'a>> + 'a {
+        let mut r = Reader::new(self.entries);
+        (0..self.count).map(move |_| read_monitor(&mut r).expect("checked when parsed"))
+    }
+}
+
+fn read_monitor<'a>(r: &mut Reader<'a>) -> Result<Monitor<'a>, DecodeError> {
+    let n = usize::from(r.u8()?);
+    if n == 0 || n > MAX_MONITOR_NAME {
+        return Err(DecodeError::Invalid("monitor name length"));
+    }
+    let name =
+        std::str::from_utf8(r.take_slice(n)?).map_err(|_| DecodeError::Invalid("monitor name"))?;
+    Ok(Monitor {
+        name,
+        width: r.u16()?,
+        height: r.u16()?,
+    })
+}
+
+/// Show another monitor, client → host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectMonitor {
+    pub session_id: u32,
+    /// Index in the host's last [`Monitors`] list.
+    pub index: u8,
+}
+
+impl SelectMonitor {
+    pub const LEN: usize = PREFIX_LEN + 5;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::SelectMonitor, 0);
+        w.u32(self.session_id);
+        w.u8(self.index);
+        Self::LEN
+    }
+
+    fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let m = SelectMonitor {
+            session_id: r.u32()?,
+            index: r.u8()?,
+        };
+        if flags != 0 || usize::from(m.index) >= MAX_MONITORS {
+            return Err(DecodeError::Invalid("select monitor"));
+        }
+        Ok(m)
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -1212,6 +1352,8 @@ pub enum Packet<'a> {
     Reject(RejectReason),
     Discover(Discover),
     Announce(Announce<'a>),
+    Monitors(Monitors<'a>),
+    SelectMonitor(SelectMonitor),
 }
 
 impl<'a> Packet<'a> {
@@ -1336,6 +1478,14 @@ impl<'a> Packet<'a> {
                     os,
                     gpu,
                 })
+            }
+            Kind::Monitors => Packet::Monitors(Monitors::read(flags, r)?),
+            Kind::SelectMonitor => {
+                let m = SelectMonitor::read(flags, &mut r)?;
+                if !r.is_empty() {
+                    return Err(DecodeError::Invalid("trailing bytes after select monitor"));
+                }
+                Packet::SelectMonitor(m)
             }
         })
     }
@@ -1658,6 +1808,55 @@ mod tests {
         let mut empty = buf[..AudioHeader::LEN].to_vec();
         empty.extend_from_slice(&[0, 0, 0, 0]);
         assert!(Packet::decode(&empty).is_err());
+    }
+
+    #[test]
+    fn monitor_lists_roundtrip_and_broken_ones_are_rejected() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let list = [
+            Monitor {
+                name: "DP-2",
+                width: 2560,
+                height: 1440,
+            },
+            Monitor {
+                name: "HDMI-A-1",
+                width: 1920,
+                height: 1080,
+            },
+        ];
+        let n = Monitors::encode(7, 1, &list, &mut buf);
+        let Packet::Monitors(m) = Packet::decode(&buf[..n]).unwrap() else {
+            panic!("not monitors")
+        };
+        assert_eq!((m.session_id, m.current, m.len()), (7, 1, 2));
+        assert_eq!(m.iter().collect::<Vec<_>>(), list);
+        // Truncated, trailing, current out of range, count 0, bad name.
+        assert!(Packet::decode(&buf[..n - 1]).is_err());
+        let mut long = buf;
+        long[n] = 9;
+        assert!(Packet::decode(&long[..n + 1]).is_err());
+        let mut bad = buf;
+        bad[8] = 2; // current
+        assert!(Packet::decode(&bad[..n]).is_err());
+        bad = buf;
+        bad[3] = 0; // count
+        assert!(Packet::decode(&bad[..n]).is_err());
+        bad = buf;
+        bad[9] = 0; // first name length
+        assert!(Packet::decode(&bad[..n]).is_err());
+        bad = buf;
+        bad[10] = 0xff; // name not UTF-8
+        assert!(Packet::decode(&bad[..n]).is_err());
+
+        let sel = SelectMonitor {
+            session_id: 7,
+            index: 1,
+        };
+        let n = sel.encode(&mut buf);
+        assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::SelectMonitor(sel)));
+        buf[8] = MAX_MONITORS as u8;
+        assert!(Packet::decode(&buf[..n]).is_err());
     }
 
     #[test]

@@ -58,3 +58,10 @@ export interface SessionInfo {
   path: "P2P" | "Relay";
   encrypted: boolean;
 }
+
+/** The host's monitors, as the host reports them. */
+export interface HostMonitors {
+  /** Index of the one shown. */
+  current: number;
+  list: { name: string; width: number; height: number }[];
+}

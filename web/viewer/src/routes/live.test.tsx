@@ -148,6 +148,30 @@ describe("Web-Viewer am Host", () => {
     expect(sent().at(-1)).toEqual({ t: "release" });
   });
 
+  it("shows the host's monitors and switches", async () => {
+    const { pc } = await connected();
+    expect(screen.queryByRole("button", { name: "Bildschirm wählen" })).not.toBeInTheDocument();
+    act(() =>
+      pc.channel.receive(
+        JSON.stringify({
+          type: "monitors",
+          current: 1,
+          list: [
+            { name: "DP-2", width: 2560, height: 1440 },
+            { name: "DP-1", width: 2560, height: 1440 },
+          ],
+        }),
+      ),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Bildschirm wählen" }));
+    expect(screen.getByRole("menuitemradio", { name: /Bildschirm 2 · DP-1/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Bildschirm 1 · DP-2/ }));
+    expect(pc.channel.sent.at(-1)).toEqual({ t: "monitor", i: 0 });
+  });
+
   it("sends key combinations from the menu", async () => {
     const { pc } = await connected();
     const before = pc.channel.sent.length;

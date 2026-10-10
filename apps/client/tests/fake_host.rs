@@ -8,7 +8,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fernsicht_capture::{Frame, PixelFormat};
-use fernsicht_client::{ClientConfig, CodecChoice, PresenterFactory, RunSummary, run, run_with};
+use fernsicht_client::{
+    ClientConfig, CodecChoice, MonitorRequest, PresenterFactory, RunSummary, run, run_with,
+};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 use fernsicht_codec::{DecodedFrame, EncodedFrame, Encoder, Picture, PictureKind};
 use fernsicht_core::latency::Stage;
@@ -32,6 +34,8 @@ struct Script {
     bye_after: Option<u32>,
     /// Stop answering anything after this long.
     go_silent_after: Option<Duration>,
+    /// Announce two monitors after the ack.
+    monitors: bool,
 }
 
 impl Default for Script {
@@ -43,6 +47,7 @@ impl Default for Script {
             corrupt_every: 0,
             bye_after: None,
             go_silent_after: None,
+            monitors: false,
         }
     }
 }
@@ -52,6 +57,7 @@ struct Observed {
     hellos: u32,
     /// The codecs offered in the last Hello.
     codecs: Option<CodecSet>,
+    selected: Vec<SelectMonitor>,
     pings: u32,
     feedback: Vec<Feedback>,
     byes: Vec<Bye>,
@@ -130,8 +136,26 @@ fn serve(sock: UdpSocket, script: Script, stop: &AtomicBool, seen: &Mutex<Observ
                         };
                         let n = ack.encode(&mut out);
                         sock.send_to(&out[..n], from).unwrap();
+                        if script.monitors {
+                            let list = [
+                                Monitor {
+                                    name: "DP-2",
+                                    width: 2560,
+                                    height: 1440,
+                                },
+                                Monitor {
+                                    name: "DP-1",
+                                    width: 2560,
+                                    height: 1440,
+                                },
+                            ];
+                            let current = seen.selected.last().map_or(0, |m| m.index);
+                            let n = Monitors::encode(SESSION, current, &list, &mut out);
+                            sock.send_to(&out[..n], from).unwrap();
+                        }
                     }
                 }
+                Ok(Packet::SelectMonitor(m)) => seen.selected.push(m),
                 Ok(Packet::ClockPing(p)) => {
                     seen.pings += 1;
                     let pong = ClockPong {
@@ -212,6 +236,41 @@ fn client(host: &FakeHost, secs: f32) -> anyhow::Result<RunSummary> {
         },
         Arc::new(AtomicBool::new(false)),
     )
+}
+
+#[test]
+fn monitors_are_listed_and_switched() {
+    let host = FakeHost::start(Script {
+        monitors: true,
+        ..Script::default()
+    });
+    let cfg = ClientConfig {
+        host: host.addr.clone(),
+        duration: Some(Duration::from_millis(800)),
+        host_timeout: Duration::from_millis(600),
+        ..ClientConfig::default()
+    };
+    let monitors = cfg.monitors.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let client = std::thread::spawn(move || run(cfg, stop));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while monitors.list().is_none() {
+        assert!(std::time::Instant::now() < deadline, "no monitor list");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let list = monitors.list().unwrap();
+    assert_eq!(list.current, 0);
+    assert_eq!(list.list[1], ("DP-1".to_string(), 2560, 1440));
+    monitors.request(MonitorRequest::Next);
+    client.join().unwrap().unwrap();
+    let seen = host.finish();
+    assert_eq!(
+        seen.selected,
+        [SelectMonitor {
+            session_id: SESSION,
+            index: 1
+        }]
+    );
 }
 
 #[test]

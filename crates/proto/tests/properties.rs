@@ -211,17 +211,41 @@ proptest! {
             Packet::Reject(r) => r.encode(&mut buf),
             Packet::Discover(d) => d.encode(&mut buf),
             Packet::Announce(a) => a.encode(&mut buf),
+            Packet::Monitors(m) => {
+                let list: Vec<_> = m.iter().collect();
+                Monitors::encode(m.session_id, m.current, &list, &mut buf)
+            }
+            Packet::SelectMonitor(p) => p.encode(&mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }
 
     /// Valid prefix plus random body: exercises the per-kind validation.
     #[test]
-    fn random_bodies_are_safe(kind in 1u8..=18, flags: u8,
+    fn random_bodies_are_safe(kind in 1u8..=20, flags: u8,
                               body in proptest::collection::vec(any::<u8>(), 0..96)) {
         let mut bytes = vec![MAGIC, VERSION, kind, flags];
         bytes.extend_from_slice(&body);
         let _ = Packet::decode(&bytes);
+    }
+
+    /// Any monitor list within the limits comes through unchanged.
+    #[test]
+    fn monitor_lists_roundtrip(session_id: u32,
+                               list in proptest::collection::vec(("[A-Z]{1,5}-[0-9]{1,2}", 1u16.., 1u16..), 1..=MAX_MONITORS),
+                               current: u8) {
+        let monitors: Vec<Monitor<'_>> = list
+            .iter()
+            .map(|(name, width, height)| Monitor { name, width: *width, height: *height })
+            .collect();
+        let current = current % monitors.len() as u8;
+        let mut buf = vec![0u8; MAX_DATAGRAM];
+        let n = Monitors::encode(session_id, current, &monitors, &mut buf);
+        let Ok(Packet::Monitors(m)) = Packet::decode(&buf[..n]) else {
+            return Err(TestCaseError::fail("monitors did not parse"));
+        };
+        prop_assert_eq!(m.current, current);
+        prop_assert_eq!(m.iter().collect::<Vec<_>>(), monitors);
     }
 
     /// Any texts, clipped to their limits, come through an announcement.

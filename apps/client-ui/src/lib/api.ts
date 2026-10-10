@@ -6,6 +6,7 @@
  */
 import {
   type Device,
+  type HostMonitors,
   type SessionStats,
   demoDevices,
   demoStats,
@@ -58,7 +59,8 @@ export interface SessionState {
   active: boolean;
   deviceId?: string | null;
   deviceName?: string | null;
-  stats?: SessionStats | null;
+  /** The client's overlay; with the host's monitors once it listed them. */
+  stats?: (SessionStats & { monitors?: HostMonitors }) | null;
   /** Why it ended, if it failed. */
   error?: string | null;
 }
@@ -168,6 +170,10 @@ export const actions = {
   /** A key combination for the host (Linux key codes). */
   sendKeys: async (codes: number[]) => {
     if (inApp()) await invoke("send_keys", { codes });
+  },
+  /** Show the host's monitor `index`. */
+  selectMonitor: async (index: number) => {
+    if (inApp()) await invoke("select_monitor", { index });
   },
   setMode: async (gaming: boolean) => {
     if (inApp()) await invoke("set_mode", { gaming });

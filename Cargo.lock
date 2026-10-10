@@ -1240,6 +1240,7 @@ dependencies = [
  "libc",
  "log",
  "raw-window-handle",
+ "serde_json",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",

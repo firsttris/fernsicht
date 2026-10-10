@@ -342,6 +342,33 @@ struct Shared {
     fec_loss: AtomicU32,
     /// The bitrate the encoder should use now, kbit/s.
     target_kbps: AtomicU32,
+    /// The client asked for another monitor (index in the list it got).
+    monitor_request: std::sync::Mutex<Option<u8>>,
+    /// The monitor shown and the others; changes count `screen_changes`.
+    screen: std::sync::Mutex<Option<fernsicht_capture::ScreenInfo>>,
+    screen_changes: AtomicU64,
+}
+
+impl Shared {
+    /// Asks the capture thread to show monitor `index`.
+    fn select_monitor(&self, index: u8) {
+        *self
+            .monitor_request
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(index);
+    }
+
+    fn screen(&self) -> Option<fernsicht_capture::ScreenInfo> {
+        self.screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn set_screen(&self, screen: Option<fernsicht_capture::ScreenInfo>) {
+        *self.screen.lock().unwrap_or_else(|e| e.into_inner()) = screen;
+        self.screen_changes.fetch_add(1, Ordering::Release);
+    }
 }
 
 struct Session {
@@ -865,6 +892,13 @@ impl HostAgent {
                     let n = ack.encode(&mut out);
                     let _ = s.link.send(&out[..n]);
                 }
+                Packet::SelectMonitor(m) if authentic => {
+                    if let Some(s) = session.as_ref()
+                        && m.session_id == s.params.session_id
+                    {
+                        s.shared.select_monitor(m.index);
+                    }
+                }
                 Packet::Bye(bye) if authentic => {
                     if let Some(s) = session.take() {
                         if bye.session_id == s.params.session_id {
@@ -1197,6 +1231,9 @@ impl HostAgent {
             cursor_requested: AtomicBool::new(false),
             fec_loss: AtomicU32::new(loss.estimate().to_bits()),
             target_kbps: AtomicU32::new(0),
+            monitor_request: Default::default(),
+            screen: Default::default(),
+            screen_changes: AtomicU64::new(0),
         });
         // Source and encoder come first: if the screen or the GPU is
         // unavailable the session fails before any thread starts. The
@@ -1241,7 +1278,8 @@ impl HostAgent {
                 )
             })
         };
-        let mut input = make_input(&self.cfg.input, source.screen());
+        shared.set_screen(source.screen());
+        let mut input = make_input(&self.cfg.input, &shared);
         let (crypto, handshake_reply) = match secure {
             None => (None, None),
             Some(responder) => {
@@ -1283,8 +1321,9 @@ impl HostAgent {
                 params.session_id,
                 (source.width(), source.height()),
             );
+            let monitors = MonitorSender::new(link.clone(), params.session_id);
             spawn_hot("capture", move || {
-                capture_loop(source, &shared, &slot, &free_rx, &free_tx, cursor);
+                capture_loop(source, &shared, &slot, &free_rx, &free_tx, cursor, monitors);
             })?
         };
         let encode = {
@@ -1463,8 +1502,18 @@ fn capture_loop(
     free_rx: &Receiver<Frame>,
     free_tx: &Sender<Frame>,
     mut cursor: CursorSender,
+    mut monitors: MonitorSender,
 ) {
     while shared.running.load(Ordering::Acquire) {
+        let request = shared
+            .monitor_request
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(index) = request {
+            switch_monitor(source.as_mut(), shared, &mut cursor, index);
+        }
+        monitors.tick(shared);
         let Ok(mut frame) = free_rx.recv_timeout(Duration::from_millis(100)) else {
             continue;
         };
@@ -1486,6 +1535,114 @@ fn capture_loop(
     slot.close();
 }
 
+/// Shows monitor `index` of the list the client got; the old one stays if
+/// that fails.
+fn switch_monitor(
+    source: &mut dyn FrameSource,
+    shared: &Shared,
+    cursor: &mut CursorSender,
+    index: u8,
+) {
+    let Some(name) = shared
+        .screen()
+        .and_then(|s| s.active.get(usize::from(index)).cloned())
+    else {
+        log::info!("monitor {index} asked for, but there is none");
+        return;
+    };
+    if shared.screen().is_some_and(|s| s.connector == name) {
+        return;
+    }
+    match source.switch_to(&name) {
+        Ok(()) => {
+            shared.set_screen(source.screen());
+            cursor.set_screen((source.width(), source.height()));
+            // The decoder needs a fresh start for the new picture.
+            shared.keyframe_requested.store(true, Ordering::Relaxed);
+        }
+        Err(e) => log::warn!("switching to {name}: {e}"),
+    }
+}
+
+/// The monitor list is sent again this often, so that a lost one heals.
+const MONITORS_REPEAT: Duration = Duration::from_secs(2);
+
+/// Tells the client which monitors the host has and which it sees: at the
+/// start, after every switch, and every [`MONITORS_REPEAT`]. A browser gets
+/// it as JSON on the data channel.
+struct MonitorSender {
+    link: Link,
+    session_id: u32,
+    /// Screen change count and time of the last list sent.
+    sent: Option<(u64, Instant)>,
+}
+
+impl MonitorSender {
+    fn new(link: Link, session_id: u32) -> Self {
+        Self {
+            link,
+            session_id,
+            sent: None,
+        }
+    }
+
+    fn tick(&mut self, shared: &Shared) {
+        let changes = shared.screen_changes.load(Ordering::Acquire);
+        if self
+            .sent
+            .is_some_and(|(c, at)| c == changes && at.elapsed() < MONITORS_REPEAT)
+        {
+            return;
+        }
+        self.sent = Some((changes, Instant::now()));
+        let Some(screen) = shared.screen() else {
+            return;
+        };
+        let Some((current, list)) = monitor_list(&screen) else {
+            return;
+        };
+        match &self.link {
+            Link::Web(tx) => {
+                let monitors: Vec<_> = list
+                    .iter()
+                    .map(|m| serde_json::json!({"name": m.name, "width": m.width, "height": m.height}))
+                    .collect();
+                let text =
+                    serde_json::json!({"type": "monitors", "current": current, "list": monitors});
+                let _ = tx.try_send(web::WebOut::Text(text.to_string()));
+            }
+            Link::Udp(_) => {
+                let mut buf = [0u8; MAX_DATAGRAM];
+                let n =
+                    fernsicht_proto::Monitors::encode(self.session_id, current, &list, &mut buf);
+                let _ = self.link.send(&buf[..n]);
+            }
+        }
+    }
+}
+
+/// The monitors as the protocol carries them (names clipped, at most
+/// [`fernsicht_proto::MAX_MONITORS`]) and the index of the one shown.
+fn monitor_list(
+    screen: &fernsicht_capture::ScreenInfo,
+) -> Option<(u8, Vec<fernsicht_proto::Monitor<'_>>)> {
+    let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
+    let list: Vec<_> = screen
+        .active
+        .iter()
+        .zip(screen.sizes.iter().chain(std::iter::repeat(&(0, 0))))
+        .take(fernsicht_proto::MAX_MONITORS)
+        .map(|(name, &(w, h))| fernsicht_proto::Monitor {
+            name: clip(name, fernsicht_proto::MAX_MONITOR_NAME),
+            width: clamp(w),
+            height: clamp(h),
+        })
+        .filter(|m| !m.name.is_empty())
+        .collect();
+    let current = screen.active.iter().position(|n| *n == screen.connector)?;
+    (current < list.len()).then_some((current as u8, list))
+}
+
 /// An unchanged cursor image is sent again, so that a lost piece heals:
 /// soon after a change (the first copy of a session can even arrive
 /// before the client knows the session), then less often, up to every 2 s.
@@ -1505,14 +1662,21 @@ struct CursorSender {
 
 impl CursorSender {
     fn new(link: Link, session_id: u32, screen: (u32, u32)) -> Self {
-        let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
-        Self {
+        let mut s = Self {
             link,
             session_id,
-            screen: (clamp(screen.0), clamp(screen.1)),
+            screen: (0, 0),
             sent: None,
             warned: false,
-        }
+        };
+        s.set_screen(screen);
+        s
+    }
+
+    /// The size of the monitor shown (pointer positions are relative to it).
+    fn set_screen(&mut self, screen: (u32, u32)) {
+        let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
+        self.screen = (clamp(screen.0), clamp(screen.1));
     }
 
     /// `asked`: the client said it lacks the image; send it now.
@@ -1618,25 +1782,50 @@ fn audio_loop(
     Ok(())
 }
 
-fn make_input(
-    kind: &InputKind,
-    screen: Option<fernsicht_capture::ScreenInfo>,
-) -> Option<Box<dyn InputSink>> {
+fn make_input(kind: &InputKind, shared: &Arc<Shared>) -> Option<Box<dyn InputSink>> {
     match kind {
         InputKind::Off => None,
         InputKind::Record(r) => Some(Box::new(r.clone())),
-        InputKind::Uinput => {
-            let area = screen
-                .map(|s| layout::input_area(&s.connector, &s.active))
-                .unwrap_or_default();
-            match Uinput::open(area) {
-                Ok(u) => Some(Box::new(u)),
-                Err(e) => {
-                    log::error!("no input: {e}");
-                    None
-                }
+        InputKind::Uinput => match Uinput::open(input_area(shared.screen())) {
+            Ok(u) => Some(Box::new(FollowScreen {
+                uinput: u,
+                shared: shared.clone(),
+                seen: shared.screen_changes.load(Ordering::Acquire),
+            })),
+            Err(e) => {
+                log::error!("no input: {e}");
+                None
             }
+        },
+    }
+}
+
+fn input_area(screen: Option<fernsicht_capture::ScreenInfo>) -> fernsicht_input::uinput::AbsArea {
+    screen
+        .map(|s| layout::input_area(&s.connector, &s.active))
+        .unwrap_or_default()
+}
+
+/// Uinput that maps the pointer onto whichever monitor the session shows
+/// now: after a switch the area moves along.
+struct FollowScreen {
+    uinput: Uinput,
+    shared: Arc<Shared>,
+    seen: u64,
+}
+
+impl InputSink for FollowScreen {
+    fn inject(&mut self, event: &fernsicht_input::InputEvent) -> Result<(), String> {
+        let now = self.shared.screen_changes.load(Ordering::Acquire);
+        if now != self.seen {
+            self.seen = now;
+            self.uinput.set_area(input_area(self.shared.screen()));
         }
+        self.uinput.inject(event)
+    }
+
+    fn release_all(&mut self) {
+        self.uinput.release_all();
     }
 }
 
@@ -2011,6 +2200,120 @@ mod tests {
             codec_candidates(all),
             vec![Codec::Av1, Codec::Hevc, Codec::H264]
         );
+    }
+
+    /// A source with two monitors that records switches.
+    struct TwoMonitors {
+        screen: fernsicht_capture::ScreenInfo,
+        size: (u32, u32),
+    }
+
+    impl FrameSource for TwoMonitors {
+        fn width(&self) -> u32 {
+            self.size.0
+        }
+        fn height(&self) -> u32 {
+            self.size.1
+        }
+        fn format(&self) -> fernsicht_capture::PixelFormat {
+            fernsicht_capture::PixelFormat::Bgrx
+        }
+        fn next_frame(&mut self, _: &mut Frame) -> Result<(), fernsicht_capture::CaptureError> {
+            Ok(())
+        }
+        fn screen(&self) -> Option<fernsicht_capture::ScreenInfo> {
+            Some(self.screen.clone())
+        }
+        fn switch_to(&mut self, c: &str) -> Result<(), fernsicht_capture::CaptureError> {
+            let i = self.screen.active.iter().position(|n| n == c).unwrap();
+            self.screen.connector = c.into();
+            self.size = self.screen.sizes[i];
+            Ok(())
+        }
+    }
+
+    fn shared() -> Shared {
+        Shared {
+            stats: Arc::default(),
+            running: AtomicBool::new(true),
+            keyframe_requested: AtomicBool::new(false),
+            cursor_requested: AtomicBool::new(false),
+            fec_loss: AtomicU32::new(0),
+            target_kbps: AtomicU32::new(0),
+            monitor_request: Default::default(),
+            screen: Default::default(),
+            screen_changes: AtomicU64::new(0),
+        }
+    }
+
+    #[test]
+    fn monitors_are_switched_on_request() {
+        let mut source = TwoMonitors {
+            screen: fernsicht_capture::ScreenInfo {
+                connector: "DP-2".into(),
+                active: vec!["DP-2".into(), "HDMI-A-1".into()],
+                sizes: vec![(2560, 1440), (1920, 1080)],
+            },
+            size: (2560, 1440),
+        };
+        let shared = shared();
+        shared.set_screen(source.screen());
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let link = Link::Udp(UdpLink {
+            peer: socket.local_addr().unwrap(),
+            socket,
+            session_id: 1,
+            crypto: None,
+        });
+        let mut cursor = CursorSender::new(link, 1, (2560, 1440));
+
+        // What the client is told.
+        let screen = shared.screen().unwrap();
+        let (current, list) = monitor_list(&screen).unwrap();
+        assert_eq!(current, 0);
+        assert_eq!(
+            list.iter().map(|m| (m.name, m.width)).collect::<Vec<_>>(),
+            [("DP-2", 2560), ("HDMI-A-1", 1920)]
+        );
+
+        let changes = shared.screen_changes.load(Ordering::Acquire);
+        switch_monitor(&mut source, &shared, &mut cursor, 1);
+        assert_eq!(shared.screen().unwrap().connector, "HDMI-A-1");
+        assert!(shared.keyframe_requested.load(Ordering::Relaxed));
+        assert_eq!(cursor.screen, (1920, 1080));
+        assert_eq!(shared.screen_changes.load(Ordering::Acquire), changes + 1);
+        assert_eq!(monitor_list(&shared.screen().unwrap()).unwrap().0, 1);
+
+        // The same monitor again, or one that is not there: nothing happens.
+        shared.keyframe_requested.store(false, Ordering::Relaxed);
+        switch_monitor(&mut source, &shared, &mut cursor, 1);
+        switch_monitor(&mut source, &shared, &mut cursor, 5);
+        assert!(!shared.keyframe_requested.load(Ordering::Relaxed));
+        assert_eq!(shared.screen_changes.load(Ordering::Acquire), changes + 1);
+    }
+
+    #[test]
+    fn long_names_are_clipped_and_lists_capped() {
+        let names: Vec<String> = (0..10)
+            .map(|i| format!("VERY-LONG-CONNECTOR-{i}"))
+            .collect();
+        let screen = fernsicht_capture::ScreenInfo {
+            connector: names[2].clone(),
+            active: names.clone(),
+            sizes: vec![(800, 600); 10],
+        };
+        let (current, list) = monitor_list(&screen).unwrap();
+        assert_eq!((current, list.len()), (2, fernsicht_proto::MAX_MONITORS));
+        assert!(
+            list.iter()
+                .all(|m| m.name.len() <= fernsicht_proto::MAX_MONITOR_NAME)
+        );
+        // The shown monitor beyond the cap: no list rather than a wrong one.
+        let far = fernsicht_capture::ScreenInfo {
+            connector: names[9].clone(),
+            ..screen
+        };
+        assert!(monitor_list(&far).is_none());
     }
 
     fn params(codecs: CodecSet) -> SessionParams {

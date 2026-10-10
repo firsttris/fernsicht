@@ -45,6 +45,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "set_muted":
       case "set_mode":
       case "send_keys":
+      case "select_monitor":
         return null;
       case "set_gpu_boost":
         backend.thisMachine = {

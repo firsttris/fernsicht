@@ -12,9 +12,10 @@ import {
 import { type ReactNode, useEffect, useState } from "react";
 
 import { cn } from "../lib/utils";
-import type { SessionInfo, SessionMode, SessionStats } from "../types";
+import type { HostMonitors, SessionInfo, SessionMode, SessionStats } from "../types";
 import { Button } from "./button";
 import { LatencyOverlay } from "./latency-overlay";
+import { MenuButton } from "./menu-button";
 import { SendKeysMenu } from "./send-keys";
 
 export interface SessionViewProps {
@@ -26,6 +27,9 @@ export interface SessionViewProps {
   onMuteChange?: (muted: boolean) => void;
   /** A key combination from the "send keys" menu (Linux key codes). */
   onSendKeys?: (codes: number[]) => void;
+  /** The host's monitors; with two or more, a menu switches between them. */
+  monitors?: HostMonitors;
+  onSelectMonitor?: (index: number) => void;
   /** Fullscreen button (the web viewer; the app's window has its own). */
   fullscreen?: boolean;
   onFullscreenChange?: (on: boolean) => void;
@@ -45,6 +49,8 @@ export function SessionView({
   onModeChange,
   onMuteChange,
   onSendKeys,
+  monitors,
+  onSelectMonitor,
   fullscreen = false,
   onFullscreenChange,
   onDisconnect,
@@ -102,9 +108,17 @@ export function SessionView({
               ))}
               <Divider />
               {onSendKeys && <SendKeysMenu onSend={onSendKeys} />}
-              <Button size="icon" variant="ghost" aria-label="Bildschirm wählen">
-                <Monitor size={16} />
-              </Button>
+              {monitors && monitors.list.length > 1 && onSelectMonitor && (
+                <MenuButton
+                  label="Bildschirm wählen"
+                  icon={<Monitor size={16} />}
+                  items={monitors.list.map((m, i) => ({
+                    label: `Bildschirm ${i + 1} · ${m.name} · ${m.width}×${m.height}`,
+                    checked: i === monitors.current,
+                    onSelect: () => onSelectMonitor(i),
+                  }))}
+                />
+              )}
               <Button size="icon" variant="ghost" aria-label="Zwischenablage">
                 <ClipboardList size={16} />
               </Button>
