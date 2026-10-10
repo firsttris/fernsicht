@@ -10,33 +10,26 @@ Das funktioniert auch im Login-Bildschirm und im Gaming-Modus (gamescope)
 und braucht keinen Bestätigungsdialog. Dafür verlangt der Kernel
 **`CAP_SYS_ADMIN`**: Nur dann gibt er fremde Framebuffer heraus.
 
-## Warum eine eigene Distrobox?
-
-In der normalen (rootless) Distrobox ist `sudo` nur Root *im* Container. Für
-den Kernel bist du dort weiterhin ein normaler Benutzer, und KMS-Capture
-schlägt mit „KMS capture needs CAP_SYS_ADMIN“ fehl. Deshalb gibt es eine
-zweite, **rootful** Box. Darin ist `sudo` echtes Root. Sie dient nur zum
-Starten des Host-Agents; entwickelt wird weiter in `fernsicht`.
-
-## Einrichten (einmalig, auf dem AMD-Rechner)
+## Bauen (in der Distrobox)
 
 ```sh
-cd ~/fernsicht        # dein Klon
+distrobox enter fernsicht
+cd ~/fernsicht
 git pull
-dev/setup.sh --root   # fragt nach deinem sudo-Passwort
+cargo build --release -p fernsicht-host-agent --features vaapi,kms
+cargo build --release -p fernsicht-client --features vaapi,window
 ```
 
-Das baut das Dev-Image noch einmal im Speicher von root und legt die Box
-`fernsicht-root` an.
+## Starten (direkt auf dem Host)
 
-## Ausprobieren
+Bazzite bringt FFmpeg und libva selbst mit, deshalb laufen die fertigen
+Programme ohne Box. Das ist auch der einfachste Weg zu den root-Rechten:
+`sudo` auf dem Host ist echtes root, in der normalen Box nicht.
 
 **Terminal 1 – Host-Agent**
 
 ```sh
-distrobox enter --root fernsicht-root
 cd ~/fernsicht
-cargo build --release -p fernsicht-host-agent --features vaapi,kms
 sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi
 ```
 
@@ -44,13 +37,15 @@ In der Ausgabe steht, welcher Monitor erfasst wird, z. B.
 `capturing 2560×1440 over KMS (Selection { plane: 71, crtc: 80, pipe: 1 })`.
 Diese Zeile kommt erst, wenn sich ein Client verbindet.
 
+Meldet ein Programm nach einem Bazzite-Update
+`libavcodec.so.NN: cannot open shared object file`, hat sich die
+FFmpeg-Hauptversion geändert: Box aktualisieren (`dev/setup.sh`) und neu
+bauen.
+
 **Terminal 2 – Client**
 
 ```sh
-distrobox enter fernsicht
-cd ~/fernsicht
-cargo build --release -p fernsicht-client --features vaapi,window
-./target/release/fernsicht-client 127.0.0.1:47800
+~/fernsicht/target/release/fernsicht-client 127.0.0.1:47800
 ```
 
 Es öffnet sich ein Fenster mit dem Bild, im Titel steht die Latenz. Esc
@@ -81,7 +76,7 @@ fehlt dafür noch ein Decoder (Vulkan Video oder NVDEC).
 
 | Meldung | Ursache und Abhilfe |
 |---|---|
-| `KMS capture needs CAP_SYS_ADMIN` | Nicht mit `sudo` gestartet oder in der rootless Box. Siehe oben. |
+| `KMS capture needs CAP_SYS_ADMIN` | Nicht mit `sudo` gestartet, oder in der Distrobox statt auf dem Host. Siehe oben. |
 | `no display to capture` | Kein Monitor aktiv, oder die falsche Karte. Mit `--kms-card` bzw. `--kms-connector` wählen. |
 | `connector DP-2 is not active (active: ["DP-1"])` | Den angezeigten Namen verwenden. |
 | `the driver cannot import this DMA-BUF (…)` | Der Treiber kann das Puffer-Format nicht lesen. Bitte die ganze Zeile schicken. |
@@ -117,3 +112,12 @@ fehlt dafür noch ein Decoder (Vulkan Video oder NVDEC).
   - die Encode-Zeit.
 - Das eigentliche KMS-Capture braucht einen Monitor und root und läuft
   deshalb nicht im Runner, sondern so wie oben beschrieben von Hand.
+
+## Alternative: rootful Distrobox
+
+Falls die Programme auf dem Host einmal nicht starten (andere
+FFmpeg-Version), geht es auch über eine zweite, rootful Box, in der `sudo`
+echtes root ist: einmal `dev/setup.sh --root`, dann
+`distrobox enter --root fernsicht-root` und dort wie oben mit `sudo`
+starten. Beim ersten Betreten fragt die Box nach einem neuen Passwort nur
+für `sudo` in dieser Box.
