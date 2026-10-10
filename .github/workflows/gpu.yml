@@ -32,7 +32,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gpu: [amd, nvidia]
+        # Machines with a runner, as a repository variable (Settings →
+        # Secrets and variables → Actions → Variables), e.g. ["amd","nvidia"].
+        # Without it only the AMD machine is used, so no job waits for a
+        # runner that does not exist yet.
+        gpu: ${{ fromJSON(vars.GPU_RUNNERS || '["amd"]') }}
     # A machine that is switched off leaves its job queued (GitHub gives up
     # after 24 h); cancel it in the Actions tab if you don't need it.
     runs-on: [self-hosted, linux, "gpu-${{ matrix.gpu }}"]

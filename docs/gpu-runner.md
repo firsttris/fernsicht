@@ -153,6 +153,13 @@ systemctl --user status fernsicht-runner-amd
 journalctl --user -u fernsicht-runner-amd -f
 ```
 
+### Welche Rechner der Workflow benutzt
+
+Ohne weitere Einstellung schickt der Workflow Jobs nur an den AMD-Runner.
+Sobald der NVIDIA-Rechner eingerichtet ist, legst du unter *Settings →
+Secrets and variables → Actions → Variables* die Repository-Variable
+`GPU_RUNNERS` mit dem Wert `["amd","nvidia"]` an. Ab dann laufen beide.
+
 ## Wann die GPU-Jobs laufen
 
 Der Workflow `.github/workflows/gpu.yml` läuft
