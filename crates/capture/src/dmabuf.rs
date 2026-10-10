@@ -24,6 +24,8 @@ pub mod formats {
     pub const XRGB2101010: u32 = fourcc(b"XR30");
     pub const ARGB2101010: u32 = fourcc(b"AR30");
     pub const XBGR2101010: u32 = fourcc(b"XB30");
+    /// Y plane, then interleaved UV at half resolution (decoder output).
+    pub const NV12: u32 = fourcc(b"NV12");
     /// What KDE Plasma scans out on AMD by default.
     pub const ABGR2101010: u32 = fourcc(b"AB30");
 

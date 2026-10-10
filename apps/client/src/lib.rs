@@ -171,9 +171,27 @@ impl ReceivedFrame {
     }
 }
 
+/// Creates the presenter on the present thread (Vulkan objects stay on the
+/// thread that uses them).
+pub type PresenterFactory = Box<dyn FnOnce() -> Result<Box<dyn Presenter>, String> + Send>;
+
 /// Connects to `cfg.host` and streams until `stop`, the configured duration,
-/// or the host going away.
+/// or the host going away. Frames are decoded but not shown.
 pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummary> {
+    run_with(
+        cfg,
+        stop,
+        Box::new(|| Ok(Box::new(HeadlessPresenter::default()) as Box<dyn Presenter>)),
+    )
+}
+
+/// Like [`run`], showing frames with the presenter `make_presenter`
+/// creates. If that fails, the client runs headless and says why.
+pub fn run_with(
+    cfg: ClientConfig,
+    stop: Arc<AtomicBool>,
+    make_presenter: PresenterFactory,
+) -> anyhow::Result<RunSummary> {
     let socket = fernsicht_net::socket::bind_udp("0.0.0.0:0").context("bind")?;
     socket
         .connect(&cfg.host)
@@ -199,6 +217,10 @@ pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummar
         let print = cfg.print_overlay;
         let render_node = cfg.render_node.clone();
         spawn_hot("present", move || {
+            let mut presenter = make_presenter().unwrap_or_else(|e| {
+                log::error!("no video window ({e}); running headless");
+                Box::new(HeadlessPresenter::default())
+            });
             let r = present_loop(
                 &decode_rx,
                 &info,
@@ -207,6 +229,7 @@ pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummar
                 print,
                 &render_node,
                 record.as_mut().map(|w| w as &mut dyn std::io::Write),
+                presenter.as_mut(),
             );
             if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
                 log::error!("recording: {e}");
@@ -515,6 +538,7 @@ struct PresentResult {
     decode_errors: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn present_loop(
     queue: &Receiver<ReceivedFrame>,
     info: &Mutex<StreamInfo>,
@@ -523,10 +547,10 @@ fn present_loop(
     print_overlay: bool,
     render_node: &str,
     mut record: Option<&mut dyn std::io::Write>,
+    presenter: &mut dyn Presenter,
 ) -> PresentResult {
     // Created on the first frame, from the codec the host announced.
     let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
-    let mut presenter = HeadlessPresenter::default();
     let mut decoded = DecodedFrame::default();
     let mut chain = RefChain::default();
     let mut r = PresentResult {
@@ -575,8 +599,16 @@ fn present_loop(
                     if !queue.is_empty() {
                         r.skipped += 1;
                     } else {
-                        if let Err(e) = presenter.present(&decoded) {
-                            log::warn!("present: {e}");
+                        let picture = match presenter.wants() {
+                            Some(kind) => decoder.picture(kind).unwrap_or_else(|e| {
+                                log::debug!("picture: {e}");
+                                None
+                            }),
+                            None => None,
+                        };
+                        match presenter.present(&decoded, picture.as_ref()) {
+                            Ok(()) => r.presented += 1,
+                            Err(e) => log::warn!("present: {e}"),
                         }
                         let presented_us = now_us();
                         let captured = h.capture_us as i64 - rf.offset_us;
@@ -604,16 +636,19 @@ fn present_loop(
         need_keyframe.store(chain.needs_keyframe(), Ordering::Relaxed);
         let _ = free_tx.send(rf);
 
-        if print_overlay && last_overlay.elapsed() >= OVERLAY_INTERVAL {
+        if last_overlay.elapsed() >= OVERLAY_INTERVAL {
             let info = *info.lock().unwrap();
-            for line in overlay::lines(&r.stats, &info) {
-                println!("{line}");
+            let lines = overlay::lines(&r.stats, &info);
+            presenter.overlay(&lines);
+            if print_overlay {
+                for line in &lines {
+                    println!("{line}");
+                }
+                println!();
             }
-            println!();
             last_overlay = Instant::now();
         }
     }
-    r.presented = presenter.presented;
     r
 }
 

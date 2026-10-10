@@ -6,10 +6,26 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Vulkan renderer: NV12 (CPU or DMA-BUF, no copy) -> RGB, offscreen or into
+# a swapchain. Pure Rust (ash, naga); needs a Vulkan driver at runtime.
+vulkan = ["dep:ash", "dep:naga", "dep:log"]
+# Native window (winit) presenting through the Vulkan renderer.
+window = ["vulkan", "dep:ash-window", "dep:raw-window-handle", "dep:winit"]
+# GPU tests that feed the renderer from the VAAPI decoder.
+vaapi = ["fernsicht-codec/vaapi"]
+
 [dependencies]
+ash = { workspace = true, optional = true }
+ash-window = { workspace = true, optional = true }
+fernsicht-capture.workspace = true
 fernsicht-codec.workspace = true
 fernsicht-core.workspace = true
 fernsicht-proto.workspace = true
+log = { workspace = true, optional = true }
+naga = { workspace = true, optional = true }
+raw-window-handle = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

@@ -8,13 +8,14 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fernsicht_capture::{Frame, PixelFormat};
-use fernsicht_client::{ClientConfig, RunSummary, run};
+use fernsicht_client::{ClientConfig, PresenterFactory, RunSummary, run, run_with};
 use fernsicht_codec::synthetic::SyntheticEncoder;
-use fernsicht_codec::{EncodedFrame, Encoder};
+use fernsicht_codec::{DecodedFrame, EncodedFrame, Encoder, Picture, PictureKind};
 use fernsicht_core::latency::Stage;
 use fernsicht_core::now_us;
 use fernsicht_net::{FecConfig, FrameMeta, Packetizer};
 use fernsicht_proto::*;
+use fernsicht_render::Presenter;
 
 /// How the fake host behaves.
 #[derive(Clone)]
@@ -424,4 +425,82 @@ fn invalid_host_address_is_an_error() {
     )
     .unwrap_err();
     assert!(format!("{err:#}").contains("connect"));
+}
+
+/// Records what the client hands to a presenter.
+#[derive(Default)]
+struct Seen {
+    frames: u64,
+    pictures: u64,
+    overlays: Vec<String>,
+}
+
+struct Recording(Arc<Mutex<Seen>>);
+
+impl Presenter for Recording {
+    fn wants(&self) -> Option<PictureKind> {
+        Some(PictureKind::Nv12)
+    }
+
+    fn present(&mut self, _: &DecodedFrame, picture: Option<&Picture<'_>>) -> Result<(), String> {
+        let mut s = self.0.lock().unwrap();
+        s.frames += 1;
+        s.pictures += u64::from(picture.is_some());
+        Ok(())
+    }
+
+    fn overlay(&mut self, lines: &[String]) {
+        self.0
+            .lock()
+            .unwrap()
+            .overlays
+            .extend(lines.iter().cloned());
+    }
+}
+
+fn client_with(host: &FakeHost, secs: f32, factory: PresenterFactory) -> RunSummary {
+    run_with(
+        ClientConfig {
+            host: host.addr.clone(),
+            duration: Some(Duration::from_secs_f32(secs)),
+            host_timeout: Duration::from_millis(600),
+            ..ClientConfig::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+        factory,
+    )
+    .unwrap()
+}
+
+#[test]
+fn presenter_gets_frames_and_the_overlay() {
+    let host = FakeHost::start(Script::default());
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let s2 = seen.clone();
+    let s = client_with(
+        &host,
+        2.2,
+        Box::new(move || Ok(Box::new(Recording(s2)) as Box<dyn Presenter>)),
+    );
+    host.finish();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.frames, s.frames_presented);
+    assert!(seen.frames >= 60, "{s:?}");
+    // Synthetic frames have no picture to show.
+    assert_eq!(seen.pictures, 0);
+    assert!(
+        seen.overlays
+            .iter()
+            .any(|l| l.starts_with("Glass-to-Glass")),
+        "{:?}",
+        seen.overlays
+    );
+}
+
+#[test]
+fn failing_window_falls_back_to_headless() {
+    let host = FakeHost::start(Script::default());
+    let s = client_with(&host, 1.0, Box::new(|| Err("no display".into())));
+    host.finish();
+    assert!(s.frames_presented > 0, "{s:?}");
 }

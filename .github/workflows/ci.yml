@@ -57,6 +57,15 @@ jobs:
       # KMS capture: selection logic and error paths (capturing itself
       # needs a monitor and CAP_SYS_ADMIN, see docs/kms-capture.md).
       - run: cargo test -p fernsicht-capture -p fernsicht-host-agent --features fernsicht-capture/kms,fernsicht-host-agent/kms
+      # Vulkan renderer on the software rasterizer (llvmpipe): NV12 → RGB,
+      # letterboxing, error paths. REQUIRE makes a missing driver a failure
+      # instead of a silent skip.
+      - name: Software Vulkan (llvmpipe)
+        run: sudo apt-get install -y -q mesa-vulkan-drivers
+      - run: cargo test -p fernsicht-render --features vulkan
+        env:
+          FERNSICHT_REQUIRE_VULKAN: "1"
+          FERNSICHT_VULKAN_DEVICE: llvmpipe
 
   rust-e2e:
     name: Rust · end-to-end (impaired network, binaries)

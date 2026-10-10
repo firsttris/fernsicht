@@ -25,7 +25,7 @@ use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
-use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder};
+use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
 
 /// Render node used when none is given.
 pub const DEFAULT_RENDER_NODE: &str = "/dev/dri/renderD128";
@@ -287,6 +287,12 @@ impl VaapiEncoder {
             (*c).rc_buffer_size = (bitrate / i64::from(fps)) as c_int;
             (*c).flags |= (ffi::AV_CODEC_FLAG_LOW_DELAY | ffi::AV_CODEC_FLAG_CLOSED_GOP) as c_int;
             (*c).thread_count = 1;
+            // Written into the stream (VUI), so decoders and players convert
+            // back to RGB the way scale_vaapi converted to YCbCr.
+            (*c).color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+            (*c).colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
+            (*c).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+            (*c).color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
 
             let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
             for (k, v) in [
@@ -852,46 +858,67 @@ pub fn upload_as_dmabuf(
             check("get surface", ffi::av_hwframe_get_buffer(frames, hw, 0))?;
             check("upload RGB", ffi::av_hwframe_transfer_data(hw, sw, 0))?;
 
-            (*drm).format = ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as c_int;
-            check(
-                "export surface as DMA-BUF",
-                ffi::av_hwframe_map(drm, hw, ffi::AV_HWFRAME_MAP_READ as c_int),
-            )?;
-            let desc = &*((*drm).data[0] as *const ffi::AVDRMFrameDescriptor);
-            // The export closes its descriptors when unmapped; keep copies.
-            let objects = desc.objects[..desc.nb_objects as usize]
-                .iter()
-                .map(|o| {
-                    BorrowedFd::borrow_raw(o.fd)
-                        .try_clone_to_owned()
-                        .map(Arc::new)
-                        .map_err(|e| CodecError::Backend(format!("dup DMA-BUF: {e}")))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut planes = Vec::new();
-            for layer in &desc.layers[..desc.nb_layers as usize] {
-                for p in &layer.planes[..layer.nb_planes as usize] {
-                    planes.push(DmaBufPlane {
-                        object: p.object_index as usize,
-                        offset: p.offset as u32,
-                        pitch: p.pitch as u32,
-                    });
-                }
-            }
-            Ok(DmaBuf {
-                width,
-                height,
-                fourcc,
-                modifier: desc.objects[0].format_modifier,
-                objects,
-                planes,
-            })
+            export_surface(hw, drm, fourcc)
         })();
         ffi::av_frame_free(&mut drm);
         ffi::av_frame_free(&mut hw);
         ffi::av_frame_free(&mut sw);
         ffi::av_buffer_unref(&mut frames);
         result
+    }
+}
+
+/// Exports the VAAPI surface in `hw` as a DMA-BUF labelled `fourcc`, using
+/// `drm` as scratch. The descriptors are duplicated, so the result outlives
+/// the mapping.
+///
+/// # Safety
+/// `hw` holds a VAAPI surface, `drm` is an allocated (empty) frame.
+unsafe fn export_surface(
+    hw: *const ffi::AVFrame,
+    drm: *mut ffi::AVFrame,
+    fourcc: u32,
+) -> Result<DmaBuf, CodecError> {
+    // SAFETY: per the contract; the mapping is undone before returning.
+    unsafe {
+        ffi::av_frame_unref(drm);
+        (*drm).format = ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as c_int;
+        check(
+            "export surface as DMA-BUF",
+            ffi::av_hwframe_map(drm, hw, ffi::AV_HWFRAME_MAP_READ as c_int),
+        )?;
+        let desc = &*((*drm).data[0] as *const ffi::AVDRMFrameDescriptor);
+        // The mapping closes its descriptors when undone; keep copies.
+        let objects = desc.objects[..desc.nb_objects as usize]
+            .iter()
+            .map(|o| {
+                BorrowedFd::borrow_raw(o.fd)
+                    .try_clone_to_owned()
+                    .map(Arc::new)
+                    .map_err(|e| CodecError::Backend(format!("dup DMA-BUF: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let mut planes = Vec::new();
+        for layer in &desc.layers[..desc.nb_layers as usize] {
+            for p in &layer.planes[..layer.nb_planes as usize] {
+                planes.push(DmaBufPlane {
+                    object: p.object_index as usize,
+                    offset: p.offset as u32,
+                    pitch: p.pitch as u32,
+                });
+            }
+        }
+        let modifier = desc.objects[0].format_modifier;
+        let (width, height) = ((*hw).width as u32, (*hw).height as u32);
+        ffi::av_frame_unref(drm);
+        Ok(DmaBuf {
+            width,
+            height,
+            fourcc,
+            modifier,
+            objects: objects?,
+            planes,
+        })
     }
 }
 
@@ -923,10 +950,22 @@ pub struct VaapiDecoder {
     sw: *mut ffi::AVFrame,
     pkt: *mut ffi::AVPacket,
     decoded: u64,
+    /// Scratch frame for exports.
+    drm: *mut ffi::AVFrame,
+    /// Surfaces exported as DMA-BUF so far, by VA surface id. The decoder
+    /// cycles through a fixed pool, so each is exported once.
+    exported: std::collections::HashMap<ffi::VASurfaceID, DmaBuf>,
+    /// Distinguishes this decoder's surfaces from an earlier one's in
+    /// [`Picture::DmaBuf`] keys.
+    id: u64,
+    /// The last downloaded picture (CPU NV12).
+    nv12: Vec<u8>,
 }
 
 // SAFETY: as for VaapiEncoder.
 unsafe impl Send for VaapiDecoder {}
+
+static NEXT_DECODER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl VaapiDecoder {
     pub fn new(render_node: &str) -> Result<Self, CodecError> {
@@ -944,6 +983,10 @@ impl VaapiDecoder {
                 sw: ffi::av_frame_alloc(),
                 pkt: ffi::av_packet_alloc(),
                 decoded: 0,
+                drm: ffi::av_frame_alloc(),
+                exported: Default::default(),
+                id: NEXT_DECODER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                nv12: Vec::new(),
                 _device: device,
             };
             if dec.ctx.is_null()
@@ -951,6 +994,7 @@ impl VaapiDecoder {
                 || dec.recv.is_null()
                 || dec.sw.is_null()
                 || dec.pkt.is_null()
+                || dec.drm.is_null()
             {
                 return Err(CodecError::Backend("out of memory".into()));
             }
@@ -969,7 +1013,23 @@ impl VaapiDecoder {
 
     /// Downloads the last decoded frame as tightly packed NV12 (tests and
     /// diagnostics; the client presents the VAAPI surface directly).
+    /// Whether the stream says its last frame is BT.709 limited range,
+    /// what the encoder writes and the renderer assumes.
+    pub fn last_frame_is_bt709_limited(&self) -> bool {
+        // SAFETY: frame is a valid (possibly empty) AVFrame.
+        let f = unsafe { &*self.frame };
+        f.color_range == ffi::AVColorRange::AVCOL_RANGE_MPEG
+            && f.colorspace == ffi::AVColorSpace::AVCOL_SPC_BT709
+    }
+
     pub fn last_frame_nv12(&mut self) -> Result<Vec<u8>, CodecError> {
+        let mut out = Vec::new();
+        self.download_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Downloads the last decoded frame as tightly packed NV12 into `out`.
+    fn download_into(&mut self, out: &mut Vec<u8>) -> Result<(), CodecError> {
         // SAFETY: frame holds the last decoded VAAPI surface (or nothing,
         // in which case the transfer fails cleanly).
         unsafe {
@@ -981,7 +1041,8 @@ impl VaapiDecoder {
             )?;
             let sw = &*self.sw;
             let (w, h) = (sw.width as usize, sw.height as usize);
-            let mut out = Vec::with_capacity(w * h * 3 / 2);
+            out.clear();
+            out.reserve(w * h * 3 / 2);
             for row in 0..h {
                 let src = sw.data[0].add(row * sw.linesize[0] as usize);
                 out.extend_from_slice(std::slice::from_raw_parts(src, w));
@@ -990,7 +1051,7 @@ impl VaapiDecoder {
                 let src = sw.data[1].add(row * sw.linesize[1] as usize);
                 out.extend_from_slice(std::slice::from_raw_parts(src, w));
             }
-            Ok(out)
+            Ok(())
         }
     }
 }
@@ -1049,6 +1110,47 @@ impl Decoder for VaapiDecoder {
         }
         Ok(())
     }
+
+    fn picture(&mut self, prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
+        // SAFETY: frame is a valid AVFrame; data[3] is its surface id when
+        // it holds a decoded VAAPI frame.
+        let (surface, width, height) = unsafe {
+            let f = &*self.frame;
+            if f.format != ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int {
+                return Ok(None);
+            }
+            (
+                f.data[3] as usize as ffi::VASurfaceID,
+                f.width as u32,
+                f.height as u32,
+            )
+        };
+        match prefer {
+            PictureKind::DmaBuf => {
+                if !self.exported.contains_key(&surface) {
+                    // SAFETY: frame holds a VAAPI surface, drm is ours.
+                    let image = unsafe { export_surface(self.frame, self.drm, formats::NV12)? };
+                    self.exported.insert(surface, image);
+                }
+                let image = &self.exported[&surface];
+                Ok(Some(Picture::DmaBuf {
+                    image,
+                    key: self.id << 32 | u64::from(surface),
+                }))
+            }
+            PictureKind::Nv12 => {
+                let mut buf = std::mem::take(&mut self.nv12);
+                let r = self.download_into(&mut buf);
+                self.nv12 = buf;
+                r?;
+                Ok(Some(Picture::Nv12 {
+                    width,
+                    height,
+                    data: &self.nv12,
+                }))
+            }
+        }
+    }
 }
 
 impl Drop for VaapiDecoder {
@@ -1059,6 +1161,7 @@ impl Drop for VaapiDecoder {
             ffi::av_frame_free(&mut self.frame);
             ffi::av_frame_free(&mut self.recv);
             ffi::av_frame_free(&mut self.sw);
+            ffi::av_frame_free(&mut self.drm);
             ffi::av_packet_free(&mut self.pkt);
         }
     }

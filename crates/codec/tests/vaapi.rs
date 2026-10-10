@@ -370,6 +370,10 @@ fn dmabuf_zero_copy_bt709_and_latency() {
         dec.decode(&out.data, &mut d).unwrap();
     }
     assert_eq!((d.width, d.height), (w as u32, h as u32));
+    assert!(
+        dec.last_frame_is_bt709_limited(),
+        "the stream must say BT.709 limited range"
+    );
     let nv12 = dec.last_frame_nv12().unwrap();
     assert_patch_colours(&nv12, w, h);
 

@@ -13,7 +13,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | 1 – Hot Path im LAN | Paketformat, FEC, Pacing, UDP, Slots, Threads | ✅ Transport fertig und getestet (inkl. 1 % Verlust ohne verlorenen Frame) |
 | | VAAPI H.264 Encode/Decode | ✅ läuft auf dem AMD-Runner durch die ganze Pipeline: glass-to-glass ohne Bildschirm ≈ 10 ms (1080p60, Debug-Build) |
 | | KMS-Capture → DMA-BUF → VAAPI ohne Kopie | ✅ implementiert; Import und GPU-Farbkonvertierung in CI getestet, KMS selbst von Hand ([Anleitung](docs/kms-capture.md)) |
-| | Vulkan-Fenster, NVENC, PipeWire-Capture | ⏳ offen |
+| | Client-Fenster (Vulkan, winit) | ✅ VAAPI-Bild ohne Kopie in Vulkan (0,15 ms für Umrechnen + Zeichnen bei 1080p), Mailbox-Present, CPU-Rückfallweg; Render-Tests im CI mit llvmpipe |
+| | NVENC, PipeWire-Capture | ⏳ offen |
 | 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
@@ -40,8 +41,10 @@ cargo build --release
 # Echtes H.264 vom Monitor (AMD/Intel, als root: docs/kms-capture.md)
 cargo build --release -p fernsicht-host-agent --features vaapi,kms
 sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi
-cargo build --release -p fernsicht-client --features vaapi
-./target/release/fernsicht-client <host-ip>:47800 --record ~/test.h264
+cargo build --release -p fernsicht-client --features vaapi,window
+./target/release/fernsicht-client <host-ip>:47800   # Fenster: Esc schließt, F11 Vollbild
+# ohne Fenster, Video in eine Datei (ffplay -framerate 60 ~/test.h264)
+./target/release/fernsicht-client <host-ip>:47800 --headless --record ~/test.h264
 ```
 
 Der Client gibt jede Sekunde das Latenz-Overlay aus:
@@ -140,12 +143,12 @@ sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
 
 ## Nächste Schritte (Phase 1)
 
-1. KMS-Capture auf dem AMD-Rechner von Hand prüfen ([Anleitung](docs/kms-capture.md)).
-2. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
-3. Client: Decode → Vulkan-Textur → `winit`-Fenster (Mailbox/Immediate).
-4. NVENC für die GTX 1080 (DMA-BUF → CUDA), danach PipeWire-Portal als
-   zweites Capture-Backend.
-5. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.
+1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
+2. Decode auf NVIDIA (GTX 1080 als Client): Vulkan Video oder NVDEC,
+   danach NVENC als Encoder (DMA-BUF → CUDA).
+3. Mauszeiger (Cursor-Plane) ins Bild, PipeWire-Portal als zweites
+   Capture-Backend.
+4. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.
 
 ## Offene Entscheidungen
 

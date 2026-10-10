@@ -44,26 +44,30 @@ In der Ausgabe steht, welcher Monitor erfasst wird, z. B.
 `capturing 2560×1440 over KMS (Selection { plane: 71, crtc: 80, pipe: 1 })`.
 Diese Zeile kommt erst, wenn sich ein Client verbindet.
 
-**Terminal 2 – Client mit Aufnahme**
+**Terminal 2 – Client**
 
 ```sh
 distrobox enter fernsicht
 cd ~/fernsicht
-cargo build --release -p fernsicht-client --features vaapi
-./target/release/fernsicht-client 127.0.0.1:47800 --duration 10 --record ~/fernsicht-test.h264
+cargo build --release -p fernsicht-client --features vaapi,window
+./target/release/fernsicht-client 127.0.0.1:47800
 ```
 
-Der Client zeigt jede Sekunde das Latenz-Overlay. Danach liegt in
-`~/fernsicht-test.h264` das, was über die Leitung ging:
+Es öffnet sich ein Fenster mit dem Bild, im Titel steht die Latenz. Esc
+schließt es, F11 schaltet auf Vollbild. Auf demselben Rechner zeigt das
+Fenster den Bildschirm, auf dem es selbst liegt: ein Spiegel im Spiegel.
+Das ist erwartet.
+
+Ohne Fenster, mit Aufnahme in eine Datei:
 
 ```sh
-ffplay ~/fernsicht-test.h264     # in der Box
-# oder auf dem Host: mpv/VLC mit der Datei öffnen
+./target/release/fernsicht-client 127.0.0.1:47800 --headless --duration 10 --record ~/fernsicht-test.h264
+ffplay -framerate 60 ~/fernsicht-test.h264
 ```
 
 Von einem zweiten Rechner aus geht es genauso, statt `127.0.0.1` die IP des
-AMD-Rechners. Der Client dekodiert aber noch per VAAPI. Auf dem
-NVIDIA-Rechner geht das erst mit dem Vulkan-Client.
+AMD-Rechners. Der Client dekodiert noch per VAAPI. Auf dem NVIDIA-Rechner
+fehlt dafür noch ein Decoder (Vulkan Video oder NVDEC).
 
 ## Optionen
 

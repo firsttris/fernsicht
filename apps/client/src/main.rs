@@ -6,7 +6,9 @@ use clap::Parser;
 use fernsicht_client::{ClientConfig, run};
 use fernsicht_render::overlay::ms;
 
-/// Fernsicht client (phase 1: headless, prints the latency overlay).
+/// Fernsicht client: shows the host's screen in a window (build feature
+/// "window"; Esc closes, F11 toggles fullscreen) and prints the latency
+/// overlay.
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
@@ -33,6 +35,9 @@ struct Args {
     /// Save the received video to this file (H.264: `ffplay file.h264`).
     #[arg(long)]
     record: Option<std::path::PathBuf>,
+    /// No window: decode only and print the overlay.
+    #[arg(long)]
+    headless: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -51,7 +56,19 @@ fn main() -> anyhow::Result<()> {
         record: args.record,
         ..ClientConfig::default()
     };
-    let s = run(cfg, Arc::new(AtomicBool::new(false)))?;
+    let s = if args.headless || !cfg!(feature = "window") {
+        if !args.headless {
+            log::info!("built without the \"window\" feature: running headless");
+        }
+        run(cfg, Arc::new(AtomicBool::new(false)))?
+    } else {
+        #[cfg(feature = "window")]
+        {
+            window::run(cfg)?
+        }
+        #[cfg(not(feature = "window"))]
+        unreachable!()
+    };
     println!();
     println!("── Zusammenfassung ──");
     println!(
@@ -86,4 +103,122 @@ fn main() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(feature = "window")]
+mod window {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread::JoinHandle;
+
+    use fernsicht_client::{ClientConfig, PresenterFactory, RunSummary, run_with};
+    use fernsicht_render::Presenter;
+    use fernsicht_render::vulkan::window::WindowPresenter;
+    use winit::application::ApplicationHandler;
+    use winit::dpi::LogicalSize;
+    use winit::event::{ElementState, KeyEvent, WindowEvent};
+    use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+    use winit::keyboard::{Key, NamedKey};
+    use winit::window::{Fullscreen, Window, WindowId};
+
+    /// The client thread has ended (duration over, host gone, error).
+    struct Done;
+
+    struct App {
+        cfg: Option<ClientConfig>,
+        stop: Arc<AtomicBool>,
+        proxy: EventLoopProxy<Done>,
+        window: Option<Arc<Window>>,
+        client: Option<JoinHandle<anyhow::Result<RunSummary>>>,
+        error: Option<anyhow::Error>,
+    }
+
+    impl App {
+        fn close(&mut self, event_loop: &ActiveEventLoop) {
+            self.stop.store(true, Ordering::Relaxed);
+            event_loop.exit();
+        }
+    }
+
+    impl ApplicationHandler<Done> for App {
+        fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            let Some(cfg) = self.cfg.take() else { return };
+            let title = format!("Fernsicht – {}", cfg.host);
+            let attrs = Window::default_attributes()
+                .with_title(&title)
+                .with_inner_size(LogicalSize::new(1280.0, 720.0));
+            let window = match event_loop.create_window(attrs) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    self.error = Some(anyhow::anyhow!("create window: {e}"));
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let for_presenter = window.clone();
+            let factory: PresenterFactory = Box::new(move || {
+                WindowPresenter::new(for_presenter, &title)
+                    .map(|p| Box::new(p) as Box<dyn Presenter>)
+            });
+            let (stop, proxy) = (self.stop.clone(), self.proxy.clone());
+            self.client = Some(std::thread::spawn(move || {
+                let r = run_with(cfg, stop, factory);
+                let _ = proxy.send_event(Done);
+                r
+            }));
+            self.window = Some(window);
+        }
+
+        fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+            match event {
+                WindowEvent::CloseRequested => self.close(event_loop),
+                WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            logical_key: Key::Named(key),
+                            state: ElementState::Pressed,
+                            repeat: false,
+                            ..
+                        },
+                    ..
+                } => match key {
+                    NamedKey::Escape => self.close(event_loop),
+                    NamedKey::F11 => {
+                        if let Some(w) = &self.window {
+                            let full = w.fullscreen().is_some();
+                            w.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        fn user_event(&mut self, event_loop: &ActiveEventLoop, _: Done) {
+            event_loop.exit();
+        }
+    }
+
+    pub fn run(cfg: ClientConfig) -> anyhow::Result<RunSummary> {
+        let event_loop = EventLoop::<Done>::with_user_event().build()?;
+        let mut app = App {
+            cfg: Some(cfg),
+            stop: Arc::new(AtomicBool::new(false)),
+            proxy: event_loop.create_proxy(),
+            window: None,
+            client: None,
+            error: None,
+        };
+        event_loop.run_app(&mut app)?;
+        app.stop.store(true, Ordering::Relaxed);
+        if let Some(e) = app.error {
+            return Err(e);
+        }
+        let client = app
+            .client
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("no window was opened"))?;
+        client.join().expect("client thread panicked")
+    }
 }

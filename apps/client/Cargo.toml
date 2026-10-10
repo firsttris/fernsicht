@@ -13,6 +13,9 @@ path = "src/main.rs"
 [features]
 # Hardware H.264 over VAAPI (AMD, Intel); needs FFmpeg/libva headers.
 vaapi = ["fernsicht-codec/vaapi"]
+# The video window (Vulkan via ash, winit); without it the client is
+# headless and prints the overlay only.
+window = ["fernsicht-render/window", "dep:winit"]
 
 [dependencies]
 anyhow.workspace = true
@@ -25,6 +28,7 @@ fernsicht-net.workspace = true
 fernsicht-proto.workspace = true
 fernsicht-render.workspace = true
 log.workspace = true
+winit = { workspace = true, optional = true }
 
 [dev-dependencies]
 fernsicht-capture.workspace = true

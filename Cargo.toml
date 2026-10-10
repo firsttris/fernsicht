@@ -24,16 +24,21 @@ fernsicht-host-agent = { path = "apps/host-agent" }
 fernsicht-client = { path = "apps/client" }
 
 anyhow = "1"
+ash = "0.38"
+ash-window = "0.13"
 clap = { version = "4", features = ["derive"] }
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format"] }
 crossbeam-channel = "0.5"
 drm = "0.15"
 libc = "0.2"
 log = "0.4"
+naga = { version = "30", features = ["wgsl-in", "spv-out"] }
+raw-window-handle = "0.6"
 env_logger = "0.11"
 reed-solomon-simd = "3.1"
 socket2 = "0.6"
 thiserror = "2"
+winit = "0.30"
 
 # test-only
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

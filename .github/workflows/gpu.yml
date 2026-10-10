@@ -48,6 +48,16 @@ jobs:
         run: dev/gpu-check.sh --expect ${{ matrix.gpu }} --summary "$GITHUB_STEP_SUMMARY"
       - name: Tests on this machine
         run: cargo test --workspace --exclude fernsicht-e2e
+      # AMD: decoded pictures shown without a copy (DMA-BUF import);
+      # NVIDIA: the CPU upload path on the proprietary driver.
+      - name: Vulkan renderer on this GPU
+        env:
+          FERNSICHT_GPU: ${{ matrix.gpu }}
+          FERNSICHT_REQUIRE_VULKAN: "1"
+        run: >
+          cargo test -p fernsicht-render
+          --features "vulkan${{ matrix.gpu == 'amd' && ',vaapi' || '' }}"
+          --test vulkan -- --test-threads=1 --nocapture
       - name: VAAPI encode/decode on the GPU
         if: matrix.gpu == 'amd'
         env:

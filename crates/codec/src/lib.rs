@@ -13,7 +13,7 @@ pub mod synthetic;
 #[cfg(feature = "vaapi")]
 pub mod vaapi;
 
-use fernsicht_capture::Frame;
+use fernsicht_capture::{DmaBuf, Frame};
 use fernsicht_proto::Codec;
 use thiserror::Error;
 
@@ -63,6 +63,36 @@ pub trait Encoder: Send {
     fn set_bitrate(&mut self, kbps: u32);
 }
 
+/// The picture of the last decoded frame, for the presenter.
+#[derive(Debug)]
+pub enum Picture<'a> {
+    /// Tightly packed NV12 in CPU memory (BT.709, limited range).
+    Nv12 {
+        width: u32,
+        height: u32,
+        data: &'a [u8],
+    },
+    /// NV12 on the GPU (fourcc `NV12`, plane 0 Y, plane 1 interleaved UV).
+    /// `key` stays the same for the same underlying surface, so presenters
+    /// can keep the import instead of repeating it every frame.
+    DmaBuf { image: &'a DmaBuf, key: u64 },
+}
+
 pub trait Decoder: Send {
     fn decode(&mut self, data: &[u8], out: &mut DecodedFrame) -> Result<(), CodecError>;
+
+    /// The picture of the last decoded frame. `None` for codecs without
+    /// real pictures (synthetic). Valid until the next `decode`.
+    fn picture(&mut self, _prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
+        Ok(None)
+    }
+}
+
+/// Which form of [`Picture`] the presenter would like.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PictureKind {
+    /// GPU memory, no copy (falls back to CPU where impossible).
+    DmaBuf,
+    /// CPU memory (a download from the GPU).
+    Nv12,
 }
