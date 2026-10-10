@@ -1,60 +1,54 @@
-//! Input events and their injection on the host.
+//! Input events from the client, and their injection on the host.
 //!
-//! Phase 2 adds the backends: uinput (virtual mouse, keyboard and gamepads
-//! at kernel level, works under every compositor) for gaming and unattended
-//! use, libei / the RemoteDesktop portal for desktop mode. Events are sent
-//! 2–3× redundantly; `seq` lets the host drop duplicates.
+//! - [`InputQueue`] (client): events waiting for the host's acknowledgement;
+//!   every packet carries all of them, so a lost packet costs nothing.
+//! - [`Dedup`] (host): applies each sequence number once.
+//! - [`uinput`] (feature `uinput`, host): virtual keyboard and mice at
+//!   kernel level; works under every compositor and on the login screen.
+//! - [`Recorder`]: a sink that only records, for tests.
 
-/// Mouse buttons as Linux input event codes (`BTN_*`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MouseButton {
-    Left = 0x110,
-    Right = 0x111,
-    Middle = 0x112,
-    Side = 0x113,
-    Extra = 0x114,
+mod queue;
+#[cfg(feature = "uinput")]
+pub mod uinput;
+
+use std::sync::{Arc, Mutex};
+
+pub use fernsicht_proto::InputEvent;
+pub use queue::InputQueue;
+
+/// Linux button codes for the mouse buttons.
+pub mod buttons {
+    pub const LEFT: u16 = 0x110;
+    pub const RIGHT: u16 = 0x111;
+    pub const MIDDLE: u16 = 0x112;
+    pub const SIDE: u16 = 0x113;
+    pub const EXTRA: u16 = 0x114;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum InputEvent {
-    /// Desktop mode: absolute position, normalized to 0.0–1.0.
-    MouseAbsolute {
-        x: f32,
-        y: f32,
-    },
-    /// Gaming mode (pointer lock): relative motion in pixels.
-    MouseRelative {
-        dx: i32,
-        dy: i32,
-    },
-    MouseButton {
-        button: MouseButton,
-        pressed: bool,
-    },
-    /// High-resolution wheel, 120 units per notch.
-    Scroll {
-        dx: i32,
-        dy: i32,
-    },
-    /// Linux key code (`KEY_*`), layout-independent.
-    Key {
-        code: u16,
-        pressed: bool,
-    },
-}
-
-/// An event with its sequence number for duplicate suppression.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SequencedEvent {
-    pub seq: u32,
-    pub event: InputEvent,
-}
-
+/// Where input events end up on the host.
 pub trait InputSink: Send {
     fn inject(&mut self, event: &InputEvent) -> Result<(), String>;
+
+    /// Lets go of every key and button still held (session over, client
+    /// gone): nothing may stay pressed on the host.
+    fn release_all(&mut self);
 }
 
-/// Drops events whose sequence number was already seen (redundant sends).
+/// Records events instead of injecting them (tests, `--input record`).
+#[derive(Clone, Debug, Default)]
+pub struct Recorder(pub Arc<Mutex<Vec<InputEvent>>>);
+
+impl InputSink for Recorder {
+    fn inject(&mut self, event: &InputEvent) -> Result<(), String> {
+        self.0.lock().map_err(|e| e.to_string())?.push(*event);
+        Ok(())
+    }
+
+    fn release_all(&mut self) {}
+}
+
+/// Drops events whose sequence number was already applied (they come
+/// again until acknowledged).
 #[derive(Debug, Default)]
 pub struct Dedup {
     last: Option<u32>,
@@ -71,6 +65,11 @@ impl Dedup {
             }
         }
     }
+
+    /// The highest sequence number applied so far.
+    pub fn last(&self) -> Option<u32> {
+        self.last
+    }
 }
 
 #[cfg(test)]
@@ -80,14 +79,28 @@ mod tests {
     #[test]
     fn dedup_drops_repeats() {
         let mut d = Dedup::default();
+        assert_eq!(d.last(), None);
         assert!(d.accept(1));
         assert!(!d.accept(1));
         assert!(d.accept(2));
         assert!(!d.accept(1));
+        assert_eq!(d.last(), Some(2));
 
         let mut wrap = Dedup::default();
         assert!(wrap.accept(u32::MAX - 1));
         assert!(wrap.accept(1));
         assert!(!wrap.accept(u32::MAX));
+    }
+
+    #[test]
+    fn recorder_keeps_events() {
+        let mut r = Recorder::default();
+        r.inject(&InputEvent::Key {
+            code: 30,
+            pressed: true,
+        })
+        .unwrap();
+        r.release_all();
+        assert_eq!(r.0.lock().unwrap().len(), 1);
     }
 }

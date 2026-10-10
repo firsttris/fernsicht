@@ -64,10 +64,7 @@ pub fn spirv() -> Result<Vec<u32>, String> {
 /// Quad size in normalized device coordinates for a `src` picture shown
 /// as large as possible inside `dst` without distortion.
 pub fn letterbox(src: (u32, u32), dst: (u32, u32)) -> [f32; 2] {
-    let (sw, sh) = (src.0.max(1) as f32, src.1.max(1) as f32);
-    let (dw, dh) = (dst.0.max(1) as f32, dst.1.max(1) as f32);
-    let s = (dw / sw).min(dh / sh);
-    [sw * s / dw, sh * s / dh]
+    crate::letterbox_size(src, dst)
 }
 
 /// Where a frame is drawn.

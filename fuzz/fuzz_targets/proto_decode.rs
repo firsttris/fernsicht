@@ -2,7 +2,7 @@
 //! something that parses back to the same packet.
 #![no_main]
 
-use fernsicht_proto::{MAX_DATAGRAM, Packet, VideoHeader};
+use fernsicht_proto::{InputHeader, MAX_DATAGRAM, Packet, VideoHeader};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -24,6 +24,11 @@ fuzz_target!(|data: &[u8]| {
         Packet::Bye(p) => p.encode(&mut buf),
         Packet::Cursor(p) => p.encode(&mut buf),
         Packet::CursorShape(p, data) => p.encode(data, &mut buf),
+        Packet::Input(h, body) => {
+            let events: Vec<_> = InputHeader::events(body).collect();
+            InputHeader::encode(h.session_id, &events, &mut buf)
+        }
+        Packet::InputAck(p) => p.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

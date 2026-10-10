@@ -16,6 +16,7 @@ nvidia = ["fernsicht-host-agent/nvidia", "fernsicht-client/nvidia"]
 fernsicht-client.workspace = true
 fernsicht-core.workspace = true
 fernsicht-host-agent.workspace = true
+fernsicht-input.workspace = true
 fernsicht-net.workspace = true
 fernsicht-proto.workspace = true
 

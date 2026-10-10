@@ -39,6 +39,19 @@ impl<'a> Reader<'a> {
     pub(crate) fn rest(self) -> &'a [u8] {
         self.buf
     }
+
+    pub(crate) fn take_slice(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+        if self.buf.len() < n {
+            return Err(DecodeError::Truncated);
+        }
+        let (head, rest) = self.buf.split_at(n);
+        self.buf = rest;
+        Ok(head)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
 }
 
 /// Writes into a buffer whose length was checked by the caller; panics on

@@ -44,6 +44,8 @@ pub enum Kind {
     Bye = 7,
     Cursor = 8,
     CursorShape = 9,
+    Input = 10,
+    InputAck = 11,
 }
 
 impl Kind {
@@ -58,6 +60,8 @@ impl Kind {
             7 => Kind::Bye,
             8 => Kind::Cursor,
             9 => Kind::CursorShape,
+            10 => Kind::Input,
+            11 => Kind::InputAck,
             _ => return None,
         })
     }
@@ -547,6 +551,164 @@ impl CursorShape {
     }
 }
 
+/// Most input events in one [`Packet::Input`].
+pub const MAX_INPUT_EVENTS: usize = 64;
+
+/// Highest Linux key code (`KEY_MAX`).
+pub const KEY_MAX: u16 = 0x2ff;
+/// Mouse buttons are Linux codes `BTN_LEFT` (0x110) to `BTN_TASK` (0x117).
+pub const BTN_MOUSE_FIRST: u16 = 0x110;
+pub const BTN_MOUSE_LAST: u16 = 0x117;
+
+/// One input event from the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputEvent {
+    /// Pointer at a position on the streamed screen, 0..=65535 across its
+    /// width and height (desktop use).
+    MouseAbs { x: u16, y: u16 },
+    /// Pointer moved by this many pixels (games with the pointer captured).
+    MouseRel { dx: i32, dy: i32 },
+    /// Linux button code, `BTN_LEFT` ..= `BTN_TASK`.
+    Button { code: u16, pressed: bool },
+    /// Wheel, 120 units per notch (Linux hi-res wheel); positive = up/right.
+    Scroll { dx: i32, dy: i32 },
+    /// Linux key code (`KEY_*`): the physical key, layout-independent.
+    Key { code: u16, pressed: bool },
+}
+
+const INPUT_EVENT_LEN: usize = 16;
+const _: () = assert!(InputHeader::LEN + MAX_INPUT_EVENTS * INPUT_EVENT_LEN <= MAX_DATAGRAM);
+const FLAG_PRESSED: u8 = 0x01;
+
+impl InputEvent {
+    fn write(&self, seq: u32, w: &mut Writer<'_>) {
+        let (kind, flags, code, a, b) = match *self {
+            InputEvent::MouseAbs { x, y } => (1, 0, 0, i32::from(x), i32::from(y)),
+            InputEvent::MouseRel { dx, dy } => (2, 0, 0, dx, dy),
+            InputEvent::Button { code, pressed } => (3, u8::from(pressed), code, 0, 0),
+            InputEvent::Scroll { dx, dy } => (4, 0, 0, dx, dy),
+            InputEvent::Key { code, pressed } => (5, u8::from(pressed), code, 0, 0),
+        };
+        w.u32(seq);
+        w.u8(kind);
+        w.u8(flags);
+        w.u16(code);
+        w.u32(a as u32);
+        w.u32(b as u32);
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<(u32, Self), DecodeError> {
+        let seq = r.u32()?;
+        let kind = r.u8()?;
+        let flags = r.u8()?;
+        let code = r.u16()?;
+        let a = r.u32()? as i32;
+        let b = r.u32()? as i32;
+        let pressed = flags & FLAG_PRESSED != 0;
+        let event = match kind {
+            1 => InputEvent::MouseAbs {
+                x: u16::try_from(a).map_err(|_| DecodeError::Invalid("pointer x"))?,
+                y: u16::try_from(b).map_err(|_| DecodeError::Invalid("pointer y"))?,
+            },
+            2 => InputEvent::MouseRel { dx: a, dy: b },
+            3 if (BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&code) => {
+                InputEvent::Button { code, pressed }
+            }
+            3 => return Err(DecodeError::Invalid("mouse button code")),
+            4 => InputEvent::Scroll { dx: a, dy: b },
+            5 if (1..=KEY_MAX).contains(&code)
+                && !(BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&code) =>
+            {
+                InputEvent::Key { code, pressed }
+            }
+            5 => return Err(DecodeError::Invalid("key code")),
+            _ => return Err(DecodeError::Invalid("unknown input event")),
+        };
+        Ok((seq, event))
+    }
+}
+
+/// Input events, client → host. Every packet carries all events the host
+/// has not acknowledged yet ([`InputAck`]), oldest first, each with its
+/// sequence number, so a lost packet costs no key press; the host applies
+/// each sequence number once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputHeader {
+    pub session_id: u32,
+    pub count: u8,
+}
+
+impl InputHeader {
+    pub const LEN: usize = PREFIX_LEN + 5;
+
+    /// Encodes `events` (at most [`MAX_INPUT_EVENTS`]) into `buf`.
+    pub fn encode(session_id: u32, events: &[(u32, InputEvent)], buf: &mut [u8]) -> usize {
+        assert!(events.len() <= MAX_INPUT_EVENTS, "too many input events");
+        let len = Self::LEN + events.len() * INPUT_EVENT_LEN;
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Input, 0);
+        w.u32(session_id);
+        w.u8(events.len() as u8);
+        for (seq, e) in events {
+            e.write(*seq, &mut w);
+        }
+        len
+    }
+
+    /// The events of a packet that [`Packet::decode`] accepted.
+    pub fn events(body: &[u8]) -> impl Iterator<Item = (u32, InputEvent)> + '_ {
+        body.as_chunks::<INPUT_EVENT_LEN>()
+            .0
+            .iter()
+            .filter_map(|c| InputEvent::read(&mut Reader::new(c)).ok())
+    }
+
+    fn read<'a>(r: &mut Reader<'a>) -> Result<(Self, &'a [u8]), DecodeError> {
+        let h = InputHeader {
+            session_id: r.u32()?,
+            count: r.u8()?,
+        };
+        if h.count == 0 || usize::from(h.count) > MAX_INPUT_EVENTS {
+            return Err(DecodeError::Invalid("input event count"));
+        }
+        let body = r.take_slice(usize::from(h.count) * INPUT_EVENT_LEN)?;
+        // Check every event now, so iterating later cannot fail.
+        for c in body.as_chunks::<INPUT_EVENT_LEN>().0 {
+            InputEvent::read(&mut Reader::new(c))?;
+        }
+        if !r.is_empty() {
+            return Err(DecodeError::Invalid("trailing bytes after input events"));
+        }
+        Ok((h, body))
+    }
+}
+
+/// The highest input sequence number the host has applied, host → client.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputAck {
+    pub session_id: u32,
+    pub seq: u32,
+}
+
+impl InputAck {
+    pub const LEN: usize = PREFIX_LEN + 8;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::InputAck, 0);
+        w.u32(self.session_id);
+        w.u32(self.seq);
+        Self::LEN
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(InputAck {
+            session_id: r.u32()?,
+            seq: r.u32()?,
+        })
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -560,6 +722,9 @@ pub enum Packet<'a> {
     Cursor(Cursor),
     /// Header and this piece's bytes.
     CursorShape(CursorShape, &'a [u8]),
+    /// Header and the checked events; iterate with [`InputHeader::events`].
+    Input(InputHeader, &'a [u8]),
+    InputAck(InputAck),
 }
 
 impl<'a> Packet<'a> {
@@ -600,6 +765,11 @@ impl<'a> Packet<'a> {
                 }
                 Packet::CursorShape(s, data)
             }
+            Kind::Input => {
+                let (h, body) = InputHeader::read(&mut r)?;
+                Packet::Input(h, body)
+            }
+            Kind::InputAck => Packet::InputAck(InputAck::read(&mut r)?),
         })
     }
 }
@@ -833,6 +1003,117 @@ mod tests {
             let n = s.encode(&vec![0; len.min(CURSOR_CHUNK)], &mut buf);
             assert!(Packet::decode(&buf[..n]).is_err(), "{s:?} with {len} bytes");
         }
+    }
+
+    #[test]
+    fn input_roundtrips_in_order() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let events = [
+            (7, InputEvent::MouseAbs { x: 0, y: 65535 }),
+            (8, InputEvent::MouseRel { dx: -5, dy: 12 }),
+            (
+                9,
+                InputEvent::Button {
+                    code: 0x110,
+                    pressed: true,
+                },
+            ),
+            (10, InputEvent::Scroll { dx: 0, dy: -240 }),
+            (
+                11,
+                InputEvent::Key {
+                    code: 30,
+                    pressed: true,
+                },
+            ),
+            (
+                12,
+                InputEvent::Key {
+                    code: 30,
+                    pressed: false,
+                },
+            ),
+        ];
+        let n = InputHeader::encode(3, &events, &mut buf);
+        let Packet::Input(h, body) = Packet::decode(&buf[..n]).unwrap() else {
+            panic!("not input")
+        };
+        assert_eq!((h.session_id, h.count), (3, 6));
+        assert_eq!(InputHeader::events(body).collect::<Vec<_>>(), events);
+
+        let ack = InputAck {
+            session_id: 3,
+            seq: 12,
+        };
+        let n = ack.encode(&mut buf);
+        assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::InputAck(ack));
+
+        let full: Vec<_> = (0..MAX_INPUT_EVENTS as u32)
+            .map(|i| (i, InputEvent::MouseRel { dx: 1, dy: 1 }))
+            .collect();
+        let n = InputHeader::encode(1, &full, &mut buf);
+        assert!(n <= MAX_DATAGRAM);
+        assert!(Packet::decode(&buf[..n]).is_ok());
+    }
+
+    #[test]
+    fn bad_input_is_rejected() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let bad = [
+            InputEvent::Button {
+                code: 0x10f,
+                pressed: true,
+            },
+            InputEvent::Button {
+                code: 0x118,
+                pressed: true,
+            },
+            InputEvent::Key {
+                code: 0,
+                pressed: true,
+            },
+            InputEvent::Key {
+                code: KEY_MAX + 1,
+                pressed: true,
+            },
+            // A mouse button smuggled in as a key.
+            InputEvent::Key {
+                code: 0x110,
+                pressed: true,
+            },
+        ];
+        for e in bad {
+            let n = InputHeader::encode(1, &[(1, e)], &mut buf);
+            assert!(Packet::decode(&buf[..n]).is_err(), "{e:?}");
+        }
+        let n = InputHeader::encode(
+            1,
+            &[(
+                1,
+                InputEvent::Key {
+                    code: 30,
+                    pressed: true,
+                },
+            )],
+            &mut buf,
+        );
+        // Truncated, trailing bytes, zero events, too many, unknown kind.
+        assert!(Packet::decode(&buf[..n - 1]).is_err());
+        assert!(Packet::decode(&buf[..n + 1]).is_err());
+        let mut zero = buf[..n].to_vec();
+        zero[8] = 0;
+        assert!(Packet::decode(&zero[..InputHeader::LEN]).is_err());
+        let mut many = buf[..n].to_vec();
+        many[8] = (MAX_INPUT_EVENTS + 1) as u8;
+        assert!(Packet::decode(&many).is_err());
+        let mut unknown = buf[..n].to_vec();
+        unknown[InputHeader::LEN + 4] = 99;
+        assert!(Packet::decode(&unknown).is_err());
+        // Pointer coordinates beyond 16 bit.
+        let mut wide = buf[..n].to_vec();
+        wide[InputHeader::LEN + 4] = 1;
+        wide[InputHeader::LEN + 8..InputHeader::LEN + 12].copy_from_slice(&70_000u32.to_le_bytes());
+        assert!(Packet::decode(&wide).is_err());
     }
 
     #[test]

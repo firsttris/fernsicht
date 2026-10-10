@@ -24,8 +24,12 @@ use fernsicht_codec::{CodecError, DecodedFrame, Decoder};
 use fernsicht_core::latency::{FrameTimings, LatencyStats, Stage, Summary};
 use fernsicht_core::now_us;
 use fernsicht_core::thread::{HOT_NICE, raise_priority, spawn_hot};
+use fernsicht_input::InputQueue;
+pub use fernsicht_input::{InputEvent, buttons};
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
-use fernsicht_proto::{Bye, ClockPing, Codec, Feedback, Hello, MAX_DATAGRAM, Packet, VideoHeader};
+use fernsicht_proto::{
+    Bye, ClockPing, Codec, Feedback, Hello, InputHeader, MAX_DATAGRAM, Packet, VideoHeader,
+};
 use fernsicht_render::overlay::{self, StreamInfo};
 use fernsicht_render::{HeadlessPresenter, Presenter};
 
@@ -58,6 +62,8 @@ pub struct ClientConfig {
     pub render_node: String,
     /// Which hardware H.264 decoder to use.
     pub decoder: DecoderChoice,
+    /// Mouse and keyboard to send to the host; `None` = view only.
+    pub input: Option<Arc<InputHandle>>,
     /// Writes the received bitstream here (H.264 Annex B: plays with
     /// `ffplay` or `mpv`). Only frames the decoder gets are written.
     pub record: Option<std::path::PathBuf>,
@@ -78,9 +84,68 @@ impl Default for ClientConfig {
             host_timeout: Duration::from_secs(5),
             render_node: "/dev/dri/renderD128".into(),
             decoder: DecoderChoice::Auto,
+            input: None,
             record: None,
         }
     }
+}
+
+/// The window's side of input: events go in here, the network thread
+/// sends them reliably (resent until the host acknowledges).
+#[derive(Debug, Default)]
+pub struct InputHandle {
+    queue: Mutex<InputQueue>,
+    /// The streamed screen's size, once the host said it.
+    stream: Mutex<Option<(u32, u32)>>,
+}
+
+impl InputHandle {
+    pub fn push(&self, event: InputEvent) {
+        if let Ok(mut q) = self.queue.lock() {
+            q.push(event);
+        }
+    }
+
+    /// Lets go of every key and button held (window lost focus or closes).
+    pub fn release_all(&self) {
+        if let Ok(mut q) = self.queue.lock() {
+            q.release_all();
+        }
+    }
+
+    /// The pointer at `pos` in a window of `window` pixels, if it is on
+    /// the picture.
+    pub fn pointer_at(&self, pos: (f64, f64), window: (u32, u32)) -> Option<InputEvent> {
+        let stream = (*self.stream.lock().ok()?)?;
+        let (x, y) = window_to_stream(pos, window, stream)?;
+        Some(InputEvent::MouseAbs { x, y })
+    }
+
+    fn set_stream(&self, size: (u32, u32)) {
+        if let Ok(mut s) = self.stream.lock() {
+            *s = Some(size);
+        }
+    }
+}
+
+/// Where a window position falls on the stream (shown letterboxed in the
+/// window), as 0..=65535 each way; `None` on the black bars.
+pub fn window_to_stream(
+    pos: (f64, f64),
+    window: (u32, u32),
+    stream: (u32, u32),
+) -> Option<(u16, u16)> {
+    let [sx, sy] = fernsicht_render::letterbox_size(stream, window);
+    let (ww, wh) = (f64::from(window.0.max(1)), f64::from(window.1.max(1)));
+    // The picture's size and top-left corner in window pixels.
+    let (pw, ph) = (ww * f64::from(sx), wh * f64::from(sy));
+    let (left, top) = ((ww - pw) / 2.0, (wh - ph) / 2.0);
+    let (u, v) = ((pos.0 - left) / pw, (pos.1 - top) / ph);
+    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+        return None;
+    }
+    let q = |t: f64| (t * f64::from(u16::MAX)).round() as u16;
+    Some((q(u), q(v)))
 }
 
 /// Hardware decoder for H.264 streams.
@@ -374,6 +439,17 @@ fn network_loop(
         } else {
             Duration::from_millis(500)
         };
+        if let (Some((session_id, _)), Some(input)) = (session, &cfg.input) {
+            let due = input
+                .queue
+                .lock()
+                .ok()
+                .and_then(|mut q| q.due(Instant::now()));
+            if let Some(events) = due {
+                let n = InputHeader::encode(session_id, &events, &mut out);
+                let _ = socket.send(&out[..n]);
+            }
+        }
         if last_ping.is_none_or(|t| t.elapsed() >= ping_every) {
             let ping = ClockPing {
                 seq: ping_seq,
@@ -444,9 +520,20 @@ fn network_loop(
                     );
                 }
                 session = Some((ack.session_id, ack.codec));
+                if let Some(input) = &cfg.input {
+                    input.set_stream((u32::from(ack.width), u32::from(ack.height)));
+                }
             }
             Packet::ClockPong(pong) => {
                 clock.on_pong(&pong, now);
+            }
+            Packet::InputAck(a) => {
+                if session.is_some_and(|(id, _)| id == a.session_id)
+                    && let Some(input) = &cfg.input
+                    && let Ok(mut q) = input.queue.lock()
+                {
+                    q.ack(a.seq);
+                }
             }
             Packet::Cursor(c) => {
                 if session.is_some_and(|(id, _)| id == c.session_id)
@@ -740,6 +827,50 @@ fn present_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_positions_map_onto_the_stream() {
+        // Same aspect: corners are corners.
+        assert_eq!(
+            window_to_stream((0.0, 0.0), (1280, 720), (2560, 1440)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            window_to_stream((1280.0, 720.0), (1280, 720), (2560, 1440)),
+            Some((65535, 65535))
+        );
+        assert_eq!(
+            window_to_stream((640.0, 360.0), (1280, 720), (2560, 1440)),
+            Some((32768, 32768))
+        );
+        // 16:9 stream in a square window: bars above and below.
+        let sq = (1000, 1000);
+        assert_eq!(
+            window_to_stream((500.0, 100.0), sq, (1920, 1080)),
+            None,
+            "on the bar"
+        );
+        assert_eq!(
+            window_to_stream((500.0, 218.75), sq, (1920, 1080)),
+            Some((32768, 0))
+        );
+        assert_eq!(
+            window_to_stream((500.0, 781.25), sq, (1920, 1080)),
+            Some((32768, 65535))
+        );
+        assert_eq!(window_to_stream((-1.0, 500.0), sq, (1920, 1080)), None);
+    }
+
+    #[test]
+    fn the_input_handle_waits_for_the_stream_size() {
+        let h = InputHandle::default();
+        assert_eq!(h.pointer_at((10.0, 10.0), (100, 100)), None);
+        h.set_stream((100, 100));
+        assert!(matches!(
+            h.pointer_at((50.0, 50.0), (100, 100)),
+            Some(InputEvent::MouseAbs { .. })
+        ));
+    }
 
     #[test]
     fn ref_chain_needs_a_keyframe_first() {

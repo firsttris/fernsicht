@@ -17,7 +17,9 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | | NVIDIA: NVENC/NVDEC | ✅ Encoder und Decoder über FFmpeg/CUDA, getestet auf dem NVIDIA-Runner; Bilder gehen vorerst über die CPU (Bildschirmaufnahme auf NVIDIA fehlt noch) |
 | | Mauszeiger | ✅ eigene Pakete (Position pro Frame, Bild bei Änderung, Wiederholung gegen Verlust); der Client zeichnet ihn über das Video. KMS liest die Cursor-Plane, das Testbild hat einen kreisenden Pfeil |
 | | PipeWire-Capture | ⏳ offen |
-| 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
+| 2 – Steuerung | Maus und Tastatur | ✅ zuverlässig über UDP (Wiederholung bis zur Bestätigung, jedes Ereignis genau einmal, getestet bei 30 % Verlust), Host über `uinput` (`--input`, ohne root), absolute Zeigerposition auf den aufgenommenen Monitor umgerechnet (KDE-Monitoranordnung) |
+| | Ton, Gamepad, Zeigerfang für Spiele | ⏳ offen |
+| 3–5 | Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ offen |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
 Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem

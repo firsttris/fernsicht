@@ -65,6 +65,34 @@ AMD-Rechners. Auf dem NVIDIA-Rechner den Client mit NVDEC bauen
 (`--features nvidia,window`); er nimmt automatisch NVDEC, wenn VAAPI nicht
 geht.
 
+## Fernsteuern (Maus und Tastatur)
+
+Mit `--input` nimmt der Host Maus und Tastatur des Clients an:
+
+```sh
+sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi --input
+```
+
+**Achtung:** Es gibt noch keine Anmeldung. Solange `--input` an ist, kann
+jeder, der den Port 47800 erreicht, auf diesem Rechner tippen. Nur im
+eigenen Netz verwenden.
+
+Im Client-Fenster gehen Maus und alle Tasten an den Host, auch Esc und F11.
+Der Client selbst hört dann auf:
+
+| Tasten | Wirkung |
+|---|---|
+| Strg+Alt+Shift+Q | Client beenden |
+| Strg+Alt+Shift+F | Vollbild an/aus |
+
+Mit `--view-only` schickt der Client nichts; dann beenden Esc und F11 wie
+bisher. Verliert das Fenster den Fokus, lässt der Client alle Tasten los,
+damit am Host nichts hängen bleibt.
+
+Bei mehreren Monitoren liest der Host die Anordnung aus KDEs
+`~/.config/kwinoutputconfig.json`, damit der Zeiger auf dem gestreamten
+Monitor landet. In der Ausgabe steht `pointer input mapped to DP-1: …`.
+
 ## Optionen
 
 | Option | Bedeutung |

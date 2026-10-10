@@ -19,6 +19,7 @@ pub mod kms;
 mod test_pattern;
 
 pub use cursor::{CursorImage, CursorState};
+
 pub use dmabuf::{DmaBuf, DmaBufPlane};
 pub use test_pattern::TestPattern;
 
@@ -102,6 +103,15 @@ pub enum CaptureError {
     Backend(String),
 }
 
+/// The captured monitor, for mapping input onto it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenInfo {
+    /// Connector name as the kernel and compositors call it, e.g. `DP-1`.
+    pub connector: String,
+    /// All monitors that are on, captured or not.
+    pub active: Vec<String>,
+}
+
 pub trait FrameSource: Send {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
@@ -109,6 +119,11 @@ pub trait FrameSource: Send {
 
     /// Blocks until the next frame is available and writes it into `frame`.
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError>;
+
+    /// Which monitor is captured, if the source shows one.
+    fn screen(&self) -> Option<ScreenInfo> {
+        None
+    }
 
     /// A frame buffer matching this source.
     fn alloc_frame(&self) -> Frame {

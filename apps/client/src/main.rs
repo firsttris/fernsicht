@@ -40,6 +40,10 @@ struct Args {
     /// H.264 decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     decoder: DecoderArg,
+    /// Only watch: send no mouse or keyboard input (the host also needs
+    /// --input to accept it).
+    #[arg(long)]
+    view_only: bool,
     /// No window: decode only and print the overlay.
     #[arg(long)]
     headless: bool,
@@ -81,7 +85,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         #[cfg(feature = "window")]
         {
-            window::run(cfg)?
+            window::run(cfg, !args.view_only)?
         }
         #[cfg(not(feature = "window"))]
         unreachable!()
@@ -132,18 +136,24 @@ mod window {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::JoinHandle;
 
-    use fernsicht_client::{ClientConfig, PresenterFactory, RunSummary, run_with};
+    use fernsicht_client::{
+        ClientConfig, InputEvent, InputHandle, PresenterFactory, RunSummary, buttons, run_with,
+    };
     use fernsicht_render::Presenter;
     use fernsicht_render::vulkan::window::WindowPresenter;
     use winit::application::ApplicationHandler;
     use winit::dpi::LogicalSize;
-    use winit::event::{ElementState, KeyEvent, WindowEvent};
+    use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
     use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-    use winit::keyboard::{Key, NamedKey};
+    use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+    use winit::platform::scancode::PhysicalKeyExtScancode;
     use winit::window::{Fullscreen, Window, WindowId};
 
     /// The client thread has ended (duration over, host gone, error).
     struct Done;
+
+    /// Wheel units (120 per notch) per pixel of touchpad scrolling.
+    const WHEEL_PER_PIXEL: f64 = 8.0;
 
     struct App {
         cfg: Option<ClientConfig>,
@@ -152,12 +162,81 @@ mod window {
         window: Option<Arc<Window>>,
         client: Option<JoinHandle<anyhow::Result<RunSummary>>>,
         error: Option<anyhow::Error>,
+        /// Mouse and keyboard go to the host (not view-only).
+        input: Option<Arc<InputHandle>>,
+        modifiers: ModifiersState,
+        /// Fractions of wheel units from touchpads, carried over.
+        scroll_rest: (f64, f64),
+    }
+
+    fn mouse_button(b: MouseButton) -> Option<u16> {
+        Some(match b {
+            MouseButton::Left => buttons::LEFT,
+            MouseButton::Right => buttons::RIGHT,
+            MouseButton::Middle => buttons::MIDDLE,
+            MouseButton::Back => buttons::SIDE,
+            MouseButton::Forward => buttons::EXTRA,
+            MouseButton::Other(_) => return None,
+        })
     }
 
     impl App {
         fn close(&mut self, event_loop: &ActiveEventLoop) {
+            if let Some(input) = &self.input {
+                input.release_all();
+            }
             self.stop.store(true, Ordering::Relaxed);
             event_loop.exit();
+        }
+
+        fn toggle_fullscreen(&self) {
+            if let Some(w) = &self.window {
+                let full = w.fullscreen().is_some();
+                w.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
+            }
+        }
+
+        /// Client commands. With input going to the host, Esc and F11
+        /// belong to the host, so the client's own keys are
+        /// Ctrl+Alt+Shift+Q (quit) and Ctrl+Alt+Shift+F (fullscreen).
+        /// Returns whether the key was used here.
+        fn command(&mut self, event_loop: &ActiveEventLoop, key: &KeyEvent) -> bool {
+            if key.state != ElementState::Pressed || key.repeat {
+                return false;
+            }
+            let PhysicalKey::Code(code) = key.physical_key else {
+                return false;
+            };
+            let chord = self.modifiers.control_key()
+                && self.modifiers.alt_key()
+                && self.modifiers.shift_key();
+            match (self.input.is_some(), chord, code) {
+                (true, true, KeyCode::KeyQ) | (false, _, KeyCode::Escape) => {
+                    self.close(event_loop);
+                    true
+                }
+                (true, true, KeyCode::KeyF) | (false, _, KeyCode::F11) => {
+                    self.toggle_fullscreen();
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        fn scroll(&mut self, delta: MouseScrollDelta) -> InputEvent {
+            // winit: positive = content moves right/down. Linux wheels:
+            // positive = up and right. So y keeps its sign, x flips.
+            let (x, y) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => (f64::from(x) * 120.0, f64::from(y) * 120.0),
+                MouseScrollDelta::PixelDelta(p) => (p.x * WHEEL_PER_PIXEL, p.y * WHEEL_PER_PIXEL),
+            };
+            let (rx, ry) = (self.scroll_rest.0 - x, self.scroll_rest.1 + y);
+            let (dx, dy) = (rx.trunc(), ry.trunc());
+            self.scroll_rest = (rx - dx, ry - dy);
+            InputEvent::Scroll {
+                dx: dx as i32,
+                dy: dy as i32,
+            }
         }
     }
 
@@ -176,6 +255,14 @@ mod window {
                     return;
                 }
             };
+            if self.input.is_some() {
+                // The host's pointer is drawn in the picture instead.
+                window.set_cursor_visible(false);
+                log::info!(
+                    "mouse and keyboard go to the host; Ctrl+Alt+Shift+Q quits, \
+                     Ctrl+Alt+Shift+F toggles fullscreen"
+                );
+            }
             let for_presenter = window.clone();
             let factory: PresenterFactory = Box::new(move || {
                 WindowPresenter::new(for_presenter, &title)
@@ -193,25 +280,55 @@ mod window {
         fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
             match event {
                 WindowEvent::CloseRequested => self.close(event_loop),
-                WindowEvent::KeyboardInput {
-                    event:
-                        KeyEvent {
-                            logical_key: Key::Named(key),
-                            state: ElementState::Pressed,
-                            repeat: false,
-                            ..
-                        },
-                    ..
-                } => match key {
-                    NamedKey::Escape => self.close(event_loop),
-                    NamedKey::F11 => {
-                        if let Some(w) = &self.window {
-                            let full = w.fullscreen().is_some();
-                            w.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
+                WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+                WindowEvent::Focused(false) => {
+                    // Keys released while another window has the focus never
+                    // reach us: let go of everything now.
+                    if let Some(input) = &self.input {
+                        input.release_all();
+                    }
+                }
+                WindowEvent::KeyboardInput { event: key, .. } => {
+                    if self.command(event_loop, &key) {
+                        return;
+                    }
+                    if let Some(input) = &self.input
+                        && let Some(code) = key.physical_key.to_scancode()
+                        && let Ok(code) = u16::try_from(code)
+                        && (1..=fernsicht_proto::KEY_MAX).contains(&code)
+                    {
+                        input.push(InputEvent::Key {
+                            code,
+                            pressed: key.state == ElementState::Pressed,
+                        });
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    if let (Some(input), Some(w)) = (&self.input, &self.window) {
+                        let size = w.inner_size();
+                        if let Some(e) =
+                            input.pointer_at((position.x, position.y), (size.width, size.height))
+                        {
+                            input.push(e);
                         }
                     }
-                    _ => {}
-                },
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    if let (Some(input), Some(code)) = (&self.input, mouse_button(button)) {
+                        input.push(InputEvent::Button {
+                            code,
+                            pressed: state == ElementState::Pressed,
+                        });
+                    }
+                }
+                WindowEvent::MouseWheel { delta, .. } if self.input.is_some() => {
+                    let e = self.scroll(delta);
+                    if let (Some(input), InputEvent::Scroll { dx, dy }) = (&self.input, e)
+                        && (dx != 0 || dy != 0)
+                    {
+                        input.push(e);
+                    }
+                }
                 _ => {}
             }
         }
@@ -221,7 +338,9 @@ mod window {
         }
     }
 
-    pub fn run(cfg: ClientConfig) -> anyhow::Result<RunSummary> {
+    pub fn run(mut cfg: ClientConfig, send_input: bool) -> anyhow::Result<RunSummary> {
+        let input = send_input.then(|| Arc::new(InputHandle::default()));
+        cfg.input = input.clone();
         let event_loop = EventLoop::<Done>::with_user_event().build()?;
         let mut app = App {
             cfg: Some(cfg),
@@ -230,6 +349,9 @@ mod window {
             window: None,
             client: None,
             error: None,
+            input,
+            modifiers: ModifiersState::empty(),
+            scroll_rest: (0.0, 0.0),
         };
         event_loop.run_app(&mut app)?;
         app.stop.store(true, Ordering::Relaxed);

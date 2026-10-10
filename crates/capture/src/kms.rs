@@ -27,7 +27,7 @@ use drm::{ClientCapability, Device as _, VblankWaitFlags, VblankWaitTarget};
 use fernsicht_core::{clock, now_us};
 
 use crate::dmabuf::{DmaBuf, DmaBufPlane, formats};
-use crate::{CaptureError, CursorImage, CursorState, Frame, FrameSource, PixelFormat};
+use crate::{CaptureError, CursorImage, CursorState, Frame, FrameSource, PixelFormat, ScreenInfo};
 
 /// Part of the error message when the process lacks the capability.
 pub const NEEDS_CAP_SYS_ADMIN: &str = "KMS capture needs CAP_SYS_ADMIN";
@@ -139,6 +139,7 @@ pub struct KmsCapture {
     sel: Selection,
     /// The cursor plane of our CRTC, if the driver has one.
     cursor: Option<CursorPlane>,
+    screen: ScreenInfo,
     width: u32,
     height: u32,
     refresh: Duration,
@@ -182,6 +183,11 @@ impl KmsCapture {
         let card = Card(file);
         card.set_client_capability(ClientCapability::UniversalPlanes, true)
             .map_err(|e| backend("enable universal planes", e))?;
+        // Plane positions (CRTC_X/Y, for the pointer) are atomic-only
+        // properties: without this they read as absent.
+        if let Err(e) = card.set_client_capability(ClientCapability::Atomic, true) {
+            log::warn!("no atomic KMS ({e}): the pointer position is not reported");
+        }
         let res = card
             .resource_handles()
             .map_err(|e| backend("read KMS resources", e))?;
@@ -236,11 +242,24 @@ impl KmsCapture {
         let hz = refresh.get(&sel.crtc).copied().unwrap_or(60).max(1);
 
         let cursor = find_cursor_plane(&card, &res, sel.crtc);
+        let screen = ScreenInfo {
+            connector: crtcs
+                .iter()
+                .find(|c| c.id == sel.crtc)
+                .and_then(|c| c.connectors.first().cloned())
+                .unwrap_or_default(),
+            active: crtcs
+                .iter()
+                .filter(|c| c.active)
+                .flat_map(|c| c.connectors.iter().cloned())
+                .collect(),
+        };
         if cursor.is_none() {
             log::info!("no cursor plane for the captured display; the pointer is not reported");
         }
         let mut cap = Self {
             cursor,
+            screen,
             card,
             sel,
             width: 0,
@@ -605,6 +624,10 @@ impl FrameSource for KmsCapture {
 
     fn format(&self) -> PixelFormat {
         PixelFormat::Bgrx
+    }
+
+    fn screen(&self) -> Option<ScreenInfo> {
+        Some(self.screen.clone())
     }
 
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError> {

@@ -27,6 +27,7 @@ env_logger.workspace = true
 fernsicht-capture.workspace = true
 fernsicht-codec.workspace = true
 fernsicht-core.workspace = true
+fernsicht-input.workspace = true
 fernsicht-net.workspace = true
 fernsicht-proto.workspace = true
 fernsicht-render.workspace = true

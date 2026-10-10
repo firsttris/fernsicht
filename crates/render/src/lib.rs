@@ -51,6 +51,16 @@ pub trait Presenter {
     fn overlay(&mut self, _lines: &[String]) {}
 }
 
+/// The picture's size relative to a target of `dst` pixels when `src` is
+/// shown as large as possible without distortion (1.0 = full width or
+/// height); the rest are black bars.
+pub fn letterbox_size(src: (u32, u32), dst: (u32, u32)) -> [f32; 2] {
+    let (sw, sh) = (src.0.max(1) as f32, src.1.max(1) as f32);
+    let (dw, dh) = (dst.0.max(1) as f32, dst.1.max(1) as f32);
+    let s = (dw / sw).min(dh / sh);
+    [sw * s / dw, sh * s / dh]
+}
+
 /// Discards frames. Presentation time is then just the hand-off cost.
 #[derive(Default)]
 pub struct HeadlessPresenter {

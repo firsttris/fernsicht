@@ -36,6 +36,8 @@ naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 raw-window-handle = "0.6"
 env_logger = "0.11"
 reed-solomon-simd = "3.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 socket2 = "0.6"
 thiserror = "2"
 winit = "0.30"

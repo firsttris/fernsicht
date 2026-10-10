@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig};
+use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig, InputKind};
+use fernsicht_input::Recorder;
 use fernsicht_proto::*;
 
 struct Host {
@@ -567,4 +568,112 @@ fn pointer_is_sent_with_its_shape_and_repeated() {
         "shape not repeated"
     );
     host.shutdown();
+}
+
+fn send_input(peer: &Peer, session_id: u32, events: &[(u32, InputEvent)]) {
+    peer.send(|b| InputHeader::encode(session_id, events, b));
+}
+
+fn input_ack(peer: &mut Peer) -> u32 {
+    peer.wait_for(Duration::from_secs(2), |p| match p {
+        Packet::InputAck(a) => Some(a.seq),
+        _ => None,
+    })
+    .expect("no input ack")
+}
+
+fn key(code: u16, pressed: bool) -> InputEvent {
+    InputEvent::Key { code, pressed }
+}
+
+#[test]
+fn input_is_applied_once_in_order_and_acknowledged() {
+    let recorder = Recorder::default();
+    let host = Host::start(HostConfig {
+        input: InputKind::Record(recorder.clone()),
+        ..HostConfig::default()
+    });
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 240, 30, 500);
+    let ack = peer.ack();
+    let first = [(1, key(30, true)), (2, key(30, false))];
+    send_input(&peer, ack.session_id, &first);
+    assert_eq!(input_ack(&mut peer), 2);
+    // The same packet again (the ack was "lost"): nothing applied twice.
+    send_input(&peer, ack.session_id, &first);
+    assert_eq!(input_ack(&mut peer), 2);
+    // Old and new together, as the client resends: only the new applies.
+    let next = [
+        (2, key(30, false)),
+        (3, InputEvent::MouseAbs { x: 100, y: 200 }),
+        (
+            4,
+            InputEvent::Button {
+                code: 0x110,
+                pressed: true,
+            },
+        ),
+    ];
+    send_input(&peer, ack.session_id, &next);
+    assert_eq!(input_ack(&mut peer), 4);
+    // Wrong session: ignored, no ack.
+    send_input(&peer, ack.session_id ^ 1, &[(5, key(31, true))]);
+    assert!(
+        peer.wait_for(Duration::from_millis(300), |p| matches!(
+            p,
+            Packet::InputAck(_)
+        )
+        .then_some(()))
+            .is_none()
+    );
+    host.shutdown();
+    assert_eq!(
+        *recorder.0.lock().unwrap(),
+        vec![
+            key(30, true),
+            key(30, false),
+            InputEvent::MouseAbs { x: 100, y: 200 },
+            InputEvent::Button {
+                code: 0x110,
+                pressed: true
+            },
+        ]
+    );
+}
+
+#[test]
+fn input_is_off_by_default_but_acknowledged() {
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 240, 30, 500);
+    let ack = peer.ack();
+    send_input(&peer, ack.session_id, &[(1, key(30, true))]);
+    // Acknowledged, so the client does not resend forever.
+    assert_eq!(input_ack(&mut peer), 1);
+    host.shutdown();
+}
+
+#[test]
+fn input_from_a_stranger_is_ignored() {
+    let recorder = Recorder::default();
+    let host = Host::start(HostConfig {
+        input: InputKind::Record(recorder.clone()),
+        ..HostConfig::default()
+    });
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 240, 30, 500);
+    let ack = peer.ack();
+    let mut stranger = Peer::new(host.addr);
+    send_input(&stranger, ack.session_id, &[(1, key(30, true))]);
+    assert!(
+        stranger
+            .wait_for(Duration::from_millis(300), |p| matches!(
+                p,
+                Packet::InputAck(_)
+            )
+            .then_some(()))
+            .is_none()
+    );
+    host.shutdown();
+    assert!(recorder.0.lock().unwrap().is_empty());
 }

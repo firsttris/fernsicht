@@ -796,6 +796,7 @@ dependencies = [
  "fernsicht-capture",
  "fernsicht-codec",
  "fernsicht-core",
+ "fernsicht-input",
  "fernsicht-net",
  "fernsicht-proto",
  "fernsicht-render",
@@ -833,6 +834,7 @@ dependencies = [
  "fernsicht-client",
  "fernsicht-core",
  "fernsicht-host-agent",
+ "fernsicht-input",
  "fernsicht-net",
  "fernsicht-proto",
 ]
@@ -848,14 +850,22 @@ dependencies = [
  "fernsicht-capture",
  "fernsicht-codec",
  "fernsicht-core",
+ "fernsicht-input",
  "fernsicht-net",
  "fernsicht-proto",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "fernsicht-input"
 version = "0.1.0"
+dependencies = [
+ "fernsicht-proto",
+ "libc",
+ "log",
+]
 
 [[package]]
 name = "fernsicht-net"

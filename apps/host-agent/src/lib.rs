@@ -11,6 +11,8 @@
 //! are only dropped when it overflows; that forces a keyframe. Buffers
 //! circulate through small free lists, so steady state does not allocate.
 
+mod layout;
+
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -26,10 +28,12 @@ use fernsicht_codec::vaapi::{VaapiEncoder, VaapiEncoderConfig};
 use fernsicht_codec::{EncodedFrame, Encoder};
 use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock, now_us};
+use fernsicht_input::uinput::Uinput;
+use fernsicht_input::{Dedup, InputSink, Recorder};
 use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
 use fernsicht_proto::{
-    Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Hello, HelloAck,
-    MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
+    Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Hello, HelloAck, InputAck,
+    InputHeader, MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
 };
 
 /// Raw frame buffers: producer, slot, consumer.
@@ -53,6 +57,22 @@ pub struct HostConfig {
     pub client_timeout: Duration,
     pub capture: CaptureKind,
     pub encoder: EncoderKind,
+    /// What happens to the client's mouse and keyboard input.
+    pub input: InputKind,
+}
+
+/// Where the client's input goes.
+#[derive(Clone, Debug, Default)]
+pub enum InputKind {
+    /// Ignored (acknowledged, so the client stops resending). The default:
+    /// there is no authentication yet, anyone who reaches the port could
+    /// type on this machine.
+    #[default]
+    Off,
+    /// Virtual keyboard and mice through /dev/uinput, created per session.
+    Uinput,
+    /// Recorded (tests).
+    Record(Recorder),
 }
 
 /// Where session frames come from.
@@ -99,6 +119,7 @@ impl Default for HostConfig {
             client_timeout: Duration::from_secs(5),
             capture: CaptureKind::default(),
             encoder: EncoderKind::default(),
+            input: InputKind::default(),
         }
     }
 }
@@ -152,10 +173,32 @@ struct Session {
     loss: LossEstimator,
     threads: Vec<JoinHandle<()>>,
     frame_slot: Arc<Slot<Frame>>,
+    /// Released (all keys up) when the session ends.
+    input: Option<Box<dyn InputSink>>,
+    input_seen: Dedup,
+    input_errors: RepeatedError,
 }
 
 impl Session {
+    /// Applies the input events not applied yet, in order.
+    fn apply_input(&mut self, body: &[u8]) {
+        for (seq, event) in InputHeader::events(body) {
+            if !self.input_seen.accept(seq) {
+                continue;
+            }
+            if let Some(sink) = self.input.as_mut()
+                && let Err(e) = sink.inject(&event)
+                && let Some(msg) = self.input_errors.report(e, Instant::now())
+            {
+                log::warn!("input: {msg}");
+            }
+        }
+    }
+
     fn stop(mut self) {
+        if let Some(mut input) = self.input.take() {
+            input.release_all();
+        }
         self.shared.running.store(false, Ordering::Release);
         self.frame_slot.close();
         for t in self.threads.drain(..) {
@@ -291,6 +334,19 @@ impl HostAgent {
                         on_feedback(s, &fb);
                     }
                 }
+                Packet::Input(h, body) if from_peer => {
+                    let Some(s) = session.as_mut() else { continue };
+                    if h.session_id != s.params.session_id {
+                        continue;
+                    }
+                    s.apply_input(body);
+                    let ack = InputAck {
+                        session_id: s.params.session_id,
+                        seq: s.input_seen.last().unwrap_or(0),
+                    };
+                    let n = ack.encode(&mut out);
+                    let _ = self.socket.send_to(&out[..n], from);
+                }
                 Packet::Bye(bye) if from_peer => {
                     if let Some(s) = session.take() {
                         if bye.session_id == s.params.session_id {
@@ -366,6 +422,7 @@ impl HostAgent {
         };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
+        let input = make_input(&self.cfg.input, source.screen());
         let frame_slot = Arc::new(Slot::new());
         let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
 
@@ -438,6 +495,9 @@ impl HostAgent {
             loss,
             threads: vec![capture, encode, send],
             frame_slot,
+            input,
+            input_seen: Dedup::default(),
+            input_errors: RepeatedError::default(),
         })
     }
 }
@@ -570,6 +630,28 @@ impl CursorSender {
         }
         .encode(&mut buf);
         let _ = self.socket.send_to(&buf[..n], self.peer);
+    }
+}
+
+fn make_input(
+    kind: &InputKind,
+    screen: Option<fernsicht_capture::ScreenInfo>,
+) -> Option<Box<dyn InputSink>> {
+    match kind {
+        InputKind::Off => None,
+        InputKind::Record(r) => Some(Box::new(r.clone())),
+        InputKind::Uinput => {
+            let area = screen
+                .map(|s| layout::input_area(&s.connector, &s.active))
+                .unwrap_or_default();
+            match Uinput::open(area) {
+                Ok(u) => Some(Box::new(u)),
+                Err(e) => {
+                    log::error!("no input: {e}");
+                    None
+                }
+            }
+        }
     }
 }
 

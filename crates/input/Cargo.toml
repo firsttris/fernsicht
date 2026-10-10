@@ -1,10 +1,19 @@
 [package]
 name = "fernsicht-input"
-description = "Input events and injection (phase 2: uinput, libei)"
+description = "Input events: reliable delivery and injection (uinput)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[features]
+# Virtual keyboard and mice through /dev/uinput (host side).
+uinput = ["dep:libc", "dep:log"]
+
+[dependencies]
+fernsicht-proto.workspace = true
+libc = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
 
 [lints]
 workspace = true

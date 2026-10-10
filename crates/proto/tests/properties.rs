@@ -134,6 +134,31 @@ proptest! {
         prop_assert_eq!(got, image);
     }
 
+    /// Any valid sequence of input events survives encoding unchanged.
+    #[test]
+    fn input_roundtrip(session_id: u32, first_seq: u32,
+                       raw in proptest::collection::vec(
+                           (0u8..5, any::<u16>(), any::<i32>(), any::<i32>(), any::<bool>()),
+                           1..=MAX_INPUT_EVENTS)) {
+        let events: Vec<(u32, InputEvent)> = raw.iter().enumerate().map(|(i, &(k, c, a, b, p))| {
+            let e = match k {
+                0 => InputEvent::MouseAbs { x: c, y: (a as u32 >> 16) as u16 },
+                1 => InputEvent::MouseRel { dx: a, dy: b },
+                2 => InputEvent::Button { code: BTN_MOUSE_FIRST + c % 8, pressed: p },
+                3 => InputEvent::Scroll { dx: a, dy: b },
+                _ => InputEvent::Key { code: 1 + c % 0xff, pressed: p },
+            };
+            (first_seq.wrapping_add(i as u32), e)
+        }).collect();
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let n = InputHeader::encode(session_id, &events, &mut buf);
+        let Ok(Packet::Input(h, body)) = Packet::decode(&buf[..n]) else {
+            return Err(TestCaseError::fail("input did not parse"));
+        };
+        prop_assert_eq!(h.session_id, session_id);
+        prop_assert_eq!(InputHeader::events(body).collect::<Vec<_>>(), events);
+    }
+
     /// Arbitrary bytes never panic, and whatever parses re-encodes to a
     /// datagram that parses to the same packet (no lossy interpretation).
     #[test]
@@ -154,13 +179,18 @@ proptest! {
             Packet::Bye(p) => p.encode(&mut buf),
             Packet::Cursor(p) => p.encode(&mut buf),
             Packet::CursorShape(p, data) => p.encode(data, &mut buf),
+            Packet::Input(h, body) => {
+                let events: Vec<_> = InputHeader::events(body).collect();
+                InputHeader::encode(h.session_id, &events, &mut buf)
+            }
+            Packet::InputAck(p) => p.encode(&mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }
 
     /// Valid prefix plus random body: exercises the per-kind validation.
     #[test]
-    fn random_bodies_are_safe(kind in 1u8..=9, flags: u8,
+    fn random_bodies_are_safe(kind in 1u8..=11, flags: u8,
                               body in proptest::collection::vec(any::<u8>(), 0..96)) {
         let mut bytes = vec![MAGIC, VERSION, kind, flags];
         bytes.extend_from_slice(&body);

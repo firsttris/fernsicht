@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
-use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig};
+use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig, InputKind};
 
 /// Fernsicht host agent (phase 1: test pattern or KMS capture, synthetic or
 /// VAAPI H.264 over UDP).
@@ -41,6 +41,11 @@ struct Args {
     /// with the "kms" feature and CAP_SYS_ADMIN, see docs/kms-capture.md).
     #[arg(long, value_enum, default_value_t = CaptureArg::TestPattern)]
     capture: CaptureArg,
+    /// Accept mouse and keyboard from the client (virtual devices through
+    /// /dev/uinput). There is no authentication yet: anyone who reaches the
+    /// port can then type on this machine. Only in a trusted LAN.
+    #[arg(long)]
+    input: bool,
     /// NVENC: CUDA device index of the NVIDIA GPU.
     #[arg(long, default_value_t = 0)]
     cuda_device: u32,
@@ -82,6 +87,12 @@ fn main() -> anyhow::Result<()> {
                 card: args.kms_card,
                 connector: args.kms_connector,
             },
+        },
+        input: if args.input {
+            log::warn!("input enabled without authentication: use only in a trusted LAN");
+            InputKind::Uinput
+        } else {
+            InputKind::Off
         },
         encoder: match args.encoder {
             EncoderArg::Synthetic => EncoderKind::Synthetic,
