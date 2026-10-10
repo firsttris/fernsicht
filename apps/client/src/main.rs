@@ -104,6 +104,10 @@ fn main() -> anyhow::Result<()> {
         ms(s.total.p95),
         ms(s.total.max)
     );
+    println!(
+        "Mauszeiger: {} Positionen, {} Bilder empfangen",
+        s.cursor_positions, s.cursor_shapes
+    );
     if s.decode_errors > 0 {
         println!("Decode-Fehler: {}", s.decode_errors);
     }

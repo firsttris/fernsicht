@@ -59,6 +59,7 @@ impl CursorTracker {
         if a.have.iter().all(|&h| h) {
             let a = self.assembling.take().expect("checked");
             self.shapes += 1;
+            log::debug!("pointer image {} ({}×{})", a.serial, a.width, a.height);
             self.shape = Some((
                 a.serial,
                 Arc::new(CursorImage {
