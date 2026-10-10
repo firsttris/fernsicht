@@ -112,7 +112,18 @@ dev/runner/setup-runner.sh --gpu amd       # AMD-Rechner
 dev/runner/setup-runner.sh --gpu nvidia    # NVIDIA-Rechner
 ```
 
-Das Skript fragt nach dem Token und macht dann Folgendes:
+Das Skript fragt nach dem Token, aber erst nach dem Bau der Images (beim
+ersten Mal 10–20 Minuten). Weil das Token nur eine Stunde gilt, gibst du es
+am besten vorher verdeckt ein. Dann landet es auch nicht im Shell-Verlauf:
+
+```sh
+# bash
+read -rsp "Token: " RUNNER_TOKEN && export RUNNER_TOKEN
+# fish (Standard-Shell auf vielen Bazzite-Installationen)
+read -gxsP "Token: " RUNNER_TOKEN
+```
+
+Das Skript macht dann Folgendes:
 
 1. Es prüft den GPU-Zugriff (Render-Node bzw. `nvidia-smi` und CDI).
 2. Es baut `localhost/fernsicht-dev` und darauf `localhost/fernsicht-runner`
