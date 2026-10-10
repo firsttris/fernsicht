@@ -1,0 +1,49 @@
+name: Containers
+
+# Builds the dev image (Distrobox) and the GPU runner image, and lints the
+# setup scripts, whenever they change. No GPU needed.
+on:
+  push:
+    paths:
+      - "dev/**"
+      - ".github/workflows/containers.yml"
+  pull_request:
+    paths:
+      - "dev/**"
+      - ".github/workflows/containers.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: Build dev + runner images, lint scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck dev/*.sh dev/runner/*.sh
+      - name: Build dev image
+        run: docker build -t localhost/fernsicht-dev:latest -f dev/Containerfile dev
+      - name: Build runner image
+        run: docker build -t localhost/fernsicht-runner:latest -f dev/runner/Containerfile dev/runner
+      - name: Toolchain present in the runner image
+        run: |
+          docker run --rm --entrypoint bash localhost/fernsicht-runner:latest -c '
+            set -euxo pipefail
+            cargo --version
+            rpm -q mesa-va-drivers-freeworld ffmpeg
+            ffmpeg -hide_banner -encoders | grep -E "h264_(vaapi|nvenc)"
+            command -v vainfo vulkaninfo lspci
+            test -x /opt/actions-runner/config.sh
+          '
+      - name: gpu-check without a GPU reports and passes
+        run: |
+          docker run --rm -v "$PWD/dev:/dev-scripts:ro" --entrypoint bash \
+            localhost/fernsicht-runner:latest /dev-scripts/gpu-check.sh
+      - name: Entry point refuses to start unregistered
+        run: |
+          if docker run --rm localhost/fernsicht-runner:latest; then
+            echo "expected failure" >&2; exit 1
+          fi

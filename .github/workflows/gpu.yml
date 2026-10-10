@@ -1,0 +1,45 @@
+name: GPU
+
+# Runs on the self-hosted runners on the owner's machines (docs/gpu-runner.md).
+# Self-hosted runners execute repository code locally, so this workflow
+# never runs for pull requests (forks included): only for pushes to main by
+# people with write access, nightly, and on demand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "apps/**"
+      - "Cargo.*"
+      - "dev/**"
+      - ".github/workflows/gpu.yml"
+  schedule:
+    # Nightly, to catch Mesa/NVIDIA driver updates that break GPU code.
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gpu:
+    name: GPU · ${{ matrix.gpu }}
+    if: github.repository == 'firsttris/fernsicht' && github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        gpu: [amd, nvidia]
+    # A machine that is switched off leaves its job queued (GitHub gives up
+    # after 24 h); cancel it in the Actions tab if you don't need it.
+    runs-on: [self-hosted, linux, "gpu-${{ matrix.gpu }}"]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: GPU capabilities and hardware H.264 smoke test
+        run: dev/gpu-check.sh --expect ${{ matrix.gpu }} --summary "$GITHUB_STEP_SUMMARY"
+      - name: Tests on this machine
+        run: cargo test --workspace --exclude fernsicht-e2e

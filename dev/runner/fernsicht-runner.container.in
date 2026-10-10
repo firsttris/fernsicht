@@ -1,0 +1,28 @@
+# Podman Quadlet: systemd user service for the Fernsicht GPU runner.
+# Installed by setup-runner.sh to ~/.config/containers/systemd/.
+# @GPU@ and @DEVICE@ are filled in by the script.
+
+[Unit]
+Description=Fernsicht GitHub Actions runner (@GPU@)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/fernsicht-runner:latest
+ContainerName=fernsicht-runner-@GPU@
+# Runner state and build caches; no host directories are mounted.
+Volume=fernsicht-runner-@GPU@:/runner
+Volume=fernsicht-runner-cache:/cache
+AddDevice=@DEVICE@
+# keep-groups: the job gets the host user's video/render groups.
+# label=disable: SELinux would otherwise block GPU device access
+# (NVIDIA's documented setting for CDI devices; also needed for /dev/dri).
+PodmanArgs=--group-add=keep-groups --security-opt=label=disable
+
+[Service]
+Restart=always
+RestartSec=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

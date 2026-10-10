@@ -1,21 +1,32 @@
-# Fernsicht dev container for Distrobox on Bazzite (or any Fedora Atomic).
-# The host system stays untouched; everything needed to build host agent
-# and client with the GPU backends lives in here.
-FROM registry.fedoraproject.org/fedora-toolbox:42
+# Fernsicht dev image: Distrobox for interactive work and the base of the
+# self-hosted GPU runner (dev/runner/Containerfile). Bazzite stays untouched.
+#
+# FEDORA_VERSION should match the host (`rpm -E %fedora`); dev/setup.sh and
+# dev/runner/setup-runner.sh pass it automatically.
+ARG FEDORA_VERSION=44
+FROM registry.fedoraproject.org/fedora-toolbox:${FEDORA_VERSION}
+ARG FEDORA_VERSION
 
+# Fedora's own Mesa VA driver and FFmpeg ship without H.264/HEVC (patents).
+# RPM Fusion's "freeworld" Mesa and full FFmpeg (incl. NVENC/NVDEC via
+# dlopen) are what Bazzite itself uses.
 RUN dnf install -y \
-      gcc gcc-c++ clang pkgconf-pkg-config cmake git \
-      libva-devel libva-utils mesa-va-drivers \
-      libdrm-devel pipewire-devel \
+      "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${FEDORA_VERSION}.noarch.rpm" \
+    && dnf install -y --allowerasing \
+      mesa-va-drivers-freeworld mesa-vulkan-drivers \
+      ffmpeg ffmpeg-devel \
+    && dnf install -y \
+      gcc gcc-c++ clang pkgconf-pkg-config cmake git jq \
+      libva-devel libva-utils libdrm-devel pipewire-devel \
       vulkan-headers vulkan-loader-devel vulkan-validation-layers vulkan-tools \
       opus-devel libei-devel libevdev-devel \
       wayland-devel libxkbcommon-devel \
       webkit2gtk4.1-devel gtk3-devel libsoup3-devel \
       nodejs22 pnpm \
-      iproute iperf3 \
+      pciutils iproute iperf3 \
     && dnf clean all
 
-# Rust via rustup for the user (distrobox shares $HOME).
+# Rust via rustup, shared by every user of the image.
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component rustfmt,clippy \
     && chmod -R a+w /usr/local/rustup /usr/local/cargo

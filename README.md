@@ -116,7 +116,11 @@ Accessibility) und ihre CI-Jobs beschreibt [docs/testing.md](docs/testing.md).
 CI läuft bei jedem Push. Nachts kommen 15 Minuten Fuzzing pro Target und
 der Soak-Test dazu.
 
-Auf Bazzite: `dev/setup.sh` baut den Dev-Container und legt die Distrobox an.
+Auf Bazzite: `dev/setup.sh` (bzw. `dev/setup.sh --nvidia`) baut den
+Dev-Container und legt die Distrobox an. `dev/gpu-check.sh` zeigt, was die
+GPU kann, und testet Hardware-Encode und -Decode. Wie du einen Rechner als
+selbst gehosteten GitHub-Runner für die GPU-Tests einrichtest, steht in
+[docs/gpu-runner.md](docs/gpu-runner.md).
 
 Bei Drops auf Keyframes (`RcvbufErrors` in `/proc/net/snmp`) die
 UDP-Puffer anheben:

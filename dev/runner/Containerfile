@@ -1,0 +1,31 @@
+# Self-hosted GitHub Actions runner for the GPU jobs, on top of the dev
+# image (same toolchain as the Distrobox). Built by setup-runner.sh.
+ARG BASE=localhost/fernsicht-dev:latest
+FROM ${BASE}
+
+# Pin with --build-arg RUNNER_VERSION=2.x.y; "latest" asks GitHub. The
+# runner also updates itself when GitHub requires a newer version.
+ARG RUNNER_VERSION=latest
+RUN set -eux; \
+    v="${RUNNER_VERSION}"; \
+    if [ "$v" = latest ]; then \
+      v="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/actions/runner/releases/latest)"; \
+      v="${v##*/v}"; \
+    fi; \
+    case "$v" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "cannot resolve runner version: $v" >&2; exit 1 ;; esac; \
+    mkdir -p /opt/actions-runner; \
+    curl -fsSL "https://github.com/actions/runner/releases/download/v${v}/actions-runner-linux-x64-${v}.tar.gz" \
+      | tar -xz -C /opt/actions-runner; \
+    /opt/actions-runner/bin/installdependencies.sh; \
+    dnf clean all
+
+# Jobs run as the container's root, which rootless Podman maps to the host
+# user that owns the runner: same GPU access as that user, nothing more.
+ENV RUNNER_ALLOW_RUNASROOT=1 \
+    CARGO_HOME=/cache/cargo \
+    CARGO_TARGET_DIR=/cache/target \
+    PNPM_HOME=/cache/pnpm
+
+COPY entrypoint.sh /usr/local/bin/fernsicht-runner
+ENTRYPOINT ["/usr/local/bin/fernsicht-runner"]
+CMD ["run"]

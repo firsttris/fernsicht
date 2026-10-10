@@ -35,6 +35,7 @@ teils nachts länger.
 | Soak | `tests/e2e/tests/soak.rs` | 60 s 1080p60 mit gemischten Störungen | `cargo test -p fernsicht-e2e --release --test soak -- --ignored` |
 | Fuzzing | `fuzz/` | Parser, Reassembler, FEC-Roundtrip und Decoder mit libFuzzer | siehe [`fuzz/README.md`](../fuzz/README.md) |
 | Benchmarks | `crates/net/benches/` | Packetize/FEC und Reassembly mit/ohne Recovery (criterion) | `cargo bench -p fernsicht-net` |
+| GPU (echte Hardware) | `.github/workflows/gpu.yml` auf selbst gehosteten Runnern (`gpu-amd`, `gpu-nvidia`) | Hardware-H.264 über VAAPI bzw. NVENC/NVDEC, VAAPI/Vulkan-Video-Fähigkeiten, Testsuite auf der Zielmaschine; bei Pushes auf `main`, nachts und auf Knopfdruck | [docs/gpu-runner.md](gpu-runner.md) |
 | Coverage | CI-Job `rust-coverage` | `cargo llvm-cov`, Schwelle 90 % Zeilen | `cargo llvm-cov --workspace --ignore-filename-regex 'main\.rs$'` |
 
 Die Streaming-Szenarien messen Zeiten. Deshalb laufen sie innerhalb des
