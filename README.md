@@ -8,7 +8,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 ## Stand
 
 Wo es weitergeht (offene Live-Tests, Aufgaben, Regeln):
-[docs/weitermachen.md](docs/weitermachen.md).
+[docs/weitermachen.md](docs/weitermachen.md). Wo es noch schneller und
+besser geht (AV1/HEVC, Slices, …): [docs/performance.md](docs/performance.md).
 
 | Phase | Inhalt | Stand |
 |---|---|---|

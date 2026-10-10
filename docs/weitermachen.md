@@ -177,6 +177,10 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
 
 ## Offene Aufgaben, nach Wichtigkeit
 
+Die Performance-Punkte (AV1/HEVC, sofort anzeigen, Slices, Intra-Refresh,
+Staukontrolle, 4:4:4) mit Nutzen und Aufwand stehen gesammelt in
+[performance.md](performance.md).
+
 1. **Die Live-Tests oben**, dann Fehler beheben, die dabei auftauchen.
 2. **GPU-Hochtakten messen.** Gebaut ist es: Der Host setzt während
    einer Sitzung `power_dpm_force_performance_level` auf `high`
