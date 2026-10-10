@@ -104,6 +104,9 @@ pub struct SessionState {
 pub struct ThisMachine {
     pub name: String,
     pub host: Option<Value>,
+    /// The host service: installed, running, which version, and whether
+    /// this app can install it.
+    pub service: crate::share::HostService,
 }
 
 /// A running client process.
@@ -393,6 +396,7 @@ impl Backend {
         ThisMachine {
             name: self.name.clone(),
             host: control::request(&self.control_path(), &json!({"cmd": "status"})).ok(),
+            service: crate::share::status(),
         }
     }
 

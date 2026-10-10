@@ -7,7 +7,7 @@
     "frontendDist": "../client-ui/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm --filter @fernsicht/client-ui dev",
-    "beforeBuildCommand": "pnpm --filter @fernsicht/client-ui build"
+    "beforeBuildCommand": "pnpm --filter @fernsicht/client-ui build && pnpm --filter @fernsicht/viewer build"
   },
   "app": {
     "windows": [
@@ -26,9 +26,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": [
+      "appimage"
+    ],
     "category": "Utility",
     "shortDescription": "Remote-Desktop und Game-Streaming im LAN",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/fernsicht-client",
+      "binaries/fernsicht-host-agent"
+    ],
+    "resources": {
+      "../../web/viewer/dist/": "viewer/"
+    },
+    "longDescription": "Fernsicht streamt den Bildschirm eines Rechners mit sehr wenig Verzögerung zu anderen Geräten im Netz: Desktop und Spiele, mit Maus, Tastatur, Controller und Ton. Dieselbe App verbindet sich mit anderen Rechnern und gibt diesen Rechner frei."
   }
 }

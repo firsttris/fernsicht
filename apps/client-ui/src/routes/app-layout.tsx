@@ -4,7 +4,13 @@ import { Link, Outlet } from "@tanstack/react-router";
 import { Check, Clock, Copy, Monitor, Settings, Shield } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { type HostStatus, actions, errorText, thisMachineQuery } from "../lib/api";
+import {
+  type HostService,
+  type HostStatus,
+  actions,
+  errorText,
+  thisMachineQuery,
+} from "../lib/api";
 
 const NAV = [
   { to: "/devices", label: "Geräte", icon: Monitor },
@@ -49,7 +55,8 @@ function ThisMachineCard() {
   const { data } = useQuery(thisMachineQuery);
   const [copied, setCopied] = useState(false);
   if (!data) return null;
-  if (data.name !== undefined) return <LocalHostCard name={data.name} host={data.host ?? null} />;
+  if (data.name !== undefined)
+    return <LocalHostCard name={data.name} host={data.host ?? null} service={data.service} />;
   if (!data.id) return null;
   const id = data.id;
 
@@ -93,7 +100,15 @@ const formatLeft = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padSta
  * Desktop app: this computer and the host running on it. "Gerät koppeln"
  * opens pairing there and shows the PIN to type on the other device.
  */
-function LocalHostCard({ name, host }: { name: string; host: HostStatus | null }) {
+function LocalHostCard({
+  name,
+  host,
+  service,
+}: {
+  name: string;
+  host: HostStatus | null;
+  service?: HostService;
+}) {
   const queryClient = useQueryClient();
   const [pin, setPin] = useState<{ pin: string; until: number } | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -149,12 +164,84 @@ function LocalHostCard({ name, host }: { name: string; host: HostStatus | null }
             </span>
           )}
         </>
+      ) : service?.installed ? (
+        <span className="text-xs text-muted-foreground">
+          Freigabe eingerichtet, der Host läuft aber nicht. Log: journalctl -u fernsicht-host
+        </span>
+      ) : service?.canInstall ? (
+        <span className="text-xs text-muted-foreground">
+          Damit andere Geräte auf diesen Rechner zugreifen können, ihn freigeben. Das fragt einmal
+          nach dem Administrator-Passwort.
+        </span>
       ) : (
         <span className="text-xs text-muted-foreground">
           Kein Host aktiv. Damit andere Geräte auf diesen Rechner zugreifen können, den Host
           einrichten (docs/install.md).
         </span>
       )}
+      {service && <ShareControls service={service} />}
     </div>
+  );
+}
+
+/**
+ * Sets the host up from the AppImage, updates it, or removes it. Each step
+ * asks for the admin password (pkexec).
+ */
+function ShareControls({ service }: { service: HostService }) {
+  const queryClient = useQueryClient();
+  const [sure, setSure] = useState(false);
+  const done = () => {
+    setSure(false);
+    return queryClient.invalidateQueries({ queryKey: ["this-machine"] });
+  };
+  const share = useMutation({ mutationFn: actions.share, onSuccess: done });
+  const stop = useMutation({ mutationFn: actions.stopSharing, onSuccess: done });
+  const busy = share.isPending || stop.isPending;
+  const outdated =
+    service.installed &&
+    service.canInstall &&
+    service.bundled !== null &&
+    service.version !== service.bundled;
+  const error = share.error ?? stop.error;
+
+  return (
+    <>
+      {!service.installed && service.canInstall && (
+        <Button size="sm" disabled={busy} onClick={() => share.mutate()}>
+          {share.isPending ? "Wird eingerichtet …" : "Diesen Rechner freigeben"}
+        </Button>
+      )}
+      {outdated && (
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => share.mutate()}>
+          {share.isPending ? "Wird aktualisiert …" : `Host aktualisieren auf ${service.bundled}`}
+        </Button>
+      )}
+      {service.installed &&
+        (sure ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Freigabe beenden?</span>
+            <Button size="sm" variant="outline" onClick={() => setSure(false)}>
+              Nein
+            </Button>
+            <Button size="sm" variant="destructive" disabled={busy} onClick={() => stop.mutate()}>
+              Beenden
+            </Button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="cursor-pointer self-start border-0 bg-transparent p-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            onClick={() => setSure(true)}
+          >
+            Freigabe beenden
+          </button>
+        ))}
+      {error && (
+        <span role="alert" className="text-xs text-muted-foreground">
+          {errorText(error)}
+        </span>
+      )}
+    </>
   );
 }

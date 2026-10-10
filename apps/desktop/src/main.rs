@@ -93,6 +93,18 @@ async fn open_pairing(backend: Shared<'_>) -> Result<Value, String> {
     blocking(&backend, Backend::open_pairing).await
 }
 
+/// "Diesen Rechner freigeben": installs the host from the AppImage.
+#[tauri::command]
+async fn share_this_machine(backend: Shared<'_>) -> Result<(), String> {
+    blocking(&backend, |_| fernsicht_desktop::share::install()).await
+}
+
+/// "Freigabe beenden": removes the host service.
+#[tauri::command]
+async fn stop_sharing(backend: Shared<'_>) -> Result<(), String> {
+    blocking(&backend, |_| fernsicht_desktop::share::uninstall()).await
+}
+
 #[tauri::command]
 async fn unpair_from_host(backend: Shared<'_>, device: String) -> Result<(), String> {
     blocking(&backend, move |b| b.unpair_from_host(&device)).await
@@ -125,6 +137,8 @@ fn main() {
             this_machine,
             open_pairing,
             unpair_from_host,
+            share_this_machine,
+            stop_sharing,
         ])
         .build(tauri::generate_context!())
         .expect("starting the app")

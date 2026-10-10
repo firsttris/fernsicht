@@ -42,6 +42,19 @@ Rechner ohne GPU Transport, FEC, Pacing und Latenz trotzdem echt. Mit
 
 ## Schnellstart
 
+Am einfachsten: das AppImage aus den
+[Releases](https://github.com/firsttris/fernsicht/releases) laden und
+starten, auf beiden Rechnern ([Anleitung](docs/install.md)). Auf dem
+Rechner, den man steuern will, unter „Dieser Rechner“ auf „Diesen Rechner
+freigeben“ klicken.
+
+Ein Release entsteht über den Workflow **Bump version** in GitHub Actions:
+Er erhöht die Version, setzt das Tag, und **Release** baut dann das AppImage
+und veröffentlicht es. Lokal baut `./packaging/appimage.sh` dasselbe
+AppImage.
+
+Aus dem Quellcode:
+
 ```sh
 cargo build --release
 

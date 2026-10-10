@@ -15,10 +15,22 @@ startet Sitzungen.
 - **Schlüssel und Kopplungen** liegen in `~/.config/fernsicht`, wie beim
   Kommandozeilen-Client. Was dort gekoppelt ist, kennt auch die App.
 
+## Als AppImage
+
+```sh
+./packaging/appimage.sh   # → apps/desktop/target/release/bundle/appimage/
+```
+
+Das baut alles und packt die App, das Stream-Fenster, den Host und den
+Web-Viewer in eine Datei. Releases baut die CI genauso (Workflow „Bump
+version“, dann „Release“).
+
 ## Bauen und starten
 
 Die App ist ein eigener Cargo-Workspace. Sie braucht WebKitGTK (in der
-Distrobox vorhanden) und die gebaute UI:
+Distrobox vorhanden), die gebauten Oberflächen und die beiden Programme,
+die das AppImage mitträgt, unter `binaries/` (einmal `./packaging/appimage.sh`
+legt sie an):
 
 ```sh
 pnpm install && pnpm --filter @fernsicht/client-ui build

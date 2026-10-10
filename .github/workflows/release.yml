@@ -1,0 +1,78 @@
+name: Release
+
+# A tag vX.Y.Z (from the "Bump version" button or pushed from a checkout)
+# runs the checks, builds Fernsicht.AppImage (the app, the stream window, the
+# host and the web viewer in one file) and creates the GitHub release with it.
+# Run by hand on a branch it only checks and builds (no release), e.g. to try
+# the packaging.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build · AppImage
+    needs: checks
+    # The oldest Ubuntu the app builds on (FFmpeg 6.1): the AppImage then
+    # runs on distributions with this glibc or newer.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages (FFmpeg, VAAPI, WebKitGTK for the bundler)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev \
+            libswscale-dev libswresample-dev libva-dev libdrm-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev patchelf file
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: ./packaging/appimage.sh
+      - name: Collect release files
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp apps/desktop/target/release/bundle/appimage/Fernsicht-*.AppImage dist/
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') # run by hand on a branch: only checks and build
+    uses: firsttris/workflows/.github/workflows/github-release.yml@v1
+    with:
+      version-file: Cargo.toml
+      release-artifact: dist
+      notes: |
+        **Fernsicht-<Version>-x86_64.AppImage** herunterladen, ausführbar machen und starten:
+        auf dem Rechner, von dem aus du zugreifst, und auf dem Rechner, den du steuern willst
+        (dort unter „Dieser Rechner“ auf „Diesen Rechner freigeben“). Anleitung: docs/install.md
+    permissions:
+      contents: write

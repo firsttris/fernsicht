@@ -2,15 +2,20 @@ name: CI
 
 on:
   push:
+    # Branches only: a release tag runs these checks through release.yml.
+    branches: ["**"]
   pull_request:
   schedule:
     # Nightly: long fuzzing and the soak test.
     - cron: "17 2 * * *"
+  workflow_call: # release.yml runs the same checks before it builds
   workflow_dispatch:
 
+# A newer push to the same branch or pull request cancels an outdated run;
+# runs for a release (called from release.yml) always finish.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -214,9 +219,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @fernsicht/client-ui build
+      - run: pnpm --filter @fernsicht/viewer build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The AppImage carries the stream window and the host as "sidecars";
+      # the release builds the real ones (packaging/appimage.sh), these
+      # checks only need files there.
+      - name: Stand-ins for the bundled programs
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p binaries
+          for bin in fernsicht-client fernsicht-host-agent; do
+            printf '#!/bin/sh\nexit 1\n' > "binaries/$bin-$triple"
+            chmod +x "binaries/$bin-$triple"
+          done
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |

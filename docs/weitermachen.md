@@ -93,6 +93,22 @@ Danach kam dazu:
      „Gerät vergessen“, Ton und Modus in der Sitzung gehen über stdin an
      den Client (`mute`, `unmute`, `gaming`, `desktop`).
 
+8. **Ein AppImage für alles.**
+   - `packaging/appimage.sh` baut lokal: App, Stream-Fenster, Host und
+     Web-Viewer in einer Datei. Die GPU-Bibliotheken (libva, libdrm,
+     Vulkan-Loader) werden herausgenommen; dafür sorgt `appimagetool`.
+   - In der App: „Diesen Rechner freigeben“ (`apps/desktop/src/share.rs`)
+     entpackt das AppImage per `pkexec` nach `/opt/fernsicht/app` und
+     richtet `fernsicht-host.service` ein. Dazu „Freigabe beenden“ und
+     „Host aktualisieren“.
+   - Release wie in den anderen Repos: **Bump version**
+     (`firsttris/workflows`), dann `release.yml` (Checks, AppImage auf
+     Ubuntu 24.04, GitHub-Release).
+   - Lokal getestet: Die Programme aus dem AppImage streamen auf Bazzite
+     mit den System-Treibern (VAAPI H.264). Das App-Fenster zeigt
+     „Diesen Rechner freigeben“.
+   - Noch nicht live getestet: das Einrichten mit Passwort-Dialog.
+
 Gemessene Latenz (frühere Sitzungen):
 
 | Strecke | Glass-to-Glass |
@@ -137,17 +153,22 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
    von einem anderen Gerät `http://192.168.178.87:47800` öffnen, PIN, dann
    KMS-Bild, Ton, Maus und Tastatur prüfen. Auch mit Firefox und einem
    Handy.
-5. **Gaming-Modus und Gamepad.** In der App „Gaming“ wählen. Ein Klick
+5. **AppImage-Freigabe:** AppImage aus dem ersten Release auf der
+   zentrale starten und „Diesen Rechner freigeben“ wählen (KDE fragt nach
+   dem Passwort). Dann prüfen: Läuft `fernsicht-host` (`systemctl status
+   fernsicht-host`)? Gibt es Bild, Ton und Eingabe? Danach „Freigabe
+   beenden“ und noch einmal freigeben.
+6. **Gaming-Modus und Gamepad.** In der App „Gaming“ wählen. Ein Klick
    ins Fenster fängt den Zeiger, Strg+Alt+Shift+M gibt ihn frei. Ein
    Spiel mit Maussteuerung prüfen. Ein Controller am Client erscheint
    auf dem Host als „Fernsicht X-Box 360 pad 1“: in Steam oder
    `evtest` prüfen, ob A unten und Y oben liegt. Bei Xbox- und
    PlayStation-Controllern.
-6. **Bitratenanpassung über WLAN.** Auf der bazzite verbinden, im Log
+7. **Bitratenanpassung über WLAN.** Auf der bazzite verbinden, im Log
    des Hosts nach `bitrate … Mbit/s` sehen. Normale WLAN-Verluste
    lassen die Bitrate stehen. Nur Frames, die trotz FEC verloren gehen,
    oder ein überlasteter Sender senken sie.
-7. **Gerätesuche über WLAN.** Kommt der Broadcast von der bazzite bei
+8. **Gerätesuche über WLAN.** Kommt der Broadcast von der bazzite bei
    der zentrale an, und die Antwort zurück? Die Antwort geht an einen
    kurzlebigen Port des Clients. Fedoras Zone `FedoraWorkstation`
    erlaubt UDP 1025–65535; auf der bazzite prüfen

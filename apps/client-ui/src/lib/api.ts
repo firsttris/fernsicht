@@ -29,6 +29,18 @@ export interface HostStatus {
   pairing: number | null;
 }
 
+/** The host service on this computer (desktop app). */
+export interface HostService {
+  installed: boolean;
+  active: boolean;
+  /** Installed host's version. */
+  version: string | null;
+  /** Version of the host in this AppImage; null outside one. */
+  bundled: string | null;
+  /** This app can set up the host (it runs from the AppImage). */
+  canInstall: boolean;
+}
+
 export interface ThisMachine {
   /** Account id and code (demo; later the rendezvous server). */
   id?: string;
@@ -36,6 +48,7 @@ export interface ThisMachine {
   /** Desktop app: the computer's name and its host, if one runs. */
   name?: string;
   host?: HostStatus | null;
+  service?: HostService;
 }
 
 /** The session the app runs in the native window. */
@@ -144,6 +157,8 @@ export const actions = {
     if (inApp()) await invoke("set_mode", { gaming });
   },
   openPairing: () => invoke<{ pin: string; expires_in_s: number }>("open_pairing"),
+  share: () => invoke<void>("share_this_machine"),
+  stopSharing: () => invoke<void>("stop_sharing"),
 };
 
 /** The backend's (English) errors in the UI's words. */
@@ -156,6 +171,8 @@ export function errorText(e: unknown): string {
     ["no answer from", "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?"],
     ["not paired with the host", "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln."],
     ["no packets from", "Der Host antwortet nicht. Läuft er noch?"],
+    ["cancelled", "Abgebrochen."],
+    ["pkexec is missing", "Es fehlt pkexec (polkit), um als Administrator einzurichten."],
   ];
   return known.find(([needle]) => raw.includes(needle))?.[1] ?? raw;
 }

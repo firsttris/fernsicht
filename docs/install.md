@@ -1,5 +1,34 @@
 # Fernsicht installieren
 
+## Mit dem AppImage (empfohlen)
+
+Eine Datei für alles: die App, das Stream-Fenster, den Host und den
+Web-Viewer.
+
+1. Von den [Releases](https://github.com/firsttris/fernsicht/releases) die
+   Datei `Fernsicht-<Version>-x86_64.AppImage` laden, ausführbar machen
+   (Dateimanager: Eigenschaften › Berechtigungen, oder
+   `chmod +x Fernsicht-*.AppImage`) und starten.
+2. **Auf dem Rechner, den du steuern willst:** unten links unter „Dieser
+   Rechner“ auf **Diesen Rechner freigeben** klicken. Das fragt einmal nach
+   dem Administrator-Passwort.
+   - Danach läuft der Host als Systemdienst (`fernsicht-host`), ab dem
+     Systemstart und unabhängig von der App. Er liegt unter
+     `/opt/fernsicht`.
+   - **Freigabe beenden** entfernt ihn wieder. Schlüssel und Kopplungen in
+     `/var/lib/fernsicht` bleiben.
+   - Startest du später ein neueres AppImage, bietet die App an, den Host zu
+     aktualisieren.
+3. **Auf dem Rechner, von dem aus du zugreifst:** dasselbe AppImage
+   starten. Der freigegebene Rechner steht in der Liste. Dann koppeln
+   (Abschnitt 4) und verbinden.
+
+Das AppImage bringt seine Bibliotheken (FFmpeg, WebKit) selbst mit. Die
+Grafiktreiber (Mesa/VAAPI, NVIDIA, Vulkan) nimmt es vom System, damit die
+Hardware-Kodierung zu den installierten Treibern passt.
+
+## Aus dem Quellcode
+
 Es gibt zwei Teile:
 
 - **Die App** auf jedem Rechner, *von dem aus* man zugreift. Sie findet

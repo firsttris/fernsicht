@@ -6,7 +6,7 @@ import type { Device } from "@fernsicht/ui";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { HostStatus, SessionState, ThisMachine } from "./lib/api";
+import type { HostService, HostStatus, SessionState, ThisMachine } from "./lib/api";
 import { renderApp } from "./test-utils";
 
 const backend = vi.hoisted(() => ({
@@ -45,6 +45,16 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "set_muted":
       case "set_mode":
         return null;
+      case "share_this_machine":
+        backend.thisMachine = {
+          ...backend.thisMachine,
+          host: host(),
+          service: { ...service(), installed: true, active: true, version: "0.2.0" },
+        };
+        return null;
+      case "stop_sharing":
+        backend.thisMachine = { ...backend.thisMachine, host: null, service: service() };
+        return null;
       case "disconnect":
         backend.session = { ...backend.session, active: false };
         return null;
@@ -67,6 +77,15 @@ const zentrale = (over: Partial<Device> = {}): Device => ({
   pairing: false,
   busy: false,
   address: "192.168.178.87:47800",
+  ...over,
+});
+
+const service = (over: Partial<HostService> = {}): HostService => ({
+  installed: false,
+  active: false,
+  version: null,
+  bundled: "0.2.0",
+  canInstall: true,
   ...over,
 });
 
@@ -297,6 +316,56 @@ describe("Desktop-App", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.queryByText("482 913")).not.toBeInTheDocument();
+  });
+
+  it("shares this computer from the AppImage and stops sharing", async () => {
+    backend.thisMachine = { name: "zentrale", host: null, service: service() };
+    const { user } = await renderApp("/devices");
+    expect(
+      await screen.findByText(/fragt einmal nach dem Administrator-Passwort/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Diesen Rechner freigeben" }));
+    expect(called("share_this_machine")).toHaveLength(1);
+    expect(await screen.findByText(/Host aktiv/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Host aktualisieren/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Freigabe beenden" }));
+    await user.click(screen.getByRole("button", { name: "Nein" }));
+    expect(called("stop_sharing")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Freigabe beenden" }));
+    await user.click(screen.getByRole("button", { name: "Beenden" }));
+    expect(called("stop_sharing")).toHaveLength(1);
+    expect(
+      await screen.findByRole("button", { name: "Diesen Rechner freigeben" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers an update when the AppImage carries a newer host", async () => {
+    backend.thisMachine = {
+      name: "zentrale",
+      host: host(),
+      service: service({ installed: true, active: true, version: "0.1.0" }),
+    };
+    const { user } = await renderApp("/devices");
+    await user.click(await screen.findByRole("button", { name: "Host aktualisieren auf 0.2.0" }));
+    expect(called("share_this_machine")).toHaveLength(1);
+  });
+
+  it("says when sharing is set up but the host does not run", async () => {
+    backend.thisMachine = {
+      name: "zentrale",
+      host: null,
+      service: service({ installed: true, version: "0.2.0" }),
+    };
+    await renderApp("/devices");
+    expect(await screen.findByText(/der Host läuft aber nicht/)).toBeInTheDocument();
+  });
+
+  it("says the password prompt was cancelled", async () => {
+    backend.thisMachine = { name: "zentrale", host: null, service: service() };
+    backend.fail.share_this_machine = "cancelled";
+    const { user } = await renderApp("/devices");
+    await user.click(await screen.findByRole("button", { name: "Diesen Rechner freigeben" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Abgebrochen.");
   });
 
   it("explains a failed pairing request on this computer", async () => {
