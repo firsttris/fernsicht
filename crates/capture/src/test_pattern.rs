@@ -2,10 +2,13 @@ use std::time::{Duration, Instant};
 
 use fernsicht_core::{clock, now_us};
 
-use crate::{CaptureError, Frame, FrameSource, PixelFormat};
+use std::sync::Arc;
+
+use crate::{CaptureError, CursorImage, CursorState, Frame, FrameSource, PixelFormat};
 
 /// NV12 test source: grey background with a white vertical bar moving one
-/// bar width per frame, paced to the requested frame rate.
+/// bar width per frame, paced to the requested frame rate. Reports a
+/// pointer (an arrow) circling the middle of the screen, once per 2 s.
 pub struct TestPattern {
     width: u32,
     height: u32,
@@ -13,6 +16,7 @@ pub struct TestPattern {
     next_due: Option<Instant>,
     seq: u64,
     bar_width: u32,
+    arrow: Arc<CursorImage>,
 }
 
 impl TestPattern {
@@ -26,6 +30,20 @@ impl TestPattern {
             next_due: None,
             seq: 0,
             bar_width: (width / 32).max(2),
+            arrow: Arc::new(CursorImage::arrow()),
+        }
+    }
+
+    /// Where the pointer is in frame `seq`: on a circle, 120 frames a turn.
+    pub fn cursor_at(&self, seq: u64) -> CursorState {
+        let angle = (seq % 120) as f64 / 120.0 * std::f64::consts::TAU;
+        let r = f64::from(self.height) / 4.0;
+        CursorState {
+            visible: true,
+            x: (f64::from(self.width) / 2.0 + r * angle.cos()).round() as i32,
+            y: (f64::from(self.height) / 2.0 + r * angle.sin()).round() as i32,
+            serial: 1,
+            image: self.arrow.clone(),
         }
     }
 
@@ -86,6 +104,7 @@ impl FrameSource for TestPattern {
         frame.capture_us = now_us();
         self.draw(frame, self.seq);
         frame.seq = self.seq;
+        frame.cursor = Some(self.cursor_at(self.seq));
         frame.ready_us = now_us();
         self.seq += 1;
         Ok(())
@@ -119,6 +138,22 @@ mod tests {
         src.next_frame(&mut f).unwrap();
         assert_ne!(first, f.data[..64].to_vec());
         assert_eq!(f.data.len(), 64 * 4 + 64 * 2);
+    }
+
+    #[test]
+    fn pointer_circles_the_middle() {
+        let src = TestPattern::new(640, 480, 60);
+        let a = src.cursor_at(0);
+        assert_eq!((a.x, a.y), (320 + 120, 240));
+        let b = src.cursor_at(30);
+        assert_eq!((b.x, b.y), (320, 240 + 120));
+        assert_eq!(src.cursor_at(120), a, "a turn is 120 frames");
+        assert!(a.visible && a.serial == 1 && a.image.width == 12);
+
+        let mut src = TestPattern::new(64, 32, 1000);
+        let mut f = src.alloc_frame();
+        src.next_frame(&mut f).unwrap();
+        assert!(f.cursor.is_some(), "frames carry the pointer");
     }
 
     #[test]

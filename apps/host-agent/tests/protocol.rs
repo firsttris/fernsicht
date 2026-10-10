@@ -516,3 +516,55 @@ fn session_without_encoder_is_refused() {
         ..HostConfig::default()
     });
 }
+
+#[test]
+fn pointer_is_sent_with_its_shape_and_repeated() {
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(640, 360, 60, 2_000);
+    let ack = peer.ack();
+    // The test pattern's arrow: 12×19, one piece.
+    let (shape, piece) = peer
+        .wait_for(Duration::from_secs(2), |p| match p {
+            Packet::CursorShape(s, data) => Some((s, data.to_vec())),
+            _ => None,
+        })
+        .expect("no cursor shape");
+    assert_eq!(shape.session_id, ack.session_id);
+    assert_eq!((shape.width, shape.height, shape.offset), (12, 19, 0));
+    assert_eq!(piece.len(), 12 * 19 * 4);
+    assert_eq!(&piece[..4], &[0, 0, 0, 255], "arrow tip");
+
+    let positions: Vec<Cursor> = (0..5)
+        .filter_map(|_| {
+            peer.wait_for(Duration::from_secs(1), |p| match p {
+                Packet::Cursor(c) => Some(c),
+                _ => None,
+            })
+        })
+        .collect();
+    assert_eq!(positions.len(), 5, "a position with every frame");
+    for c in &positions {
+        assert!(c.visible);
+        assert_eq!(c.session_id, ack.session_id);
+        assert_eq!(c.shape_serial, shape.serial);
+        assert_eq!((c.screen_width, c.screen_height), (640, 360));
+    }
+    assert!(
+        positions
+            .windows(2)
+            .any(|w| (w[0].x, w[0].y) != (w[1].x, w[1].y)),
+        "the test pattern's pointer moves"
+    );
+    // The unchanged shape comes again, so a lost piece heals.
+    assert!(
+        peer.wait_for(Duration::from_secs(4), |p| matches!(
+            p,
+            Packet::CursorShape(..)
+        )
+        .then_some(()))
+            .is_some(),
+        "shape not repeated"
+    );
+    host.shutdown();
+}

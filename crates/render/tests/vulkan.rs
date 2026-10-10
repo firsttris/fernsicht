@@ -9,7 +9,9 @@
 
 use std::sync::{Arc, OnceLock};
 
+use fernsicht_capture::CursorImage;
 use fernsicht_codec::Picture;
+use fernsicht_render::CursorOverlay;
 use fernsicht_render::vulkan::{Gpu, Renderer};
 
 /// Colour stripes left to right, as (R, G, B).
@@ -115,7 +117,9 @@ fn cpu_nv12_becomes_the_right_rgb() {
         height: h as u32,
         data: &data,
     };
-    let rgba = r.render_to_rgba(Some(&pic), w as u32, h as u32).unwrap();
+    let rgba = r
+        .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+        .unwrap();
     assert_stripes(&rgba, w, h, 3);
     // Top-left is the first stripe: no flip in either direction.
     assert!(pixel(&rgba, w, 2, 2).0 > 200, "red must be top left");
@@ -131,7 +135,7 @@ fn other_aspect_ratios_get_black_bars() {
         data: &data,
     };
     // 16:9 in a square: picture 400×225 in the middle, bars above and below.
-    let rgba = r.render_to_rgba(Some(&pic), 400, 400).unwrap();
+    let rgba = r.render_to_rgba(Some(&pic), None, 400, 400).unwrap();
     assert_eq!(pixel(&rgba, 400, 200, 20), (0, 0, 0), "bar on top");
     assert_eq!(pixel(&rgba, 400, 200, 380), (0, 0, 0), "bar at the bottom");
     assert_ne!(
@@ -140,7 +144,7 @@ fn other_aspect_ratios_get_black_bars() {
         "picture in the middle"
     );
     // Scaled down 2×, the stripes still have their colours.
-    let rgba = r.render_to_rgba(Some(&pic), 320, 180).unwrap();
+    let rgba = r.render_to_rgba(Some(&pic), None, 320, 180).unwrap();
     assert_stripes(&rgba, 320, 180, 3);
 }
 
@@ -154,11 +158,13 @@ fn size_changes_and_no_picture() {
             height: h as u32,
             data: &data,
         };
-        let rgba = r.render_to_rgba(Some(&pic), w as u32, h as u32).unwrap();
+        let rgba = r
+            .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+            .unwrap();
         assert_stripes(&rgba, w, h, 3);
     }
     // Synthetic streams have no picture: a black frame.
-    let rgba = r.render_to_rgba(None, 64, 64).unwrap();
+    let rgba = r.render_to_rgba(None, None, 64, 64).unwrap();
     assert!(rgba.chunks(4).all(|p| p == [0, 0, 0, 255]));
 }
 
@@ -170,13 +176,13 @@ fn bad_pictures_are_errors_not_crashes() {
         height: 64,
         data: &[0; 10],
     };
-    assert!(r.render_to_rgba(Some(&short), 64, 64).is_err());
+    assert!(r.render_to_rgba(Some(&short), None, 64, 64).is_err());
     let odd = Picture::Nv12 {
         width: 63,
         height: 64,
         data: &[0; 63 * 96],
     };
-    assert!(r.render_to_rgba(Some(&odd), 64, 64).is_err());
+    assert!(r.render_to_rgba(Some(&odd), None, 64, 64).is_err());
     let not_nv12 = fernsicht_capture::DmaBuf {
         width: 64,
         height: 64,
@@ -195,6 +201,7 @@ fn bad_pictures_are_errors_not_crashes() {
                 image: &not_nv12,
                 key: 1,
             }),
+            None,
             64,
             64,
         )
@@ -210,7 +217,111 @@ fn bad_pictures_are_errors_not_crashes() {
         height: 64,
         data: &data,
     };
-    r.render_to_rgba(Some(&ok), 64, 64).unwrap();
+    r.render_to_rgba(Some(&ok), None, 64, 64).unwrap();
+}
+
+/// A square pointer image in one colour (BGRA, premultiplied).
+fn square(size: u32, bgra: [u8; 4]) -> Arc<CursorImage> {
+    Arc::new(CursorImage {
+        width: size,
+        height: size,
+        pixels: bgra.repeat((size * size) as usize),
+    })
+}
+
+#[test]
+fn the_pointer_is_drawn_where_the_host_says() {
+    let Some(mut r) = renderer() else { return };
+    let (w, h) = (640usize, 360usize);
+    let data = stripes_nv12(w, h);
+    let pic = Picture::Nv12 {
+        width: w as u32,
+        height: h as u32,
+        data: &data,
+    };
+    // A magenta 16×16 pointer at (100, 50) on a screen twice the video
+    // size: it shows as 8×8 at (50, 25).
+    let pointer = CursorOverlay {
+        serial: 1,
+        image: square(16, [255, 0, 255, 255]),
+        x: 100,
+        y: 50,
+        screen_width: 1280,
+        screen_height: 720,
+    };
+    let rgba = r
+        .render_to_rgba(Some(&pic), Some(&pointer), w as u32, h as u32)
+        .unwrap();
+    assert_eq!(pixel(&rgba, w, 54, 29), (255, 0, 255), "inside the pointer");
+    assert_eq!(pixel(&rgba, w, 52, 31), (255, 0, 255));
+    assert_ne!(pixel(&rgba, w, 47, 29), (255, 0, 255), "left of it");
+    assert_ne!(pixel(&rgba, w, 61, 29), (255, 0, 255), "right of it");
+    assert_ne!(pixel(&rgba, w, 54, 35), (255, 0, 255), "below it");
+    // Away from the pointer, the video is unchanged.
+    assert_stripes(&rgba, w, h, 3);
+
+    // Moved, same image (no new upload): drawn at the new place.
+    let moved = CursorOverlay {
+        x: 600,
+        y: 400,
+        ..pointer.clone()
+    };
+    let rgba = r
+        .render_to_rgba(Some(&pic), Some(&moved), w as u32, h as u32)
+        .unwrap();
+    assert_eq!(pixel(&rgba, w, 304, 204), (255, 0, 255));
+    assert_ne!(pixel(&rgba, w, 54, 29), (255, 0, 255), "old place is clear");
+}
+
+#[test]
+fn pointer_transparency_is_premultiplied_alpha() {
+    let Some(mut r) = renderer() else { return };
+    let (w, h) = (64usize, 64usize);
+    // Black video: Y 16, Cb/Cr 128.
+    let mut data = vec![16u8; w * h];
+    data.extend(std::iter::repeat_n(128u8, w * h / 2));
+    let pic = Picture::Nv12 {
+        width: w as u32,
+        height: h as u32,
+        data: &data,
+    };
+    // Half-transparent white, premultiplied: (128, 128, 128, 128).
+    // Fully transparent pixels leave the video alone.
+    let mut pixels = [128u8, 128, 128, 128].repeat(4 * 4);
+    pixels.extend([0u8, 0, 0, 0].repeat(4 * 4));
+    let pointer = CursorOverlay {
+        serial: 7,
+        image: Arc::new(CursorImage {
+            width: 4,
+            height: 8,
+            pixels,
+        }),
+        x: 10,
+        y: 10,
+        screen_width: 64,
+        screen_height: 64,
+    };
+    let rgba = r
+        .render_to_rgba(Some(&pic), Some(&pointer), w as u32, h as u32)
+        .unwrap();
+    let (gray, _, _) = pixel(&rgba, w, 11, 11);
+    assert!((125..=131).contains(&gray), "half white over black: {gray}");
+    assert_eq!(pixel(&rgba, w, 11, 16), (0, 0, 0), "transparent part");
+}
+
+#[test]
+fn no_pointer_without_a_picture() {
+    let Some(mut r) = renderer() else { return };
+    let pointer = CursorOverlay {
+        serial: 1,
+        image: square(8, [255, 255, 255, 255]),
+        x: 0,
+        y: 0,
+        screen_width: 64,
+        screen_height: 64,
+    };
+    let rgba = r.render_to_rgba(None, Some(&pointer), 64, 64).unwrap();
+    assert!(rgba.chunks(4).all(|p| p == [0, 0, 0, 255]));
 }
 
 #[cfg(feature = "vaapi")]
@@ -276,18 +387,18 @@ mod vaapi {
             let t = Instant::now();
             let pic = dec.picture(PictureKind::DmaBuf).unwrap().unwrap();
             assert!(matches!(pic, Picture::DmaBuf { .. }));
-            r.render_to_rgba(Some(&pic), 16, 16).unwrap();
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
             zero_copy_ms.push(t.elapsed().as_secs_f64() * 1e3);
             if i == 59 {
-                via_dmabuf = r.render_to_rgba(Some(&pic), w, h).unwrap();
+                via_dmabuf = r.render_to_rgba(Some(&pic), None, w, h).unwrap();
             }
 
             let t = Instant::now();
             let pic = dec.picture(PictureKind::Nv12).unwrap().unwrap();
-            r.render_to_rgba(Some(&pic), 16, 16).unwrap();
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
             download_ms.push(t.elapsed().as_secs_f64() * 1e3);
             if i == 59 {
-                via_cpu = r.render_to_rgba(Some(&pic), w, h).unwrap();
+                via_cpu = r.render_to_rgba(Some(&pic), None, w, h).unwrap();
             }
         }
         // Both ways show the stripes (encoding costs a little accuracy).

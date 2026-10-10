@@ -12,11 +12,13 @@
 //! - PipeWire via xdg-desktop-portal ScreenCast (planned, phase 1):
 //!   DMA-BUF frames, user confirmation, restore token.
 
+pub mod cursor;
 pub mod dmabuf;
 #[cfg(feature = "kms")]
 pub mod kms;
 mod test_pattern;
 
+pub use cursor::{CursorImage, CursorState};
 pub use dmabuf::{DmaBuf, DmaBufPlane};
 pub use test_pattern::TestPattern;
 
@@ -49,6 +51,8 @@ pub struct Frame {
     pub format: PixelFormat,
     pub data: Vec<u8>,
     pub dmabuf: Option<DmaBuf>,
+    /// The pointer, if the source knows it (it is not in the image).
+    pub cursor: Option<CursorState>,
     /// Source sequence number, increments per captured frame.
     pub seq: u64,
     /// Local monotonic clock (µs): when the image was produced (vblank).
@@ -65,6 +69,7 @@ impl Frame {
             format,
             data: vec![0; format.frame_bytes(width, height)],
             dmabuf: None,
+            cursor: None,
             seq: 0,
             capture_us: 0,
             ready_us: 0,
@@ -79,6 +84,7 @@ impl Frame {
             format: PixelFormat::Bgrx,
             data: Vec::new(),
             dmabuf: Some(image),
+            cursor: None,
             seq: 0,
             capture_us: 0,
             ready_us: 0,

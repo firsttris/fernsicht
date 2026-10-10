@@ -77,4 +77,8 @@ impl<'a> Writer<'a> {
     pub(crate) fn u64(&mut self, v: u64) {
         self.put(&v.to_le_bytes());
     }
+
+    pub(crate) fn bytes(&mut self, v: &[u8]) {
+        self.put(v);
+    }
 }

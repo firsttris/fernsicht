@@ -43,3 +43,10 @@ fn fs(in: VertexOut) -> @location(0) vec4<f32> {
     );
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
+
+// The pointer: BGRA with premultiplied alpha, sampled as RGBA through a
+// BGRA image; blended over the video by the pipeline.
+@fragment
+fn fs_cursor(in: VertexOut) -> @location(0) vec4<f32> {
+    return textureSample(y_plane, samp, in.uv);
+}

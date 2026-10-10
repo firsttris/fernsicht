@@ -22,6 +22,8 @@ fuzz_target!(|data: &[u8]| {
         Packet::Hello(p) => p.encode(&mut buf),
         Packet::HelloAck(p) => p.encode(&mut buf),
         Packet::Bye(p) => p.encode(&mut buf),
+        Packet::Cursor(p) => p.encode(&mut buf),
+        Packet::CursorShape(p, data) => p.encode(data, &mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

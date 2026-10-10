@@ -14,7 +14,7 @@ use winit::window::Window;
 
 use super::renderer::Target;
 use super::{Gpu, RenderError, Renderer};
-use crate::Presenter;
+use crate::{CursorOverlay, Presenter};
 
 /// Present modes from most to least preferred for latency.
 pub fn pick_present_mode(available: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
@@ -135,9 +135,9 @@ impl WindowPresenter {
         };
         let gpu = self.renderer.gpu();
         let swapchain_fn = gpu.swapchain.as_ref().expect("created for a window");
-        // SAFETY: the GPU is idle (every frame waits); owned by us.
+        gpu.wait_idle();
+        // SAFETY: the GPU is idle; owned by us.
         unsafe {
-            let _ = gpu.device.device_wait_idle();
             for v in sc.views {
                 gpu.device.destroy_image_view(v, None);
             }
@@ -265,7 +265,11 @@ impl WindowPresenter {
         Ok(true)
     }
 
-    fn draw(&mut self, picture: Option<&Picture<'_>>) -> Result<(), RenderError> {
+    fn draw(
+        &mut self,
+        picture: Option<&Picture<'_>>,
+        cursor: Option<&CursorOverlay>,
+    ) -> Result<(), RenderError> {
         let ensure = self.ensure_swapchain().map_err(RenderError::Other)?;
         if !ensure {
             return Ok(());
@@ -296,7 +300,7 @@ impl WindowPresenter {
         };
         let (handle, wait, done) = (sc.handle, sc.acquired, sc.rendered[index]);
         self.renderer
-            .render(picture, &target, Some(wait), Some(done), |_, _| {})?;
+            .render(picture, cursor, &target, Some(wait), Some(done), |_, _| {})?;
         let waits = [done];
         let swapchains = [handle];
         let indices = [index as u32];
@@ -329,8 +333,9 @@ impl Presenter for WindowPresenter {
         &mut self,
         _frame: &DecodedFrame,
         picture: Option<&Picture<'_>>,
+        cursor: Option<&CursorOverlay>,
     ) -> Result<(), String> {
-        match self.draw(picture) {
+        match self.draw(picture, cursor) {
             Ok(()) => {
                 self.presented += 1;
                 Ok(())

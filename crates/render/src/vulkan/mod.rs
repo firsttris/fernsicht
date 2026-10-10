@@ -9,4 +9,4 @@ mod renderer;
 pub mod window;
 
 pub use gpu::{DEVICE_ENV, Gpu};
-pub use renderer::{RenderError, Renderer, letterbox, spirv};
+pub use renderer::{RenderError, Renderer, cursor_rect, letterbox, spirv};

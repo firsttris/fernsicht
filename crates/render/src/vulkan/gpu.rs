@@ -226,6 +226,14 @@ impl Gpu {
         self.memory_fd.is_some()
     }
 
+    /// Waits until the GPU is done with everything submitted. Holds the
+    /// queue lock: Vulkan requires the queues to be left alone meanwhile.
+    pub(crate) fn wait_idle(&self) {
+        let _queue = self.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: valid device; the queues are not used concurrently.
+        let _ = unsafe { self.device.device_wait_idle() };
+    }
+
     /// A memory type allowed by `bits` with all of `flags`.
     pub(crate) fn memory_type(&self, bits: u32, flags: vk::MemoryPropertyFlags) -> Option<u32> {
         (0..self.memory.memory_type_count).find(|&i| {

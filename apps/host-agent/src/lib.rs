@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
-use fernsicht_capture::{Frame, FrameSource, TestPattern};
+use fernsicht_capture::{CursorState, Frame, FrameSource, TestPattern};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 #[cfg(feature = "vaapi")]
 use fernsicht_codec::vaapi::{VaapiEncoder, VaapiEncoderConfig};
@@ -27,7 +27,10 @@ use fernsicht_codec::{EncodedFrame, Encoder};
 use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock, now_us};
 use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer};
-use fernsicht_proto::{Bye, ClockPong, Codec, Feedback, Hello, HelloAck, MAX_DATAGRAM, Packet};
+use fernsicht_proto::{
+    Bye, CURSOR_CHUNK, ClockPong, Codec, Cursor, CursorShape, Feedback, Hello, HelloAck,
+    MAX_CURSOR_SIZE, MAX_DATAGRAM, Packet,
+};
 
 /// Raw frame buffers: producer, slot, consumer.
 const BUFFERS: usize = 3;
@@ -378,8 +381,14 @@ impl HostAgent {
         let capture = {
             let (shared, slot) = (shared.clone(), frame_slot.clone());
             let (free_rx, free_tx) = (free_frames_rx, free_frames_tx.clone());
+            let cursor = CursorSender::new(
+                self.socket.clone(),
+                peer,
+                params.session_id,
+                (source.width(), source.height()),
+            );
             spawn_hot("capture", move || {
-                capture_loop(source, &shared, &slot, &free_rx, &free_tx);
+                capture_loop(source, &shared, &slot, &free_rx, &free_tx, cursor);
             })?
         };
         let encode = {
@@ -463,6 +472,7 @@ fn capture_loop(
     slot: &Slot<Frame>,
     free_rx: &Receiver<Frame>,
     free_tx: &Sender<Frame>,
+    mut cursor: CursorSender,
 ) {
     while shared.running.load(Ordering::Acquire) {
         let Ok(mut frame) = free_rx.recv_timeout(Duration::from_millis(100)) else {
@@ -473,11 +483,94 @@ fn capture_loop(
             break;
         }
         HostStats::bump(&shared.stats.frames_captured);
+        // Right away, not after encoding: the pointer is the one thing the
+        // client can show before the frame it belongs to arrives.
+        if let Some(c) = &frame.cursor {
+            cursor.send(c);
+        }
         if let Some(skipped) = slot.put(frame) {
             let _ = free_tx.send(skipped);
         }
     }
     slot.close();
+}
+
+/// An unchanged cursor image is sent again, so that a lost piece heals:
+/// soon after a change (the first copy of a session can even arrive
+/// before the client knows the session), then less often, up to every 2 s.
+const CURSOR_SHAPE_FIRST_REPEAT: Duration = Duration::from_millis(100);
+const CURSOR_SHAPE_REPEAT: Duration = Duration::from_secs(2);
+
+/// Sends the pointer next to the video: its position with every captured
+/// frame, its image when it changes and every [`CURSOR_SHAPE_REPEAT`].
+struct CursorSender {
+    socket: Arc<UdpSocket>,
+    peer: SocketAddr,
+    session_id: u32,
+    screen: (u16, u16),
+    /// Serial of the image last sent, when, and the wait for the repeat.
+    sent: Option<(u32, Instant, Duration)>,
+    warned: bool,
+}
+
+impl CursorSender {
+    fn new(socket: Arc<UdpSocket>, peer: SocketAddr, session_id: u32, screen: (u32, u32)) -> Self {
+        let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
+        Self {
+            socket,
+            peer,
+            session_id,
+            screen: (clamp(screen.0), clamp(screen.1)),
+            sent: None,
+            warned: false,
+        }
+    }
+
+    fn send(&mut self, c: &CursorState) {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let img = &c.image;
+        let fits = (1..=u32::from(MAX_CURSOR_SIZE)).contains(&img.width)
+            && (1..=u32::from(MAX_CURSOR_SIZE)).contains(&img.height)
+            && img.pixels.len() == (img.width * img.height * 4) as usize;
+        if !fits {
+            if !self.warned {
+                log::warn!("pointer image {}×{} cannot be sent", img.width, img.height);
+                self.warned = true;
+            }
+            return;
+        }
+        let repeat = match self.sent {
+            Some((serial, at, wait)) if serial == c.serial => {
+                (at.elapsed() >= wait).then(|| (wait * 2).min(CURSOR_SHAPE_REPEAT))
+            }
+            _ => Some(CURSOR_SHAPE_FIRST_REPEAT),
+        };
+        if let Some(next_wait) = repeat {
+            for (i, chunk) in img.pixels.chunks(CURSOR_CHUNK).enumerate() {
+                let n = CursorShape {
+                    session_id: self.session_id,
+                    serial: c.serial,
+                    width: img.width as u16,
+                    height: img.height as u16,
+                    offset: (i * CURSOR_CHUNK) as u32,
+                }
+                .encode(chunk, &mut buf);
+                let _ = self.socket.send_to(&buf[..n], self.peer);
+            }
+            self.sent = Some((c.serial, Instant::now(), next_wait));
+        }
+        let n = Cursor {
+            session_id: self.session_id,
+            visible: c.visible,
+            shape_serial: c.serial,
+            x: c.x,
+            y: c.y,
+            screen_width: self.screen.0,
+            screen_height: self.screen.1,
+        }
+        .encode(&mut buf);
+        let _ = self.socket.send_to(&buf[..n], self.peer);
+    }
 }
 
 /// Size of the test pattern when the client leaves the size to the host.

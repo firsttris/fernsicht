@@ -15,7 +15,7 @@ use fernsicht_core::latency::Stage;
 use fernsicht_core::now_us;
 use fernsicht_net::{FecConfig, FrameMeta, Packetizer};
 use fernsicht_proto::*;
-use fernsicht_render::Presenter;
+use fernsicht_render::{CursorOverlay, Presenter};
 
 /// How the fake host behaves.
 #[derive(Clone)]
@@ -432,6 +432,7 @@ fn invalid_host_address_is_an_error() {
 struct Seen {
     frames: u64,
     pictures: u64,
+    pointers: u64,
     overlays: Vec<String>,
 }
 
@@ -442,10 +443,16 @@ impl Presenter for Recording {
         Some(PictureKind::Nv12)
     }
 
-    fn present(&mut self, _: &DecodedFrame, picture: Option<&Picture<'_>>) -> Result<(), String> {
+    fn present(
+        &mut self,
+        _: &DecodedFrame,
+        picture: Option<&Picture<'_>>,
+        cursor: Option<&CursorOverlay>,
+    ) -> Result<(), String> {
         let mut s = self.0.lock().unwrap();
         s.frames += 1;
         s.pictures += u64::from(picture.is_some());
+        s.pointers += u64::from(cursor.is_some());
         Ok(())
     }
 

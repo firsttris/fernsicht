@@ -6,8 +6,10 @@
 //! This is what Sunshine's KMS backend does. It works without a desktop
 //! session (login screen, gamescope) and needs no confirmation dialog.
 //!
-//! Limits: the hardware cursor and overlay planes are separate planes and
-//! are not in the picture.
+//! The pointer is on its own plane (the cursor plane) and not in the
+//! picture. It is reported with every frame instead ([`Frame::cursor`]):
+//! its position each frame, its image when it changes. Overlay planes are
+//! not captured.
 //!
 //! The kernel only hands out buffer handles of another client's
 //! framebuffer to processes with `CAP_SYS_ADMIN`. Without it, GetFB2
@@ -25,7 +27,7 @@ use drm::{ClientCapability, Device as _, VblankWaitFlags, VblankWaitTarget};
 use fernsicht_core::{clock, now_us};
 
 use crate::dmabuf::{DmaBuf, DmaBufPlane, formats};
-use crate::{CaptureError, Frame, FrameSource, PixelFormat};
+use crate::{CaptureError, CursorImage, CursorState, Frame, FrameSource, PixelFormat};
 
 /// Part of the error message when the process lacks the capability.
 pub const NEEDS_CAP_SYS_ADMIN: &str = "KMS capture needs CAP_SYS_ADMIN";
@@ -135,6 +137,8 @@ pub fn vblank_is_due(t: Instant, due: Instant, refresh: Duration) -> bool {
 pub struct KmsCapture {
     card: Card,
     sel: Selection,
+    /// The cursor plane of our CRTC, if the driver has one.
+    cursor: Option<CursorPlane>,
     width: u32,
     height: u32,
     refresh: Duration,
@@ -231,7 +235,12 @@ impl KmsCapture {
             choose(&planes, &crtcs, cfg.connector.as_deref()).map_err(CaptureError::Backend)?;
         let hz = refresh.get(&sel.crtc).copied().unwrap_or(60).max(1);
 
+        let cursor = find_cursor_plane(&card, &res, sel.crtc);
+        if cursor.is_none() {
+            log::info!("no cursor plane for the captured display; the pointer is not reported");
+        }
         let mut cap = Self {
+            cursor,
             card,
             sel,
             width: 0,
@@ -365,14 +374,193 @@ fn nonzero(id: u32) -> Result<control::RawResourceHandle, CaptureError> {
 }
 
 fn is_primary(card: &Card, plane: plane::Handle) -> bool {
-    let Ok(props) = card.get_properties(plane) else {
-        return false;
-    };
-    props.iter().any(|(id, value)| {
+    plane_property(card, plane, "type") == Some(control::PlaneType::Primary as u64)
+}
+
+/// The raw value of a plane property, by name.
+fn plane_property(card: &Card, plane: plane::Handle, name: &str) -> Option<u64> {
+    let props = card.get_properties(plane).ok()?;
+    props.iter().find_map(|(id, value)| {
         card.get_property(*id)
-            .is_ok_and(|p| p.name().to_bytes() == b"type")
-            && *value == control::PlaneType::Primary as u64
+            .is_ok_and(|p| p.name().to_bytes() == name.as_bytes())
+            .then_some(*value)
     })
+}
+
+/// How often the cursor image is read again although its framebuffer did
+/// not change (a compositor may redraw into the same buffer).
+const CURSOR_REFRESH: Duration = Duration::from_secs(2);
+
+/// The cursor plane and what we last read from it.
+struct CursorPlane {
+    plane: plane::Handle,
+    /// Framebuffer the image was read from, and when.
+    fb: Option<(u32, Instant)>,
+    /// The visible part of the image and where it starts in the buffer.
+    image: Option<(Arc<CursorImage>, u32, u32)>,
+    serial: u32,
+    failed: bool,
+}
+
+/// A cursor plane that can show on `crtc`.
+fn find_cursor_plane(
+    card: &Card,
+    res: &control::ResourceHandles,
+    crtc: u32,
+) -> Option<CursorPlane> {
+    card.plane_handles().ok()?.into_iter().find_map(|h| {
+        let info = card.get_plane(h).ok()?;
+        let fits = res
+            .filter_crtcs(info.possible_crtcs())
+            .iter()
+            .any(|c| u32::from(*c) == crtc);
+        let cursor = plane_property(card, h, "type") == Some(control::PlaneType::Cursor as u64);
+        (fits && cursor).then_some(CursorPlane {
+            plane: h,
+            fb: None,
+            image: None,
+            serial: 0,
+            failed: false,
+        })
+    })
+}
+
+/// A KMS signed-range property value (stored as two's complement).
+fn signed(v: u64) -> i32 {
+    v as i64 as i32
+}
+
+impl KmsCapture {
+    /// The pointer now: position every frame, image when it changed. A
+    /// failure only switches pointer reporting off; capture goes on.
+    fn read_cursor(&mut self) -> Option<CursorState> {
+        let crtc = self.sel.crtc;
+        let cp = self.cursor.as_mut()?;
+        if cp.failed {
+            return None;
+        }
+        let info = self.card.get_plane(cp.plane).ok()?;
+        let fb = info
+            .framebuffer()
+            .filter(|_| info.crtc().is_some_and(|c| u32::from(c) == crtc));
+        let Some(fb) = fb else {
+            // Hidden; say so if a pointer was shown before.
+            let (image, dx, dy) = cp.image.clone()?;
+            return Some(CursorState {
+                visible: false,
+                x: dx as i32,
+                y: dy as i32,
+                serial: cp.serial,
+                image,
+            });
+        };
+        let fb_id = u32::from(fb);
+        let stale = cp
+            .fb
+            .is_none_or(|(id, at)| id != fb_id || at.elapsed() >= CURSOR_REFRESH);
+        if stale {
+            match read_cursor_image(&self.card, fb) {
+                Ok(raw) => {
+                    cp.fb = Some((fb_id, Instant::now()));
+                    let trimmed = raw.trimmed();
+                    let changed = match (&cp.image, &trimmed) {
+                        (Some((old, ox, oy)), Some((new, nx, ny))) => {
+                            **old != *new || (ox, oy) != (nx, ny)
+                        }
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    if changed {
+                        cp.serial = cp.serial.wrapping_add(1).max(1);
+                        cp.image = trimmed.map(|(img, dx, dy)| (Arc::new(img), dx, dy));
+                    }
+                }
+                Err(e) => {
+                    log::warn!("cannot read the pointer image ({e}); the pointer is not reported");
+                    cp.failed = true;
+                    return None;
+                }
+            }
+        }
+        let (image, dx, dy) = cp.image.clone()?;
+        let x = plane_property(&self.card, cp.plane, "CRTC_X").map_or(0, signed);
+        let y = plane_property(&self.card, cp.plane, "CRTC_Y").map_or(0, signed);
+        Some(CursorState {
+            visible: true,
+            x: x + dx as i32,
+            y: y + dy as i32,
+            serial: cp.serial,
+            image,
+        })
+    }
+}
+
+/// `DMA_BUF_IOCTL_SYNC` and its flags (linux/dma-buf.h).
+const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
+const DMA_BUF_SYNC_READ: u64 = 1;
+const DMA_BUF_SYNC_END: u64 = 4;
+
+/// Copies a cursor framebuffer (linear ARGB8888, as cursor planes use) to
+/// memory through a mapping of its DMA-BUF.
+fn read_cursor_image(card: &Card, fb: framebuffer::Handle) -> Result<CursorImage, String> {
+    let info = card
+        .get_planar_framebuffer(fb)
+        .map_err(|e| format!("GetFB2: {e}"))?;
+    let format = info.pixel_format() as u32;
+    if format != formats::ARGB8888 {
+        return Err(format!("format {}", crate::dmabuf::fourcc_name(format)));
+    }
+    if info
+        .modifier()
+        .is_some_and(|m| !matches!(u64::from(m), formats::MOD_LINEAR | formats::MOD_INVALID))
+    {
+        return Err("tiled cursor buffer".into());
+    }
+    let handle = info.buffers()[0].ok_or(NEEDS_CAP_SYS_ADMIN)?;
+    let result = (|| {
+        let fd = card
+            .buffer_to_prime_fd(handle, libc::O_CLOEXEC as u32)
+            .map_err(|e| format!("export: {e}"))?;
+        let (w, h) = info.size();
+        let (pitch, offset) = (info.pitches()[0] as usize, info.offsets()[0] as usize);
+        let row = w as usize * 4;
+        if pitch < row || w == 0 || h == 0 || w > 512 || h > 512 {
+            return Err(format!("odd cursor buffer {w}×{h}, pitch {pitch}"));
+        }
+        let len = offset + pitch * h as usize;
+        use std::os::fd::AsRawFd;
+        // SAFETY: a read-only shared mapping of a DMA-BUF we own; unmapped
+        // below; reads stay within `len`.
+        unsafe {
+            let map = libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            );
+            if map == libc::MAP_FAILED {
+                return Err(format!("mmap: {}", std::io::Error::last_os_error()));
+            }
+            let sync = |flags: u64| libc::ioctl(fd.as_raw_fd(), DMA_BUF_IOCTL_SYNC, &flags);
+            sync(DMA_BUF_SYNC_READ);
+            let base = (map as *const u8).add(offset);
+            let mut pixels = Vec::with_capacity(row * h as usize);
+            for y in 0..h as usize {
+                pixels.extend_from_slice(std::slice::from_raw_parts(base.add(y * pitch), row));
+            }
+            sync(DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END);
+            libc::munmap(map, len);
+            Ok(CursorImage {
+                width: w,
+                height: h,
+                pixels,
+            })
+        }
+    })();
+    let _ = card.close_buffer(handle);
+    result
 }
 
 /// `/dev/dri/card*`, in order.
@@ -422,6 +610,7 @@ impl FrameSource for KmsCapture {
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError> {
         let captured_us = self.wait_for_frame();
         let image = self.export()?;
+        frame.cursor = self.read_cursor();
         frame.width = image.width;
         frame.height = image.height;
         frame.format = PixelFormat::Bgrx;
@@ -525,6 +714,13 @@ mod tests {
         let (p, mut c) = setup();
         c[1].connectors.clear();
         assert_eq!(choose(&p, &c, None).unwrap().crtc, 81);
+    }
+
+    #[test]
+    fn signed_plane_positions() {
+        assert_eq!(signed(5), 5);
+        assert_eq!(signed((-12i64) as u64), -12);
+        assert_eq!(signed(u64::MAX), -1);
     }
 
     #[test]

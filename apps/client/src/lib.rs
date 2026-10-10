@@ -10,6 +10,8 @@
 //! falls behind. Any gap in the frame ids breaks the reference chain: the
 //! decoder then waits for a keyframe and the client asks the host for one.
 
+mod cursor;
+
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,8 @@ use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
 use fernsicht_proto::{Bye, ClockPing, Codec, Feedback, Hello, MAX_DATAGRAM, Packet, VideoHeader};
 use fernsicht_render::overlay::{self, StreamInfo};
 use fernsicht_render::{HeadlessPresenter, Presenter};
+
+use crate::cursor::CursorTracker;
 
 const HELLO_INTERVAL: Duration = Duration::from_millis(250);
 const FEEDBACK_INTERVAL: Duration = Duration::from_millis(100);
@@ -113,6 +117,9 @@ pub struct RunSummary {
     pub rtt_us: Option<u64>,
     pub total: Summary,
     pub stages: Vec<(Stage, Summary)>,
+    /// Pointer positions received, and pointer images completed.
+    pub cursor_positions: u64,
+    pub cursor_shapes: u64,
 }
 
 impl RunSummary {
@@ -216,6 +223,7 @@ pub fn run_with(
     let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
     let need_keyframe = Arc::new(AtomicBool::new(true));
     let info = Arc::new(Mutex::new(StreamInfo::default()));
+    let cursor = Arc::new(Mutex::new(CursorTracker::default()));
     let (free_tx, free_rx) = bounded(BUFFERS);
     for _ in 0..BUFFERS {
         free_tx.send(ReceivedFrame::empty()).unwrap();
@@ -229,6 +237,7 @@ pub fn run_with(
     };
     let presenter = {
         let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
+        let cursor = cursor.clone();
         let print = cfg.print_overlay;
         let hw = Hw {
             render_node: cfg.render_node.clone(),
@@ -248,6 +257,7 @@ pub fn run_with(
                 &hw,
                 record.as_mut().map(|w| w as &mut dyn std::io::Write),
                 presenter.as_mut(),
+                &cursor,
             );
             if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
                 log::error!("recording: {e}");
@@ -264,12 +274,17 @@ pub fn run_with(
         free_rx: &free_rx,
         free_tx: &free_tx,
         need_keyframe: &need_keyframe,
+        cursor: &cursor,
     };
     let net = network_loop(&cfg, &socket, &stop, &pipe, &info);
     // Closing the queue ends the present thread once it has drained.
     drop(decode_tx);
     let present = presenter.join().expect("present thread panicked");
     let net = net?;
+    let (cursor_positions, cursor_shapes) = cursor
+        .lock()
+        .map(|t| (t.positions, t.shapes))
+        .unwrap_or_default();
 
     Ok(RunSummary {
         session_id: net.session.map(|(id, _)| id),
@@ -288,6 +303,8 @@ pub fn run_with(
             .iter()
             .map(|s| (*s, present.stats.stage(*s)))
             .collect(),
+        cursor_positions,
+        cursor_shapes,
     })
 }
 
@@ -298,6 +315,7 @@ struct Pipe<'a> {
     free_tx: &'a Sender<ReceivedFrame>,
     /// Set by the decoder while its reference chain is broken.
     need_keyframe: &'a AtomicBool,
+    cursor: &'a Mutex<CursorTracker>,
 }
 
 fn network_loop(
@@ -429,6 +447,20 @@ fn network_loop(
             }
             Packet::ClockPong(pong) => {
                 clock.on_pong(&pong, now);
+            }
+            Packet::Cursor(c) => {
+                if session.is_some_and(|(id, _)| id == c.session_id)
+                    && let Ok(mut t) = pipe.cursor.lock()
+                {
+                    t.on_position(c);
+                }
+            }
+            Packet::CursorShape(s, data) => {
+                if session.is_some_and(|(id, _)| id == s.session_id)
+                    && let Ok(mut t) = pipe.cursor.lock()
+                {
+                    t.on_shape(&s, data);
+                }
             }
             Packet::Video(h, payload) => {
                 if session.is_none_or(|(id, _)| id != h.session_id) {
@@ -599,6 +631,7 @@ fn present_loop(
     hw: &Hw,
     mut record: Option<&mut dyn std::io::Write>,
     presenter: &mut dyn Presenter,
+    cursor: &Mutex<CursorTracker>,
 ) -> PresentResult {
     // Created on the first frame, from the codec the host announced.
     let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
@@ -657,7 +690,8 @@ fn present_loop(
                             }),
                             None => None,
                         };
-                        match presenter.present(&decoded, picture.as_ref()) {
+                        let pointer = cursor.lock().ok().and_then(|t| t.overlay());
+                        match presenter.present(&decoded, picture.as_ref(), pointer.as_ref()) {
                             Ok(()) => r.presented += 1,
                             Err(e) => log::warn!("present: {e}"),
                         }

@@ -24,6 +24,7 @@ anyhow.workspace = true
 clap.workspace = true
 crossbeam-channel.workspace = true
 env_logger.workspace = true
+fernsicht-capture.workspace = true
 fernsicht-codec.workspace = true
 fernsicht-core.workspace = true
 fernsicht-net.workspace = true
@@ -33,7 +34,6 @@ log.workspace = true
 winit = { workspace = true, optional = true }
 
 [dev-dependencies]
-fernsicht-capture.workspace = true
 
 [lints]
 workspace = true

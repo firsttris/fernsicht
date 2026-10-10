@@ -11,7 +11,25 @@ pub mod overlay;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
+use std::sync::Arc;
+
+use fernsicht_capture::CursorImage;
 use fernsicht_codec::{DecodedFrame, Picture, PictureKind};
+
+/// The pointer to draw over the video.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorOverlay {
+    /// Changes with the image (presenters cache the uploaded texture).
+    pub serial: u32,
+    /// BGRA, premultiplied alpha.
+    pub image: Arc<CursorImage>,
+    /// Top-left on the host's screen, in its pixels.
+    pub x: i32,
+    pub y: i32,
+    /// The host's screen size; the video may be scaled from it.
+    pub screen_width: u32,
+    pub screen_height: u32,
+}
 
 pub trait Presenter {
     /// The picture form wanted from the decoder; `None` needs no picture.
@@ -26,6 +44,7 @@ pub trait Presenter {
         &mut self,
         frame: &DecodedFrame,
         picture: Option<&Picture<'_>>,
+        cursor: Option<&CursorOverlay>,
     ) -> Result<(), String>;
 
     /// The latency overlay, about once per second.
@@ -43,6 +62,7 @@ impl Presenter for HeadlessPresenter {
         &mut self,
         _frame: &DecodedFrame,
         _picture: Option<&Picture<'_>>,
+        _cursor: Option<&CursorOverlay>,
     ) -> Result<(), String> {
         self.presented += 1;
         Ok(())

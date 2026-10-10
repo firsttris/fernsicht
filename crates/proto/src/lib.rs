@@ -42,6 +42,8 @@ pub enum Kind {
     Hello = 5,
     HelloAck = 6,
     Bye = 7,
+    Cursor = 8,
+    CursorShape = 9,
 }
 
 impl Kind {
@@ -54,6 +56,8 @@ impl Kind {
             5 => Kind::Hello,
             6 => Kind::HelloAck,
             7 => Kind::Bye,
+            8 => Kind::Cursor,
+            9 => Kind::CursorShape,
             _ => return None,
         })
     }
@@ -424,6 +428,125 @@ impl Bye {
     }
 }
 
+/// Largest cursor image side, in pixels (KMS cursor planes are at most
+/// 256×256).
+pub const MAX_CURSOR_SIZE: u16 = 256;
+
+/// Bytes of cursor image per [`CursorShape`] packet (the last one may be
+/// shorter). Fixed, so the receiver knows which pieces it has.
+pub const CURSOR_CHUNK: usize = 1024;
+
+const FLAG_CURSOR_VISIBLE: u8 = 0x01;
+
+/// Where the pointer is, host → client, with every captured frame.
+///
+/// The pointer is not part of the video: it lives on its own hardware
+/// plane, and the client draws it on top (later also moved locally for
+/// instant feedback).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cursor {
+    pub session_id: u32,
+    pub visible: bool,
+    /// Which shape is shown ([`CursorShape::serial`]); 0 = none yet.
+    pub shape_serial: u32,
+    /// Top-left corner of the cursor image on the captured screen, in
+    /// screen pixels; may be negative at the screen edges.
+    pub x: i32,
+    pub y: i32,
+    /// Size of the captured screen, to place the cursor on a scaled video.
+    pub screen_width: u16,
+    pub screen_height: u16,
+}
+
+impl Cursor {
+    pub const LEN: usize = PREFIX_LEN + 20;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        let flags = if self.visible { FLAG_CURSOR_VISIBLE } else { 0 };
+        w.prefix(Kind::Cursor, flags);
+        w.u32(self.session_id);
+        w.u32(self.shape_serial);
+        w.u32(self.x as u32);
+        w.u32(self.y as u32);
+        w.u16(self.screen_width);
+        w.u16(self.screen_height);
+        Self::LEN
+    }
+
+    fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Cursor {
+            visible: flags & FLAG_CURSOR_VISIBLE != 0,
+            session_id: r.u32()?,
+            shape_serial: r.u32()?,
+            x: r.u32()? as i32,
+            y: r.u32()? as i32,
+            screen_width: r.u16()?,
+            screen_height: r.u16()?,
+        })
+    }
+}
+
+/// A piece of a cursor image, host → client. The image is `width`×`height`
+/// pixels, 4 bytes each in DRM `ARGB8888` order (B, G, R, A in memory),
+/// premultiplied alpha, rows without padding; this packet carries the bytes
+/// from `offset` on (a multiple of [`CURSOR_CHUNK`]). Sent when the shape
+/// changes and repeated now and then, so a lost piece heals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CursorShape {
+    pub session_id: u32,
+    /// Increases with every new shape; never 0.
+    pub serial: u32,
+    pub width: u16,
+    pub height: u16,
+    pub offset: u32,
+}
+
+impl CursorShape {
+    pub const HEADER_LEN: usize = PREFIX_LEN + 16;
+
+    /// Size of the whole image in bytes.
+    pub fn image_len(&self) -> usize {
+        usize::from(self.width) * usize::from(self.height) * 4
+    }
+
+    /// Writes the header and `data` (at most [`CURSOR_CHUNK`] bytes).
+    pub fn encode(&self, data: &[u8], buf: &mut [u8]) -> usize {
+        assert!(data.len() <= CURSOR_CHUNK, "cursor chunk too large");
+        let len = Self::HEADER_LEN + data.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::CursorShape, 0);
+        w.u32(self.session_id);
+        w.u32(self.serial);
+        w.u16(self.width);
+        w.u16(self.height);
+        w.u32(self.offset);
+        w.bytes(data);
+        len
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let s = CursorShape {
+            session_id: r.u32()?,
+            serial: r.u32()?,
+            width: r.u16()?,
+            height: r.u16()?,
+            offset: r.u32()?,
+        };
+        if s.serial == 0 {
+            return Err(DecodeError::Invalid("cursor shape serial 0"));
+        }
+        if s.width == 0 || s.height == 0 || s.width > MAX_CURSOR_SIZE || s.height > MAX_CURSOR_SIZE
+        {
+            return Err(DecodeError::Invalid("cursor size"));
+        }
+        if !(s.offset as usize).is_multiple_of(CURSOR_CHUNK) || s.offset as usize >= s.image_len() {
+            return Err(DecodeError::Invalid("cursor chunk offset"));
+        }
+        Ok(s)
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -434,6 +557,9 @@ pub enum Packet<'a> {
     Hello(Hello),
     HelloAck(HelloAck),
     Bye(Bye),
+    Cursor(Cursor),
+    /// Header and this piece's bytes.
+    CursorShape(CursorShape, &'a [u8]),
 }
 
 impl<'a> Packet<'a> {
@@ -464,6 +590,16 @@ impl<'a> Packet<'a> {
             Kind::Hello => Packet::Hello(Hello::read(&mut r)?),
             Kind::HelloAck => Packet::HelloAck(HelloAck::read(&mut r)?),
             Kind::Bye => Packet::Bye(Bye::read(&mut r)?),
+            Kind::Cursor => Packet::Cursor(Cursor::read(flags, &mut r)?),
+            Kind::CursorShape => {
+                let s = CursorShape::read(&mut r)?;
+                let data = r.rest();
+                let expected = (s.image_len() - s.offset as usize).min(CURSOR_CHUNK);
+                if data.len() != expected {
+                    return Err(DecodeError::Invalid("cursor chunk length"));
+                }
+                Packet::CursorShape(s, data)
+            }
         })
     }
 }
@@ -610,6 +746,93 @@ mod tests {
         let bye = Bye { session_id: 9 };
         let n = bye.encode(&mut buf);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Bye(bye));
+    }
+
+    #[test]
+    fn cursor_roundtrips() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let c = Cursor {
+            session_id: 3,
+            visible: true,
+            shape_serial: 7,
+            x: -12,
+            y: 1439,
+            screen_width: 2560,
+            screen_height: 1440,
+        };
+        let n = c.encode(&mut buf);
+        assert_eq!(n, Cursor::LEN);
+        assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Cursor(c));
+        let hidden = Cursor {
+            visible: false,
+            ..c
+        };
+        let n = hidden.encode(&mut buf);
+        assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Cursor(hidden));
+    }
+
+    #[test]
+    fn cursor_shape_chunks_roundtrip_and_are_checked() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        // 24×24 cursor: 2304 bytes in pieces of 1024, 1024, 256.
+        let image: Vec<u8> = (0..24 * 24 * 4).map(|i| i as u8).collect();
+        let mut got = vec![0u8; image.len()];
+        for (i, chunk) in image.chunks(CURSOR_CHUNK).enumerate() {
+            let s = CursorShape {
+                session_id: 1,
+                serial: 5,
+                width: 24,
+                height: 24,
+                offset: (i * CURSOR_CHUNK) as u32,
+            };
+            let n = s.encode(chunk, &mut buf);
+            assert!(n <= MAX_DATAGRAM);
+            let Packet::CursorShape(h, data) = Packet::decode(&buf[..n]).unwrap() else {
+                panic!("not a cursor shape")
+            };
+            assert_eq!(h, s);
+            got[h.offset as usize..][..data.len()].copy_from_slice(data);
+        }
+        assert_eq!(got, image);
+
+        let good = CursorShape {
+            session_id: 1,
+            serial: 5,
+            width: 24,
+            height: 24,
+            offset: 0,
+        };
+        let bad = [
+            (CursorShape { serial: 0, ..good }, 1024),
+            (CursorShape { width: 0, ..good }, 1024),
+            (CursorShape { width: 257, ..good }, 1024),
+            (
+                CursorShape {
+                    offset: 100,
+                    ..good
+                },
+                1024,
+            ),
+            (
+                CursorShape {
+                    offset: 3072,
+                    ..good
+                },
+                256,
+            ),
+            (good, 1000),
+            (
+                CursorShape {
+                    offset: 2048,
+                    ..good
+                },
+                1024,
+            ),
+        ];
+        for (s, len) in bad {
+            let n = s.encode(&vec![0; len.min(CURSOR_CHUNK)], &mut buf);
+            assert!(Packet::decode(&buf[..n]).is_err(), "{s:?} with {len} bytes");
+        }
     }
 
     #[test]

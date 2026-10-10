@@ -86,8 +86,11 @@ geht.
 
 ## Bekannte Grenzen
 
-- **Mauszeiger fehlt.** Er liegt auf einer eigenen Hardware-Ebene
-  (Cursor-Plane). Kommt mit der Eingabe in Phase 2.
+- **Mauszeiger:** Er liegt auf einer eigenen Hardware-Ebene (Cursor-Plane)
+  und ist deshalb nicht im Bild. Der Host liest ihn dort aus und schickt
+  Position und Bild extra mit, der Client zeichnet ihn darüber. Zeichnet
+  der Compositor den Zeiger selbst ins Bild (Software-Cursor), ist er
+  ohnehin im Video.
 - **Overlays fehlen.** Ebenso nur die Primär-Ebene; gamescope legt die
   Steam-Overlays teils auf eigene Ebenen.
 - **Root-Prozess.** Der ganze Host-Agent läuft vorerst als root. Das ist nur

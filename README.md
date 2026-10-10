@@ -15,7 +15,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | | KMS-Capture → DMA-BUF → VAAPI ohne Kopie | ✅ implementiert; Import und GPU-Farbkonvertierung in CI getestet, KMS selbst von Hand ([Anleitung](docs/kms-capture.md)) |
 | | Client-Fenster (Vulkan, winit) | ✅ VAAPI-Bild ohne Kopie in Vulkan (0,15 ms für Umrechnen + Zeichnen bei 1080p), Mailbox-Present, CPU-Rückfallweg; Render-Tests im CI mit llvmpipe |
 | | NVIDIA: NVENC/NVDEC | ✅ Encoder und Decoder über FFmpeg/CUDA, getestet auf dem NVIDIA-Runner; Bilder gehen vorerst über die CPU (Bildschirmaufnahme auf NVIDIA fehlt noch) |
-| | PipeWire-Capture, Mauszeiger | ⏳ offen |
+| | Mauszeiger | ✅ eigene Pakete (Position pro Frame, Bild bei Änderung, Wiederholung gegen Verlust); der Client zeichnet ihn über das Video. KMS liest die Cursor-Plane, das Testbild hat einen kreisenden Pfeil |
+| | PipeWire-Capture | ⏳ offen |
 | 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
@@ -152,7 +153,7 @@ sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
 1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
 2. NVIDIA ohne Kopie: Bildschirmaufnahme (DMA-BUF → CUDA) für NVENC,
    NVDEC-Bilder direkt in Vulkan.
-3. Mauszeiger (Cursor-Plane) ins Bild, PipeWire-Portal als zweites
+3. PipeWire-Portal als zweites
    Capture-Backend.
 4. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.
 

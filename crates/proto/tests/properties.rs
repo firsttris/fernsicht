@@ -104,6 +104,36 @@ proptest! {
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Bye(bye)));
     }
 
+    #[test]
+    fn cursor_roundtrip(session_id: u32, visible: bool, shape_serial: u32, x: i32, y: i32,
+                        screen_width: u16, screen_height: u16) {
+        let mut buf = [0u8; Cursor::LEN];
+        let c = Cursor { session_id, visible, shape_serial, x, y, screen_width, screen_height };
+        let n = c.encode(&mut buf);
+        prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Cursor(c)));
+    }
+
+    /// Every piece of any valid cursor image parses back to the same bytes.
+    #[test]
+    fn cursor_shape_roundtrip(session_id: u32, serial in 1u32.., width in 1u16..=MAX_CURSOR_SIZE,
+                              height in 1u16..=MAX_CURSOR_SIZE, seed: u8) {
+        let len = usize::from(width) * usize::from(height) * 4;
+        let image: Vec<u8> = (0..len).map(|i| (i as u8) ^ seed).collect();
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let mut got = vec![0u8; len];
+        for (i, chunk) in image.chunks(CURSOR_CHUNK).enumerate() {
+            let s = CursorShape { session_id, serial, width, height,
+                                  offset: (i * CURSOR_CHUNK) as u32 };
+            let n = s.encode(chunk, &mut buf);
+            let Ok(Packet::CursorShape(h, data)) = Packet::decode(&buf[..n]) else {
+                return Err(TestCaseError::fail("piece did not parse"));
+            };
+            prop_assert_eq!(h, s);
+            got[h.offset as usize..][..data.len()].copy_from_slice(data);
+        }
+        prop_assert_eq!(got, image);
+    }
+
     /// Arbitrary bytes never panic, and whatever parses re-encodes to a
     /// datagram that parses to the same packet (no lossy interpretation).
     #[test]
@@ -122,13 +152,15 @@ proptest! {
             Packet::Hello(p) => p.encode(&mut buf),
             Packet::HelloAck(p) => p.encode(&mut buf),
             Packet::Bye(p) => p.encode(&mut buf),
+            Packet::Cursor(p) => p.encode(&mut buf),
+            Packet::CursorShape(p, data) => p.encode(data, &mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }
 
     /// Valid prefix plus random body: exercises the per-kind validation.
     #[test]
-    fn random_bodies_are_safe(kind in 1u8..=7, flags: u8,
+    fn random_bodies_are_safe(kind in 1u8..=9, flags: u8,
                               body in proptest::collection::vec(any::<u8>(), 0..96)) {
         let mut bytes = vec![MAGIC, VERSION, kind, flags];
         bytes.extend_from_slice(&body);

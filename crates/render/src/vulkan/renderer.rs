@@ -12,6 +12,8 @@ use std::sync::Arc;
 use ash::vk;
 use fernsicht_codec::Picture;
 
+use crate::CursorOverlay;
+
 use super::Gpu;
 use super::import;
 
@@ -106,6 +108,37 @@ struct Offscreen {
     height: u32,
 }
 
+/// The pointer image on the GPU, with its staging buffer.
+struct CursorTexture {
+    serial: u32,
+    width: u32,
+    height: u32,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    set: vk::DescriptorSet,
+    staging: vk::Buffer,
+    staging_memory: vk::DeviceMemory,
+    mapped: *mut u8,
+}
+
+/// Push constants (scale, offset) placing the pointer on the video. The
+/// video covers `video` (NDC half-size, centred); the pointer image of
+/// `size` sits at `pos` on a screen of `screen` pixels.
+pub fn cursor_rect(
+    video: [f32; 2],
+    pos: (i32, i32),
+    size: (u32, u32),
+    screen: (u32, u32),
+) -> [f32; 4] {
+    let (sw, sh) = (screen.0.max(1) as f32, screen.1.max(1) as f32);
+    let sx = video[0] * size.0 as f32 / sw;
+    let sy = video[1] * size.1 as f32 / sh;
+    let left = -video[0] + 2.0 * video[0] * pos.0 as f32 / sw;
+    let top = -video[1] + 2.0 * video[1] * pos.1 as f32 / sh;
+    [sx, sy, left + sx, top + sy]
+}
+
 enum Source {
     None,
     Cpu,
@@ -118,6 +151,9 @@ pub struct Renderer {
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipelines: Vec<(vk::Format, vk::Pipeline)>,
+    /// Same, for the pointer (blended on top).
+    cursor_pipelines: Vec<(vk::Format, vk::Pipeline)>,
+    cursor: Option<CursorTexture>,
     sampler: vk::Sampler,
     pool: vk::DescriptorPool,
     cmd_pool: vk::CommandPool,
@@ -144,6 +180,8 @@ impl Renderer {
                 set_layout: vk::DescriptorSetLayout::null(),
                 pipeline_layout: vk::PipelineLayout::null(),
                 pipelines: Vec::new(),
+                cursor_pipelines: Vec::new(),
+                cursor: None,
                 sampler: vk::Sampler::null(),
                 pool: vk::DescriptorPool::null(),
                 cmd_pool: vk::CommandPool::null(),
@@ -250,8 +288,15 @@ impl Renderer {
         &self.gpu
     }
 
-    fn pipeline(&mut self, format: vk::Format) -> Result<vk::Pipeline, RenderError> {
-        if let Some(&(_, p)) = self.pipelines.iter().find(|(f, _)| *f == format) {
+    /// The video pipeline (`cursor` false) or the pointer pipeline, which
+    /// blends premultiplied alpha over the video.
+    fn pipeline(&mut self, format: vk::Format, cursor: bool) -> Result<vk::Pipeline, RenderError> {
+        let cache = if cursor {
+            &self.cursor_pipelines
+        } else {
+            &self.pipelines
+        };
+        if let Some(&(_, p)) = cache.iter().find(|(f, _)| *f == format) {
             return Ok(p);
         }
         let stages = [
@@ -262,7 +307,7 @@ impl Renderer {
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(self.shader)
-                .name(c"fs"),
+                .name(if cursor { c"fs_cursor" } else { c"fs" }),
         ];
         let vertex = vk::PipelineVertexInputStateCreateInfo::default();
         let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -276,8 +321,19 @@ impl Renderer {
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let attachments = [vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let mut attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA);
+        if cursor {
+            attachment = attachment
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD);
+        }
+        let attachments = [attachment];
         let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -302,7 +358,11 @@ impl Renderer {
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
                 .map_err(|(_, e)| RenderError::Other(format!("pipeline: {e}")))?[0]
         };
-        self.pipelines.push((format, p));
+        if cursor {
+            self.cursor_pipelines.push((format, p));
+        } else {
+            self.pipelines.push((format, p));
+        }
         Ok(p)
     }
 
@@ -463,6 +523,7 @@ impl Renderer {
     pub(crate) fn render(
         &mut self,
         picture: Option<&Picture<'_>>,
+        cursor: Option<&CursorOverlay>,
         target: &Target,
         wait: Option<vk::Semaphore>,
         signal: Option<vk::Semaphore>,
@@ -483,7 +544,16 @@ impl Renderer {
                 (Source::Foreign(*key), (image.width, image.height))
             }
         };
-        let pipeline = self.pipeline(target.format)?;
+        let pipeline = self.pipeline(target.format, false)?;
+        // The pointer only makes sense on a picture.
+        let pointer = match (cursor, &source) {
+            (Some(c), Source::Cpu | Source::Foreign(_)) => {
+                let upload = self.stage_cursor(c)?;
+                let pipeline = self.pipeline(target.format, true)?;
+                Some((c, upload, pipeline))
+            }
+            _ => None,
+        };
         let planes = match source {
             Source::None => None,
             Source::Cpu => self.cpu.as_ref().map(|c| &c.planes),
@@ -608,6 +678,60 @@ impl Renderer {
                 _ => {}
             }
 
+            if let Some((_, true, _)) = pointer {
+                let tex = self.cursor.as_ref().expect("staged");
+                let to_dst = barrier(
+                    tex.image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::AccessFlags::empty(),
+                    vk::AccessFlags::TRANSFER_WRITE,
+                );
+                d.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[to_dst],
+                );
+                let copy = vk::BufferImageCopy::default()
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1),
+                    )
+                    .image_extent(vk::Extent3D {
+                        width: tex.width,
+                        height: tex.height,
+                        depth: 1,
+                    });
+                d.cmd_copy_buffer_to_image(
+                    cmd,
+                    tex.staging,
+                    tex.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[copy],
+                );
+                let to_read = barrier(
+                    tex.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::AccessFlags::SHADER_READ,
+                );
+                d.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[to_read],
+                );
+            }
+
             // Source stage = the stage the acquire semaphore is waited at:
             // the layout change must not start before the presentation
             // engine has released a swapchain image.
@@ -683,6 +807,33 @@ impl Renderer {
                     &push,
                 );
                 d.cmd_draw(cmd, 4, 1, 0, 0);
+
+                if let (Some((c, _, cursor_pipeline)), Some(tex)) = (pointer, &self.cursor) {
+                    let rect = cursor_rect(
+                        [sx, sy],
+                        (c.x, c.y),
+                        (tex.width, tex.height),
+                        (c.screen_width, c.screen_height),
+                    );
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, cursor_pipeline);
+                    d.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.pipeline_layout,
+                        0,
+                        &[tex.set],
+                        &[],
+                    );
+                    let push: Vec<u8> = rect.iter().flat_map(|v| v.to_ne_bytes()).collect();
+                    d.cmd_push_constants(
+                        cmd,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        &push,
+                    );
+                    d.cmd_draw(cmd, 4, 1, 0, 0);
+                }
             }
             d.cmd_end_rendering(cmd);
 
@@ -769,6 +920,7 @@ impl Renderer {
     pub fn render_to_rgba(
         &mut self,
         picture: Option<&Picture<'_>>,
+        cursor: Option<&CursorOverlay>,
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, RenderError> {
@@ -814,7 +966,7 @@ impl Renderer {
             extent: vk::Extent2D { width, height },
             final_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         };
-        self.render(picture, &target, None, None, |d, cmd| {
+        self.render(picture, cursor, &target, None, None, |d, cmd| {
             let copy = vk::BufferImageCopy::default()
                 .image_subresource(
                     vk::ImageSubresourceLayers::default()
@@ -873,6 +1025,75 @@ impl Renderer {
         }
     }
 
+    /// Makes `c`'s image the pointer texture; `true` when it has to be
+    /// copied to the GPU in this frame.
+    fn stage_cursor(&mut self, c: &CursorOverlay) -> Result<bool, RenderError> {
+        let img = &c.image;
+        let (w, h) = (img.width, img.height);
+        let len = w as usize * h as usize * 4;
+        if w == 0 || h == 0 || img.pixels.len() < len {
+            return Err(RenderError::Other("broken pointer image".into()));
+        }
+        if self.cursor.as_ref().is_some_and(|t| t.serial == c.serial) {
+            return Ok(false);
+        }
+        if self
+            .cursor
+            .as_ref()
+            .is_none_or(|t| (t.width, t.height) != (w, h))
+        {
+            self.drop_cursor();
+            // BGRA in memory = DRM ARGB8888; sampled as RGBA by the shader.
+            let format = vk::Format::B8G8R8A8_UNORM;
+            let (image, memory) = import::device_image(
+                &self.gpu,
+                format,
+                w,
+                h,
+                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+            )
+            .map_err(RenderError::Other)?;
+            let view = import::view(&self.gpu, image, format).map_err(RenderError::Other)?;
+            let set = self.descriptor_set([view, view])?;
+            let (staging, staging_memory, mapped) =
+                import::host_buffer(&self.gpu, len as u64, vk::BufferUsageFlags::TRANSFER_SRC)
+                    .map_err(RenderError::Other)?;
+            self.cursor = Some(CursorTexture {
+                serial: 0,
+                width: w,
+                height: h,
+                image,
+                memory,
+                view,
+                set,
+                staging,
+                staging_memory,
+                mapped,
+            });
+        }
+        let tex = self.cursor.as_mut().expect("just created");
+        // SAFETY: the mapping holds len bytes; the GPU is idle on it.
+        unsafe { std::ptr::copy_nonoverlapping(img.pixels.as_ptr(), tex.mapped, len) };
+        tex.serial = c.serial;
+        Ok(true)
+    }
+
+    fn drop_cursor(&mut self) {
+        if let Some(t) = self.cursor.take() {
+            let d = &self.gpu.device;
+            // SAFETY: idle (every frame waits), owned by us.
+            unsafe {
+                let _ = d.free_descriptor_sets(self.pool, &[t.set]);
+                d.destroy_image_view(t.view, None);
+                d.destroy_image(t.image, None);
+                d.free_memory(t.memory, None);
+                d.unmap_memory(t.staging_memory);
+                d.destroy_buffer(t.staging, None);
+                d.free_memory(t.staging_memory, None);
+            }
+        }
+    }
+
     /// Forgets imported decoder surfaces (the decoder was replaced).
     pub fn forget_imports(&mut self) {
         for (_, p) in std::mem::take(&mut self.imported) {
@@ -883,12 +1104,11 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        // SAFETY: wait for the GPU, then destroy what we own.
-        unsafe {
-            let _ = self.gpu.device.device_wait_idle();
-        }
+        // Wait for the GPU, then destroy what we own.
+        self.gpu.wait_idle();
         self.forget_imports();
         self.drop_offscreen();
+        self.drop_cursor();
         if let Some(c) = self.cpu.take() {
             // SAFETY: idle, owned by us.
             unsafe {
@@ -902,7 +1122,11 @@ impl Drop for Renderer {
         let d = &self.gpu.device;
         // SAFETY: as above.
         unsafe {
-            for (_, p) in self.pipelines.drain(..) {
+            for (_, p) in self
+                .pipelines
+                .drain(..)
+                .chain(self.cursor_pipelines.drain(..))
+            {
                 d.destroy_pipeline(p, None);
             }
             d.destroy_fence(self.fence, None);
@@ -924,6 +1148,19 @@ mod tests {
     fn shader_compiles_to_spirv() {
         let words = spirv().unwrap();
         assert_eq!(words[0], 0x0723_0203, "SPIR-V magic");
+    }
+
+    #[test]
+    fn pointer_placement_follows_the_scaled_video() {
+        // Full-size video, screen = video: a 64×64 pointer at the top-left
+        // corner of a 640×480 screen spans x -1..-0.8, y -1..-0.733.
+        let [sx, sy, ox, oy] = cursor_rect([1.0, 1.0], (0, 0), (64, 64), (640, 480));
+        assert!((sx - 0.1).abs() < 1e-6 && (sy - 64.0 / 480.0).abs() < 1e-6);
+        assert!((ox - sx + 1.0).abs() < 1e-6 && (oy - sy + 1.0).abs() < 1e-6);
+        // Letterboxed video (half the height): the pointer shrinks with it.
+        let [_, sy2, _, oy2] = cursor_rect([1.0, 0.5], (0, 240), (64, 64), (640, 480));
+        assert!((sy2 - sy / 2.0).abs() < 1e-6);
+        assert!((oy2 - sy2).abs() < 1e-6, "screen middle is NDC 0");
     }
 
     #[test]
