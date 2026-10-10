@@ -352,8 +352,10 @@ fn dmabuf_zero_copy_bt709_and_latency() {
 
     // The ramp in the bottom half is what the last frame showed.
     let expected: Vec<u8> = bgrx_image(w, h, 64)
-        .chunks_exact(4)
-        .map(|p| bt709(p[2], p[1], p[0]).0.round() as u8)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|[b, g, r, _]| bt709(*r, *g, *b).0.round() as u8)
         .collect();
     let lower = w * h / 2;
     let psnr = psnr_y(&expected[lower..], &nv12[lower..w * h], w * h / 2);
