@@ -10,6 +10,8 @@
 //! - [`nvidia`] (feature `nvidia`): H.264 with NVENC and NVDEC via FFmpeg
 //!   (GTX 1080 and newer). CPU NV12 in and out for now.
 
+#[cfg(feature = "nvidia")]
+mod cuda;
 #[cfg(any(feature = "vaapi", feature = "nvidia"))]
 mod ff;
 #[cfg(feature = "nvidia")]

@@ -49,7 +49,8 @@ jobs:
       - name: Tests on this machine
         run: cargo test --workspace --exclude fernsicht-e2e
       # AMD: decoded pictures shown without a copy (DMA-BUF import);
-      # NVIDIA: the CPU upload path on the proprietary driver.
+      # NVIDIA: CPU upload and screen input (Vulkan → CUDA) on the
+      # proprietary driver.
       # The hardware steps below run even when an earlier one failed, so
       # one red step does not hide the results of the others.
       - name: Vulkan renderer on this GPU
@@ -61,6 +62,11 @@ jobs:
           cargo test -p fernsicht-render
           --features "vulkan${{ matrix.gpu == 'amd' && ',vaapi' || '' }}"
           --test vulkan -- --test-threads=1 --nocapture
+      - name: Screen to NV12 in Vulkan (DMA-BUF import, BT.709, scaling)
+        if: ${{ !cancelled() }}
+        env:
+          FERNSICHT_REQUIRE_VULKAN: "1"
+        run: cargo test -p fernsicht-gpu -- --test-threads=1 --nocapture
       - name: VAAPI encode/decode on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}
         env:

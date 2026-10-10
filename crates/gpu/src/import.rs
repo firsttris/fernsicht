@@ -7,20 +7,20 @@ use ash::vk;
 use fernsicht_capture::DmaBuf;
 use fernsicht_capture::dmabuf::{formats, fourcc_name};
 
-use super::Gpu;
+use crate::Gpu;
 
 fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
     move |e| format!("{what}: {e}")
 }
 
 /// An image that owns its memory and view.
-pub(crate) struct Plane {
+pub struct Plane {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
     pub view: vk::ImageView,
 }
 
-pub(crate) fn destroy(gpu: &Gpu, p: Plane) {
+pub fn destroy(gpu: &Gpu, p: Plane) {
     // SAFETY: the GPU no longer uses the plane; owned by the caller.
     unsafe {
         gpu.device.destroy_image_view(p.view, None);
@@ -30,7 +30,7 @@ pub(crate) fn destroy(gpu: &Gpu, p: Plane) {
 }
 
 /// A 2D image in device-local memory.
-pub(crate) fn device_image(
+pub fn device_image(
     gpu: &Gpu,
     format: vk::Format,
     width: u32,
@@ -86,11 +86,7 @@ pub(crate) fn device_image(
     }
 }
 
-pub(crate) fn view(
-    gpu: &Gpu,
-    image: vk::Image,
-    format: vk::Format,
-) -> Result<vk::ImageView, String> {
+pub fn view(gpu: &Gpu, image: vk::Image, format: vk::Format) -> Result<vk::ImageView, String> {
     // SAFETY: image is valid.
     unsafe {
         gpu.device
@@ -112,7 +108,7 @@ pub(crate) fn view(
 }
 
 /// A host-visible, coherent buffer, persistently mapped.
-pub(crate) fn host_buffer(
+pub fn host_buffer(
     gpu: &Gpu,
     size: u64,
     usage: vk::BufferUsageFlags,
@@ -170,7 +166,7 @@ pub(crate) fn host_buffer(
 }
 
 /// Imports an NV12 DMA-BUF as two images, Y (`R8`) and UV (`R8G8`).
-pub(crate) fn nv12(gpu: &Gpu, image: &DmaBuf) -> Result<[Plane; 2], String> {
+pub fn nv12(gpu: &Gpu, image: &DmaBuf) -> Result<[Plane; 2], String> {
     if image.fourcc != formats::NV12 {
         return Err(format!("expected NV12, got {}", fourcc_name(image.fourcc)));
     }
@@ -182,8 +178,8 @@ pub(crate) fn nv12(gpu: &Gpu, image: &DmaBuf) -> Result<[Plane; 2], String> {
     }
     image.validate().map_err(|e| e.to_string())?;
     let (w, h) = (image.width, image.height);
-    let y = plane(gpu, image, 0, vk::Format::R8_UNORM, w, h)?;
-    match plane(gpu, image, 1, vk::Format::R8G8_UNORM, w / 2, h / 2) {
+    let y = plane(gpu, image, &[0], vk::Format::R8_UNORM, w, h)?;
+    match plane(gpu, image, &[1], vk::Format::R8G8_UNORM, w / 2, h / 2) {
         Ok(uv) => Ok([y, uv]),
         Err(e) => {
             destroy(gpu, y);
@@ -192,10 +188,49 @@ pub(crate) fn nv12(gpu: &Gpu, image: &DmaBuf) -> Result<[Plane; 2], String> {
     }
 }
 
+/// The Vulkan format with the memory layout of an RGB DRM format. Alpha is
+/// ignored by the users, as on scanout.
+pub fn rgb_format(fourcc: u32) -> Option<vk::Format> {
+    Some(match fourcc {
+        // B, G, R, X in memory.
+        formats::XRGB8888 | formats::ARGB8888 => vk::Format::B8G8R8A8_UNORM,
+        formats::XBGR8888 | formats::ABGR8888 => vk::Format::R8G8B8A8_UNORM,
+        // 32-bit words, blue (resp. red) in the low bits.
+        formats::XRGB2101010 | formats::ARGB2101010 => vk::Format::A2R10G10B10_UNORM_PACK32,
+        formats::XBGR2101010 | formats::ABGR2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
+        _ => return None,
+    })
+}
+
+/// Imports an RGB DMA-BUF (8 or 10 bit, see [`rgb_format`]) as one image
+/// for sampling. Extra planes of a compressed layout (in the same buffer
+/// object) are passed on to the driver.
+pub fn rgb(gpu: &Gpu, image: &DmaBuf) -> Result<Plane, String> {
+    let Some(format) = rgb_format(image.fourcc) else {
+        return Err(format!(
+            "DMA-BUF format {} is not supported",
+            fourcc_name(image.fourcc)
+        ));
+    };
+    image.validate().map_err(|e| e.to_string())?;
+    if image
+        .planes
+        .iter()
+        .any(|p| p.object != image.planes[0].object)
+    {
+        return Err("RGB DMA-BUF with planes in several buffer objects is not supported".into());
+    }
+    let planes: Vec<usize> = (0..image.planes.len()).collect();
+    plane(gpu, image, &planes, format, image.width, image.height)
+}
+
+/// Imports the given planes of `image` (all in one buffer object) as one
+/// Vulkan image: one plane for NV12's Y or UV, the image plus its metadata
+/// planes for a compressed RGB layout.
 fn plane(
     gpu: &Gpu,
     image: &DmaBuf,
-    index: usize,
+    planes: &[usize],
     format: vk::Format,
     width: u32,
     height: u32,
@@ -203,7 +238,7 @@ fn plane(
     let Some(memory_fd) = &gpu.memory_fd else {
         return Err(format!("{} has no DMA-BUF import", gpu.name()));
     };
-    let src = image.planes[index];
+    let src = image.planes[planes[0]];
     let d = &gpu.device;
     let usage = vk::ImageUsageFlags::SAMPLED;
     // SAFETY: Vulkan calls on valid objects; everything created is freed on
@@ -234,13 +269,16 @@ fn plane(
                 )
             })?;
 
-        let layouts = [vk::SubresourceLayout {
-            offset: u64::from(src.offset),
-            size: 0,
-            row_pitch: u64::from(src.pitch),
-            array_pitch: 0,
-            depth_pitch: 0,
-        }];
+        let layouts: Vec<vk::SubresourceLayout> = planes
+            .iter()
+            .map(|&i| vk::SubresourceLayout {
+                offset: u64::from(image.planes[i].offset),
+                size: 0,
+                row_pitch: u64::from(image.planes[i].pitch),
+                array_pitch: 0,
+                depth_pitch: 0,
+            })
+            .collect();
         let mut explicit = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
             .drm_format_modifier(image.modifier)
             .plane_layouts(&layouts);

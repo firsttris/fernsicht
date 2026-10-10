@@ -18,6 +18,7 @@ fernsicht-proto = { path = "crates/proto" }
 fernsicht-net = { path = "crates/net" }
 fernsicht-capture = { path = "crates/capture" }
 fernsicht-codec = { path = "crates/codec" }
+fernsicht-gpu = { path = "crates/gpu" }
 fernsicht-render = { path = "crates/render" }
 fernsicht-input = { path = "crates/input" }
 fernsicht-audio = { path = "crates/audio" }

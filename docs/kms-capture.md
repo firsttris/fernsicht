@@ -6,6 +6,17 @@ Framebuffer, den die Grafikkarte gerade anzeigt, und reicht ihn als DMA-BUF
 an den Encoder weiter. Die GPU rechnet RGB → NV12 (BT.709) und skaliert auf
 die Stream-Auflösung. Dabei wird kein einziges Pixel über die CPU kopiert.
 
+Das geht auf beiden Rechnern:
+
+- **AMD/Intel** (`--encoder vaapi`): Der Video-Prozessor der GPU
+  (`scale_vaapi`) rechnet um.
+- **NVIDIA** (`--encoder nvenc`): Ein Vulkan-Compute-Shader rechnet in
+  GPU-Speicher um, den CUDA importiert. CUDA kopiert das Bild auf der GPU in
+  den NVENC-Eingang. Auf der GTX 1080 dauert das bei 1080p alles zusammen
+  2,5 ms.
+
+`--encoder auto` wählt passend zur Grafikkarte.
+
 Das funktioniert auch im Login-Bildschirm und im Gaming-Modus (gamescope)
 und braucht keinen Bestätigungsdialog. Dafür verlangt der Kernel
 **`CAP_SYS_ADMIN`**: Nur dann gibt er fremde Framebuffer heraus.
@@ -175,6 +186,12 @@ Monitor landet. In der Ausgabe steht `pointer input mapped to DP-1: …`.
 
 - Auswahl von Karte, Monitor und Ebene sowie das VBlank-Raster laufen als
   Unit-Tests ohne Hardware (`cargo test -p fernsicht-capture --features kms`).
+- Der Weg DMA-BUF → Vulkan → NVENC läuft in CI auf dem NVIDIA-Runner
+  (`crates/codec/tests/nvidia.rs`), mit denselben Prüfungen wie unten. Das
+  Testbild liegt dort im gekachelten NVIDIA-Layout vor, wie es der
+  Compositor anlegt. Die Vulkan-Umrechnung allein prüfen auch die normale CI
+  (Software-Vulkan, mit Validation-Layern) und beide GPU-Runner
+  (`crates/gpu/tests/convert.rs`).
 - Der Weg DMA-BUF → VAAPI läuft in CI auf dem AMD-Runner. Statt eines
   KMS-Framebuffers dient ein exportiertes VAAPI-Bild als DMA-BUF, der Rest ist
   identisch. Geprüft werden:

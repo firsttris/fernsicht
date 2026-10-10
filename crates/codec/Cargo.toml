@@ -11,18 +11,23 @@ publish.workspace = true
 # and libva development packages; see dev/Containerfile.
 vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc"]
 # H.264 with NVENC/NVDEC via FFmpeg (CUDA is loaded at runtime, so this
-# builds without the NVIDIA driver).
-nvidia = ["dep:ffmpeg-next", "dep:libc"]
+# builds without the NVIDIA driver). Screen input goes through Vulkan.
+nvidia = ["dep:ffmpeg-next", "dep:libc", "dep:libloading", "dep:log", "dep:fernsicht-gpu"]
 
 [dependencies]
 ffmpeg-next = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 fernsicht-capture.workspace = true
+fernsicht-gpu = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
 fernsicht-core.workspace = true
 fernsicht-proto.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The NVIDIA tests put RGB pictures on the GPU as DMA-BUFs.
+fernsicht-gpu.workspace = true
 proptest.workspace = true
 
 [lints]

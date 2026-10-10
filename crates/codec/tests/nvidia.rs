@@ -5,7 +5,12 @@
 #![cfg(feature = "nvidia")]
 
 use std::io::Write;
+use std::sync::Arc;
 use std::time::Instant;
+
+use fernsicht_capture::dmabuf::{DmaBuf, formats, fourcc, fourcc_name};
+use fernsicht_gpu::Gpu;
+use fernsicht_gpu::testimage::upload_as_dmabuf;
 
 use fernsicht_capture::{Frame, FrameSource, TestPattern};
 use fernsicht_codec::nvidia::{NvdecDecoder, NvencConfig, NvencEncoder};
@@ -243,4 +248,252 @@ fn without_an_nvidia_driver_creation_fails_cleanly() {
     assert!(matches!(enc, Err(CodecError::Backend(_))));
     let dec = NvdecDecoder::new(0);
     assert!(matches!(dec, Err(CodecError::Backend(_))));
+}
+
+// --- Screen input: RGB DMA-BUF (what KMS capture delivers) ----------------
+
+const PATCHES: [(u8, u8, u8); 6] = [
+    (255, 0, 0),
+    (0, 255, 0),
+    (0, 0, 255),
+    (255, 255, 255),
+    (16, 16, 16),
+    (128, 128, 128),
+];
+
+fn pack(format: u32, r: u8, g: u8, b: u8) -> [u8; 4] {
+    let ten = |v: u8| (u32::from(v) * 1023 + 127) / 255;
+    match format {
+        formats::XRGB8888 | formats::ARGB8888 => [b, g, r, 255],
+        formats::XBGR8888 | formats::ABGR8888 => [r, g, b, 255],
+        formats::XRGB2101010 | formats::ARGB2101010 => {
+            (3 << 30 | ten(r) << 20 | ten(g) << 10 | ten(b)).to_le_bytes()
+        }
+        formats::XBGR2101010 | formats::ABGR2101010 => {
+            (3 << 30 | ten(b) << 20 | ten(g) << 10 | ten(r)).to_le_bytes()
+        }
+        other => panic!("no packing for {}", fourcc_name(other)),
+    }
+}
+
+/// Colour patches on top, a grey ramp below that moves with `shift`.
+fn rgb_image(w: usize, h: usize, shift: usize, format: u32) -> Vec<u8> {
+    let mut img = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let (r, g, b) = if y < h / 2 {
+                PATCHES[x * PATCHES.len() / w]
+            } else {
+                let v = (((x + shift) % w) * 255 / w) as u8;
+                (v, v, v)
+            };
+            img[(y * w + x) * 4..][..4].copy_from_slice(&pack(format, r, g, b));
+        }
+    }
+    img
+}
+
+fn bt709(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let (r, g, b) = (
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    );
+    let (kr, kb) = (0.2126, 0.0722);
+    let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+    (
+        16.0 + 219.0 * y,
+        128.0 + 224.0 * (b - y) / (2.0 * (1.0 - kb)),
+        128.0 + 224.0 * (r - y) / (2.0 * (1.0 - kr)),
+    )
+}
+
+/// Mean Y, Cb, Cr in the middle of every patch, against BT.709 (with room
+/// for H.264 compression).
+fn assert_patch_colours(nv12: &[u8], w: usize, h: usize, what: &str) {
+    let pw = w / PATCHES.len();
+    for (i, &(r, g, b)) in PATCHES.iter().enumerate() {
+        let (x0, x1) = (i * pw + pw / 4, (i + 1) * pw - pw / 4);
+        let (y0, y1) = (h / 8, h * 3 / 8);
+        let (mut ys, mut cbs, mut crs, mut n, mut nc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                ys += f64::from(nv12[y * w + x]);
+                n += 1.0;
+                if y % 2 == 0 && x % 2 == 0 {
+                    let uv = w * h + (y / 2) * w + x;
+                    cbs += f64::from(nv12[uv]);
+                    crs += f64::from(nv12[uv + 1]);
+                    nc += 1.0;
+                }
+            }
+        }
+        let got = (ys / n, cbs / nc, crs / nc);
+        let want = bt709(r, g, b);
+        assert!(
+            (got.0 - want.0).abs() < 4.0
+                && (got.1 - want.1).abs() < 5.0
+                && (got.2 - want.2).abs() < 5.0,
+            "{what}, patch {i} RGB({r},{g},{b}): got YCbCr {got:.1?}, BT.709 wants {want:.1?}"
+        );
+    }
+}
+
+fn vulkan() -> Arc<Gpu> {
+    Arc::new(Gpu::new().expect("Vulkan on the NVIDIA GPU"))
+}
+
+fn upload(gpu: &Arc<Gpu>, w: u32, h: u32, shift: usize, format: u32) -> DmaBuf {
+    let img = rgb_image(w as usize, h as usize, shift, format);
+    upload_as_dmabuf(gpu, w, h, format, &img).unwrap()
+}
+
+fn dmabuf_frame(image: &DmaBuf, seq: u64) -> Frame {
+    let mut f = Frame::from_dmabuf(image.clone());
+    f.seq = seq;
+    f
+}
+
+#[test]
+fn dmabuf_without_a_cpu_copy_bt709_and_latency() {
+    if !nvidia() {
+        return;
+    }
+    let gpu = vulkan();
+    let (w, h) = (1920u32, 1080u32);
+    let images = [0, 64].map(|shift| upload(&gpu, w, h, shift, formats::XRGB8888));
+    let mut enc = NvencEncoder::new(&config(w, h, 60, 20_000)).unwrap();
+    let mut dec = NvdecDecoder::new(0).unwrap();
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let mut enc_ms = Vec::new();
+    for i in 0..120u64 {
+        let frame = dmabuf_frame(&images[(i % 2) as usize], i);
+        let t = Instant::now();
+        enc.encode(&frame, &mut out).unwrap();
+        enc_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        assert_eq!(out.keyframe, i == 0);
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    assert_eq!((d.width, d.height), (w, h));
+    let nv12 = dec.last_frame_nv12().unwrap();
+    assert_patch_colours(&nv12, w as usize, h as usize, "XR24 1080p");
+
+    // The first frame paid for setting up Vulkan and CUDA.
+    let steady = enc_ms[1..].to_vec();
+    summary("### NVENC H.264 aus DMA-BUF (Vulkan → CUDA, ohne CPU-Kopie), 1080p60");
+    summary("| Messung | Wert |\n|---|---|");
+    summary(&format!(
+        "| Import + RGB→NV12 + Kopie + Encode, Median / p95 | {:.2} / {:.2} ms |",
+        percentile(steady.clone(), 0.5),
+        percentile(steady.clone(), 0.95)
+    ));
+    summary(&format!(
+        "| Erster Frame (Einrichtung) | {:.1} ms |",
+        enc_ms[0]
+    ));
+    summary(&format!(
+        "| Modifier des Testbilds | {:#x} |\n",
+        images[0].modifier
+    ));
+    assert!(percentile(steady, 0.95) < 16.0);
+}
+
+#[test]
+fn every_desktop_format_keeps_its_colours_through_nvenc() {
+    if !nvidia() {
+        return;
+    }
+    let gpu = vulkan();
+    let (w, h) = (1280u32, 720u32);
+    for format in [
+        formats::XRGB8888,
+        formats::ARGB8888,
+        formats::XBGR8888,
+        formats::ABGR8888,
+        formats::XRGB2101010,
+        formats::ARGB2101010,
+        formats::XBGR2101010,
+        formats::ABGR2101010,
+    ] {
+        let name = fourcc_name(format);
+        let image = upload(&gpu, w, h, 0, format);
+        let mut enc = NvencEncoder::new(&config(w, h, 60, 8_000)).unwrap();
+        let mut dec = NvdecDecoder::new(0).unwrap();
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        for i in 0..3 {
+            enc.encode(&dmabuf_frame(&image, i), &mut out)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            dec.decode(&out.data, &mut d).unwrap();
+        }
+        assert_patch_colours(
+            &dec.last_frame_nv12().unwrap(),
+            w as usize,
+            h as usize,
+            &name,
+        );
+        summary(&format!("- NVENC aus DMA-BUF {name}: Farben ok"));
+    }
+}
+
+#[test]
+fn screen_is_scaled_and_cpu_and_dmabuf_input_mix() {
+    if !nvidia() {
+        return;
+    }
+    let gpu = vulkan();
+    let (w, h) = (1280u32, 720u32);
+    let mut enc = NvencEncoder::new(&config(w, h, 60, 8_000)).unwrap();
+    let mut dec = NvdecDecoder::new(0).unwrap();
+    let big = upload(&gpu, 2560, 1440, 0, formats::ABGR2101010);
+    let small = upload(&gpu, w, h, 0, formats::XRGB8888);
+    let cpu = frames(w, h, 1).remove(0);
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    for (i, f) in [
+        cpu.clone(),
+        dmabuf_frame(&big, 1),
+        dmabuf_frame(&small, 2),
+        cpu,
+        dmabuf_frame(&big, 4),
+    ]
+    .iter()
+    .enumerate()
+    {
+        enc.encode(f, &mut out)
+            .unwrap_or_else(|e| panic!("input {i}: {e}"));
+        dec.decode(&out.data, &mut d).unwrap();
+        assert_eq!((d.width, d.height), (w, h));
+    }
+    assert_patch_colours(
+        &dec.last_frame_nv12().unwrap(),
+        w as usize,
+        h as usize,
+        "1440p AB30 scaled to 720p",
+    );
+}
+
+#[test]
+fn bad_dmabufs_are_rejected_and_the_encoder_keeps_working() {
+    if !nvidia() {
+        return;
+    }
+    let gpu = vulkan();
+    let mut enc = NvencEncoder::new(&config(640, 360, 30, 1_000)).unwrap();
+    let mut out = EncodedFrame::default();
+    let good = upload(&gpu, 640, 360, 0, formats::XRGB8888);
+    let not_a_dmabuf = DmaBuf {
+        objects: vec![Arc::new(std::fs::File::open("/dev/null").unwrap().into())],
+        ..good.clone()
+    };
+    let yuyv = DmaBuf {
+        fourcc: fourcc(b"YUYV"),
+        ..good.clone()
+    };
+    for (name, bad) in [("/dev/null", not_a_dmabuf), ("YUYV", yuyv)] {
+        assert!(
+            enc.encode(&dmabuf_frame(&bad, 0), &mut out).is_err(),
+            "{name} must be rejected"
+        );
+    }
+    enc.encode(&dmabuf_frame(&good, 1), &mut out).unwrap();
+    assert!(out.keyframe, "the first good frame is the keyframe");
 }

@@ -963,9 +963,12 @@ version = "0.1.0"
 dependencies = [
  "fernsicht-capture",
  "fernsicht-core",
+ "fernsicht-gpu",
  "fernsicht-proto",
  "ffmpeg-next",
  "libc",
+ "libloading",
+ "log",
  "proptest",
  "thiserror 2.0.21",
 ]
@@ -991,6 +994,17 @@ dependencies = [
  "fernsicht-input",
  "fernsicht-net",
  "fernsicht-proto",
+]
+
+[[package]]
+name = "fernsicht-gpu"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "env_logger",
+ "fernsicht-capture",
+ "log",
+ "naga",
 ]
 
 [[package]]
@@ -1056,6 +1070,7 @@ dependencies = [
  "fernsicht-capture",
  "fernsicht-codec",
  "fernsicht-core",
+ "fernsicht-gpu",
  "fernsicht-proto",
  "log",
  "naga",

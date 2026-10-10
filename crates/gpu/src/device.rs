@@ -29,23 +29,22 @@ fn device_error_is_transient(e: vk::Result) -> bool {
 pub const DEVICE_ENV: &str = "FERNSICHT_VULKAN_DEVICE";
 
 pub struct Gpu {
-    #[cfg_attr(not(feature = "window"), allow(dead_code))]
-    pub(crate) entry: ash::Entry,
-    pub(crate) instance: ash::Instance,
-    pub(crate) physical: vk::PhysicalDevice,
-    pub(crate) device: ash::Device,
-    pub(crate) queue: vk::Queue,
+    pub entry: ash::Entry,
+    pub instance: ash::Instance,
+    pub physical: vk::PhysicalDevice,
+    pub device: ash::Device,
+    pub queue: vk::Queue,
     /// Vulkan requires submissions to one queue to be serialized; several
     /// renderers may share a device.
-    pub(crate) queue_lock: std::sync::Mutex<()>,
-    pub(crate) queue_family: u32,
+    pub queue_lock: std::sync::Mutex<()>,
+    pub queue_family: u32,
     memory: vk::PhysicalDeviceMemoryProperties,
     /// Present when the DMA-BUF import extensions are enabled.
-    pub(crate) memory_fd: Option<ash::khr::external_memory_fd::Device>,
+    pub memory_fd: Option<ash::khr::external_memory_fd::Device>,
     /// Present when created for a window.
-    #[cfg_attr(not(feature = "window"), allow(dead_code))]
-    pub(crate) swapchain: Option<ash::khr::swapchain::Device>,
+    pub swapchain: Option<ash::khr::swapchain::Device>,
     name: String,
+    uuid: [u8; 16],
 }
 
 /// Device kinds from best to worst for video.
@@ -67,11 +66,7 @@ impl Gpu {
 
     /// `instance_extensions` are what the window system needs for a
     /// surface; `present` enables the swapchain extension.
-    #[cfg_attr(not(feature = "window"), allow(dead_code))]
-    pub(crate) fn create(
-        instance_extensions: &[*const c_char],
-        present: bool,
-    ) -> Result<Self, String> {
+    pub fn create(instance_extensions: &[*const c_char], present: bool) -> Result<Self, String> {
         // SAFETY: loading the system Vulkan loader; every object created
         // below is destroyed in Drop or on the error path.
         unsafe {
@@ -198,7 +193,12 @@ impl Gpu {
             };
             log::debug!("device created on {name}");
             let queue = device.get_device_queue(queue_family, 0);
+            let mut ids = vk::PhysicalDeviceIDProperties::default();
+            let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut ids);
+            instance.get_physical_device_properties2(physical, &mut props2);
+            let uuid = ids.device_uuid;
             Ok(Self {
+                uuid,
                 memory: instance.get_physical_device_memory_properties(physical),
                 memory_fd: dmabuf
                     .then(|| ash::khr::external_memory_fd::Device::new(&instance, &device)),
@@ -220,6 +220,11 @@ impl Gpu {
         &self.name
     }
 
+    /// The GPU's UUID, the same CUDA reports for it.
+    pub fn device_uuid(&self) -> [u8; 16] {
+        self.uuid
+    }
+
     /// Whether DMA-BUFs can be imported (the extensions are there; a given
     /// buffer may still be refused).
     pub fn can_import_dmabuf(&self) -> bool {
@@ -228,14 +233,14 @@ impl Gpu {
 
     /// Waits until the GPU is done with everything submitted. Holds the
     /// queue lock: Vulkan requires the queues to be left alone meanwhile.
-    pub(crate) fn wait_idle(&self) {
+    pub fn wait_idle(&self) {
         let _queue = self.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: valid device; the queues are not used concurrently.
         let _ = unsafe { self.device.device_wait_idle() };
     }
 
     /// A memory type allowed by `bits` with all of `flags`.
-    pub(crate) fn memory_type(&self, bits: u32, flags: vk::MemoryPropertyFlags) -> Option<u32> {
+    pub fn memory_type(&self, bits: u32, flags: vk::MemoryPropertyFlags) -> Option<u32> {
         (0..self.memory.memory_type_count).find(|&i| {
             bits & (1 << i) != 0
                 && self.memory.memory_types[i as usize]

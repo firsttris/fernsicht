@@ -124,9 +124,16 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
    - Zeigerfang (relative Maus, Cursor sperren) im Gaming-Modus. Der
      Modus-Schalter in der App ändert noch nichts.
    - Gamepad.
-6. **NVIDIA als Host.** Bildschirmaufnahme mit NVENC fehlt: KMS-DMA-BUF
-   → CUDA. Bisher nimmt NVENC nur CPU-Frames, siehe
-   `crates/codec/src/nvidia.rs`.
+6. **NVIDIA als Host: live prüfen.** Die Bildschirmaufnahme mit NVENC ist
+   gebaut. Der Weg: KMS-DMA-BUF → Vulkan-Compute (RGB → NV12, BT.709,
+   skaliert) → von CUDA importierter Speicher → NVENC. Code:
+   `crates/gpu/src/convert.rs`, `crates/codec/src/{nvidia,cuda}.rs`.
+   - Auf der bazzite getestet, mit Testbildern im NVIDIA-Kachel-Layout:
+     2,5 ms pro 1080p-Frame, keine Xid-Meldungen.
+   - Noch nie live gelaufen: echtes KMS auf der bazzite (HDMI-A-1). Der
+     Benutzer startet
+     `sudo ./target/release/fernsicht-host-agent --capture kms --encoder nvenc --pair`
+     auf der bazzite, die zentrale verbindet sich als Client.
 7. **Kleinigkeiten in der App:**
    - Gerät in der App vergessen (Backend `forget` gibt es, UI fehlt).
    - Auflösung und Bitrate wählen (Seite „Einstellungen“ ist ein

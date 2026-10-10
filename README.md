@@ -121,7 +121,8 @@ docs/    Messprotokolle
 | `proto` | UDP-Paketformat v1: Video-Shards mit Stufen-Zeitstempeln, Feedback, Clock-Ping/-Pong, Hello/Ack, Bye. Der Parser panict nie und allokiert nicht |
 | `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen; Recovery-Shards pro Gruppe binomial aus der gemessenen Verlustrate (Gruppenausfall ≤ 10⁻⁵, mindestens 10 %), Reassembly mit Keyframe-Anforderung und harten Größengrenzen, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
 | `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken), DMA-BUF-Beschreibung, KMS-Capture im VBlank-Takt (Feature `kms`, pures Rust) |
-| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec, VAAPI H.264 über FFmpeg (Feature `vaapi`): DMA-BUF-Import ohne Kopie, RGB→NV12 und Skalierung per `scale_vaapi` |
+| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec, VAAPI H.264 über FFmpeg (Feature `vaapi`): DMA-BUF-Import ohne Kopie, RGB→NV12 und Skalierung per `scale_vaapi`; NVENC/NVDEC (Feature `nvidia`), Bildschirm über Vulkan → CUDA ohne CPU-Kopie |
+| `gpu` | Vulkan-Gerät und DMA-BUF-Import ohne Kopie (für Renderer und Encoder), RGB-DMA-BUF → NV12 per Compute-Shader für NVENC |
 | `render` | `Presenter`-Trait, Overlay-Formatierung |
 | `input`, `audio` | Event-Typen, Traits, Duplikat-Filter (Phase 2) |
 
@@ -186,8 +187,8 @@ sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
 ## Nächste Schritte (Phase 1)
 
 1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
-2. NVIDIA ohne Kopie: Bildschirmaufnahme (DMA-BUF → CUDA) für NVENC,
-   NVDEC-Bilder direkt in Vulkan.
+2. NVIDIA ohne Kopie: NVDEC-Bilder direkt in Vulkan. (Die Bildschirmaufnahme
+   für NVENC läuft schon ohne Kopie, über Vulkan → CUDA.)
 3. PipeWire-Portal als zweites
    Capture-Backend.
 4. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.

@@ -86,7 +86,11 @@ jobs:
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
           VK_LAYER_VALIDATE_SYNC: "1"
         run: |
+          set -o pipefail
           cargo test -p fernsicht-render --features vulkan -- --nocapture 2>&1 | tee vulkan.log
+          # Screen input for NVENC: RGB DMA-BUF → NV12 (llvmpipe exports
+          # and imports linear DMA-BUFs).
+          cargo test -p fernsicht-gpu -- --nocapture 2>&1 | tee -a vulkan.log
           if grep -q "Validation Error\|Validation Warning" vulkan.log; then
             grep -A6 "Validation Error\|Validation Warning" vulkan.log | head -60
             exit 1
@@ -118,9 +122,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
-      - name: libopus, a sound server and uinput (see rust-test)
+      - name: libopus, a sound server, uinput and software Vulkan (see rust-test)
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q libopus0 pulseaudio
+          sudo apt-get update -q && sudo apt-get install -y -q libopus0 pulseaudio mesa-vulkan-drivers
           pulseaudio --start --exit-idle-time=-1
           sudo chmod 666 /dev/uinput
       # CLI entry points are exercised by the binary E2E tests but run as
@@ -132,6 +136,8 @@ jobs:
           FERNSICHT_REQUIRE_OPUS: "1"
           FERNSICHT_PULSE_TEST: "1"
           FERNSICHT_UINPUT_TEST: "1"
+          FERNSICHT_REQUIRE_VULKAN: "1"
+          FERNSICHT_VULKAN_DEVICE: llvmpipe
       - run: cargo llvm-cov report --summary-only --ignore-filename-regex 'main\.rs$' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
