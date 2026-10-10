@@ -79,9 +79,21 @@ echo "==> Baue Images (Fedora ${fedora}) ..."
 podman build --build-arg "FEDORA_VERSION=${fedora}" -t localhost/fernsicht-dev:latest -f "${here}/../Containerfile" "${here}/.."
 podman build -t localhost/fernsicht-runner:latest -f "${here}/Containerfile" "$here"
 
+# Helper containers use the same SELinux setting as the runner service
+# (label=disable); otherwise they could not read the volume the service
+# has been writing to.
+run_helper() {
+  podman run --rm --security-opt=label=disable -v "${volume}:/runner" "$@"
+}
+
 # --- Registration (once) --------------------------------------------------------
 podman volume create --ignore "$volume" >/dev/null
-if podman run --rm -v "${volume}:/runner" --entrypoint test localhost/fernsicht-runner:latest -f /runner/.runner; then
+state="$(run_helper --entrypoint sh localhost/fernsicht-runner:latest -c \
+  'if [ -f /runner/.runner ]; then echo registered; elif [ -r /runner ] && [ -x /runner ]; then echo new; else echo denied; fi')"
+if [ "$state" = denied ]; then
+  echo "Kein Zugriff auf das Volume ${volume}. Siehe docs/gpu-runner.md → Fehlerbehebung." >&2
+  exit 1
+elif [ "$state" = registered ]; then
   echo "==> Runner ist bereits registriert."
 else
   if [ -z "$token" ]; then
@@ -91,8 +103,7 @@ else
   fi
   echo "==> Registriere ${name} (Labels: self-hosted, linux, gpu-${gpu}) ..."
   # The token goes in via the environment, never onto a command line.
-  RUNNER_TOKEN="$token" podman run --rm \
-    -v "${volume}:/runner" \
+  RUNNER_TOKEN="$token" run_helper \
     --env RUNNER_TOKEN \
     -e "RUNNER_URL=https://github.com/${repo}" \
     -e "RUNNER_NAME=${name}" \
