@@ -89,6 +89,12 @@ Der Dienst läuft so:
 - **Encoder:** Der Dienst wählt den Encoder passend zur Grafikkarte (`--encoder auto`): VAAPI auf AMD/Intel, NVENC auf NVIDIA. Bildschirmaufnahme mit NVENC fehlt allerdings noch. Ein Rechner mit NVIDIA-Karte taugt deshalb vorerst nicht als Host, als Client schon.
 - **Maus und Tastatur:** Eingaben gekoppelter Geräte nimmt der Dienst an (`--input`).
 - **Ton:** Ton und Monitoranordnung holt sich der Dienst vom angemeldeten Benutzer. Er nimmt also auf, was auf dessen Desktop läuft.
+- **Grafikkarte:** Während einer Sitzung hält der Dienst die Grafikkarte
+  auf vollem Takt (AMD: `power_dpm_force_performance_level` auf `high`,
+  Intel: Mindesttakt angehoben). Zwischen zwei Bildern würde sie sonst
+  heruntertakten, und das Kodieren dauert länger. Danach stellt er alles
+  zurück. Abschalten: in der App unter „Einstellungen › Dieser Rechner als
+  Host“, oder `--no-gpu-boost`.
 
 ## 4. Koppeln und verbinden (in der App)
 

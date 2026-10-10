@@ -93,6 +93,11 @@ fn find_pair_connect_and_forget() {
     let me = app.this_machine();
     let status = me.host.expect("host status");
     assert_eq!(status["name"], "zentrale");
+    // The GPU setting goes to the host and comes back in its status.
+    app.set_gpu_boost(false).unwrap();
+    assert_eq!(app.this_machine().host.unwrap()["gpu_boost"], false);
+    app.set_gpu_boost(true).unwrap();
+    assert_eq!(app.this_machine().host.unwrap()["gpu_boost"], true);
     let pin = app.open_pairing().unwrap()["pin"]
         .as_str()
         .unwrap()

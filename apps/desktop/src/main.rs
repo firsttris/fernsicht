@@ -93,6 +93,11 @@ async fn open_pairing(backend: Shared<'_>) -> Result<Value, String> {
     blocking(&backend, Backend::open_pairing).await
 }
 
+#[tauri::command]
+async fn set_gpu_boost(backend: Shared<'_>, on: bool) -> Result<(), String> {
+    blocking(&backend, move |b| b.set_gpu_boost(on)).await
+}
+
 /// "Diesen Rechner freigeben": installs the host from the AppImage.
 #[tauri::command]
 async fn share_this_machine(backend: Shared<'_>) -> Result<(), String> {
@@ -139,6 +144,7 @@ fn main() {
             unpair_from_host,
             share_this_machine,
             stop_sharing,
+            set_gpu_boost,
         ])
         .build(tauri::generate_context!())
         .expect("starting the app")

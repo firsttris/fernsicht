@@ -45,6 +45,12 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "set_muted":
       case "set_mode":
         return null;
+      case "set_gpu_boost":
+        backend.thisMachine = {
+          ...backend.thisMachine,
+          host: host({ gpu_boost: (args as { on: boolean }).on }),
+        };
+        return null;
       case "share_this_machine":
         backend.thisMachine = {
           ...backend.thisMachine,
@@ -366,6 +372,24 @@ describe("Desktop-App", () => {
     const { user } = await renderApp("/devices");
     await user.click(await screen.findByRole("button", { name: "Diesen Rechner freigeben" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Abgebrochen.");
+  });
+
+  it("switches the host's GPU boost in the settings", async () => {
+    backend.thisMachine = { name: "zentrale", host: host({ gpu_boost: true }) };
+    const { user } = await renderApp("/settings");
+    const box = await screen.findByRole("checkbox", { name: "Hochtakten" });
+    expect(box).toBeChecked();
+    await user.click(box);
+    expect(called("set_gpu_boost")).toEqual([["set_gpu_boost", { on: false }]]);
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Hochtakten" })).not.toBeChecked(),
+    );
+  });
+
+  it("shows no host settings without a host", async () => {
+    await renderApp("/settings");
+    await screen.findByRole("radio", { name: "Wie der Host" });
+    expect(screen.queryByText("Dieser Rechner als Host")).not.toBeInTheDocument();
   });
 
   it("explains a failed pairing request on this computer", async () => {

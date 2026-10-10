@@ -8,6 +8,7 @@
 //! {"cmd":"pair"}                 → {"ok":true,"pin":"123456","expires_in_s":300}
 //! {"cmd":"stop_pairing"}         → {"ok":true}
 //! {"cmd":"unpair","device":"x"}  → {"ok":true} (name or key fingerprint)
+//! {"cmd":"set","gpu_boost":true} → {"ok":true} (kept in the state directory)
 //! ```
 //!
 //! Who may ask: root, the user the host runs as, and the user at the
@@ -23,7 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::HostSecurity;
+use crate::{HostSecurity, HostSettings};
 
 /// The session as the control socket reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +73,7 @@ pub fn handle(
     allowed: &[u32],
     sec: &HostSecurity,
     session: &StatusCell,
+    settings: &HostSettings,
 ) -> Value {
     if !allowed.contains(&uid) {
         return json!({"ok": false, "error": "not allowed: only root and the desktop's user"});
@@ -99,6 +101,7 @@ pub fn handle(
                 "paired": paired,
                 "session": session,
                 "pairing": sec.pairing_remaining().map(|d| d.as_secs()),
+                "gpu_boost": settings.gpu_boost(),
             })
         }
         Some("pair") => {
@@ -106,6 +109,13 @@ pub fn handle(
             sec.open_pairing(&pin);
             json!({"ok": true, "pin": pin, "expires_in_s": crate::PAIRING_OPEN_FOR.as_secs()})
         }
+        Some("set") => match req.get("gpu_boost").and_then(Value::as_bool) {
+            Some(on) => match settings.set_gpu_boost(on) {
+                Ok(()) => json!({"ok": true}),
+                Err(e) => json!({"ok": false, "error": format!("saving the setting: {e}")}),
+            },
+            None => json!({"ok": false, "error": "which setting?"}),
+        },
         Some("stop_pairing") => {
             sec.close_pairing();
             json!({"ok": true})
@@ -156,6 +166,7 @@ pub fn serve(
     path: &Path,
     sec: Arc<HostSecurity>,
     session: StatusCell,
+    settings: Arc<HostSettings>,
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     if let Some(dir) = path.parent() {
@@ -176,7 +187,7 @@ pub fn serve(
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let allowed = allowed_uids();
-                        answer(stream, &allowed, &sec, &session);
+                        answer(stream, &allowed, &sec, &session, &settings);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -191,7 +202,13 @@ pub fn serve(
         })
 }
 
-fn answer(stream: UnixStream, allowed: &[u32], sec: &HostSecurity, session: &StatusCell) {
+fn answer(
+    stream: UnixStream,
+    allowed: &[u32],
+    sec: &HostSecurity,
+    session: &StatusCell,
+    settings: &HostSettings,
+) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let Some(uid) = peer_uid(&stream) else { return };
@@ -200,7 +217,7 @@ fn answer(stream: UnixStream, allowed: &[u32], sec: &HostSecurity, session: &Sta
     if reader.by_ref().take(4096).read_line(&mut line).is_err() {
         return;
     }
-    let reply = handle(line.trim(), uid, allowed, sec, session);
+    let reply = handle(line.trim(), uid, allowed, sec, session, settings);
     let mut w = &stream;
     let _ = writeln!(w, "{reply}");
 }
@@ -245,24 +262,59 @@ mod tests {
     fn status_pair_and_unpair() {
         let s = sec();
         let cell: StatusCell = Arc::default();
-        let st = handle(r#"{"cmd":"status"}"#, 1000, &[1000], &s, &cell);
+        let st = handle(
+            r#"{"cmd":"status"}"#,
+            1000,
+            &[1000],
+            &s,
+            &cell,
+            &HostSettings::default(),
+        );
         assert_eq!(st["ok"], true);
         assert_eq!(st["name"], "zentrale");
         assert_eq!(st["paired"][0]["name"], "bazzite");
         assert_eq!(st["session"], Value::Null);
         assert_eq!(st["pairing"], Value::Null);
 
-        let p = handle(r#"{"cmd":"pair"}"#, 1000, &[1000], &s, &cell);
+        let p = handle(
+            r#"{"cmd":"pair"}"#,
+            1000,
+            &[1000],
+            &s,
+            &cell,
+            &HostSettings::default(),
+        );
         assert_eq!(p["pin"].as_str().unwrap().len(), 6);
         assert!(
-            handle(r#"{"cmd":"status"}"#, 1000, &[1000], &s, &cell)["pairing"]
+            handle(
+                r#"{"cmd":"status"}"#,
+                1000,
+                &[1000],
+                &s,
+                &cell,
+                &HostSettings::default()
+            )["pairing"]
                 .as_u64()
                 .unwrap()
                 > 290
         );
-        handle(r#"{"cmd":"stop_pairing"}"#, 1000, &[1000], &s, &cell);
+        handle(
+            r#"{"cmd":"stop_pairing"}"#,
+            1000,
+            &[1000],
+            &s,
+            &cell,
+            &HostSettings::default(),
+        );
         assert_eq!(
-            handle(r#"{"cmd":"status"}"#, 1000, &[1000], &s, &cell)["pairing"],
+            handle(
+                r#"{"cmd":"status"}"#,
+                1000,
+                &[1000],
+                &s,
+                &cell,
+                &HostSettings::default()
+            )["pairing"],
             Value::Null
         );
 
@@ -275,7 +327,14 @@ mod tests {
             encrypted: true,
             since: 7,
         });
-        let st = handle(r#"{"cmd":"status"}"#, 0, &[0], &s, &cell);
+        let st = handle(
+            r#"{"cmd":"status"}"#,
+            0,
+            &[0],
+            &s,
+            &cell,
+            &HostSettings::default(),
+        );
         assert_eq!(st["session"]["width"], 2560);
 
         let u = handle(
@@ -284,6 +343,7 @@ mod tests {
             &[1000],
             &s,
             &cell,
+            &HostSettings::default(),
         );
         assert_eq!(u["ok"], true);
         assert!(s.paired().is_empty());
@@ -293,24 +353,93 @@ mod tests {
             &[1000],
             &s,
             &cell,
+            &HostSettings::default(),
         );
         assert_eq!(again["ok"], false);
+    }
+
+    #[test]
+    fn the_gpu_boost_setting_is_kept() {
+        let s = sec();
+        let cell: StatusCell = Arc::default();
+        let dir = std::env::temp_dir().join(format!("fernsicht-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("settings.json");
+        let set = HostSettings::load(file.clone());
+        assert!(set.gpu_boost(), "on unless switched off");
+        let st = handle(r#"{"cmd":"status"}"#, 1000, &[1000], &s, &cell, &set);
+        assert_eq!(st["gpu_boost"], true);
+        let r = handle(
+            r#"{"cmd":"set","gpu_boost":false}"#,
+            1000,
+            &[1000],
+            &s,
+            &cell,
+            &set,
+        );
+        assert_eq!(r["ok"], true);
+        assert!(!set.gpu_boost());
+        assert!(
+            !HostSettings::load(file.clone()).gpu_boost(),
+            "kept on disk"
+        );
+        let bad = handle(r#"{"cmd":"set"}"#, 1000, &[1000], &s, &cell, &set);
+        assert_eq!(bad["ok"], false);
+        // A stranger may not change it.
+        let r = handle(
+            r#"{"cmd":"set","gpu_boost":true}"#,
+            1001,
+            &[1000],
+            &s,
+            &cell,
+            &set,
+        );
+        assert_eq!(r["ok"], false);
+        assert!(!set.gpu_boost());
+        // A broken file: the default.
+        std::fs::write(&file, "{nonsense").unwrap();
+        assert!(HostSettings::load(file).gpu_boost());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn strangers_and_nonsense_are_turned_away() {
         let s = sec();
         let cell: StatusCell = Arc::default();
-        let r = handle(r#"{"cmd":"pair"}"#, 1001, &[0, 1000], &s, &cell);
+        let r = handle(
+            r#"{"cmd":"pair"}"#,
+            1001,
+            &[0, 1000],
+            &s,
+            &cell,
+            &HostSettings::default(),
+        );
         assert_eq!(r["ok"], false);
         assert!(s.pairing_remaining().is_none(), "no pairing for strangers");
-        assert_eq!(handle("hello", 1000, &[1000], &s, &cell)["ok"], false);
         assert_eq!(
-            handle(r#"{"cmd":"rm -rf"}"#, 1000, &[1000], &s, &cell)["ok"],
+            handle("hello", 1000, &[1000], &s, &cell, &HostSettings::default())["ok"],
             false
         );
         assert_eq!(
-            handle(r#"{"cmd":"unpair"}"#, 1000, &[1000], &s, &cell)["ok"],
+            handle(
+                r#"{"cmd":"rm -rf"}"#,
+                1000,
+                &[1000],
+                &s,
+                &cell,
+                &HostSettings::default()
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            handle(
+                r#"{"cmd":"unpair"}"#,
+                1000,
+                &[1000],
+                &s,
+                &cell,
+                &HostSettings::default()
+            )["ok"],
             false
         );
     }
@@ -321,7 +450,14 @@ mod tests {
         let path = dir.join("control.sock");
         let s = Arc::new(sec());
         let stop = Arc::new(AtomicBool::new(false));
-        let t = serve(&path, s.clone(), Arc::default(), stop.clone()).unwrap();
+        let t = serve(
+            &path,
+            s.clone(),
+            Arc::default(),
+            Arc::default(),
+            stop.clone(),
+        )
+        .unwrap();
         let st = request(&path, &json!({"cmd": "status"})).unwrap();
         assert_eq!(st["name"], "zentrale");
         let pin = request(&path, &json!({"cmd": "pair"})).unwrap()["pin"]

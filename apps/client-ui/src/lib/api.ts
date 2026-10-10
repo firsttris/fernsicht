@@ -27,6 +27,8 @@ export interface HostStatus {
   session: { client: string; address: string } | null;
   /** Seconds pairing stays open, if it is. */
   pairing: number | null;
+  /** The GPU is clocked up during sessions. */
+  gpu_boost?: boolean;
 }
 
 /** The host service on this computer (desktop app). */
@@ -158,6 +160,7 @@ export const actions = {
   },
   openPairing: () => invoke<{ pin: string; expires_in_s: number }>("open_pairing"),
   share: () => invoke<void>("share_this_machine"),
+  setGpuBoost: (on: boolean) => invoke<void>("set_gpu_boost", { on }),
   stopSharing: () => invoke<void>("stop_sharing"),
 };
 

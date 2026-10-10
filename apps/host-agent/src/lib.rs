@@ -13,6 +13,7 @@
 
 pub mod control;
 mod layout;
+pub mod power;
 mod web;
 
 use std::collections::HashMap;
@@ -47,6 +48,7 @@ use fernsicht_proto::{
 use fernsicht_secure::pairing::HostPairing;
 use fernsicht_secure::session::{Responder, Transport};
 use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
+use serde::{Deserialize, Serialize};
 
 /// Raw frame buffers: producer, slot, consumer.
 const BUFFERS: usize = 3;
@@ -87,6 +89,63 @@ pub struct HostConfig {
     pub web: Option<String>,
     /// The built viewer (`web/viewer/dist`) the web server serves.
     pub web_root: Option<PathBuf>,
+    /// Settings the desktop's user changes while the host runs.
+    pub settings: Arc<HostSettings>,
+    /// Where the GPU's clock settings are noted during a session, so a
+    /// crashed host can put them back (`/run/fernsicht/gpu-power.json`).
+    /// `None`: not noted.
+    pub power_record: Option<PathBuf>,
+}
+
+/// Host settings the desktop's user may change while the host runs (over
+/// the control socket), kept in the state directory.
+#[derive(Debug, Default)]
+pub struct HostSettings {
+    gpu_boost: AtomicBool,
+    path: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SettingsFile {
+    gpu_boost: bool,
+}
+
+impl HostSettings {
+    /// From `path` (`settings.json`); what is missing or broken takes the
+    /// defaults: GPU boost on.
+    pub fn load(path: PathBuf) -> Self {
+        let file = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<SettingsFile>(&t).ok());
+        Self {
+            gpu_boost: AtomicBool::new(file.is_none_or(|f| f.gpu_boost)),
+            path: Some(path),
+        }
+    }
+
+    /// Clock the GPU up during sessions ([`power`]).
+    pub fn gpu_boost(&self) -> bool {
+        self.gpu_boost.load(Ordering::Relaxed)
+    }
+
+    /// Off for this run only; the stored setting stays (`--no-gpu-boost`).
+    pub fn without_gpu_boost(self) -> Self {
+        self.gpu_boost.store(false, Ordering::Relaxed);
+        Self { path: None, ..self }
+    }
+
+    pub fn set_gpu_boost(&self, on: bool) -> std::io::Result<()> {
+        self.gpu_boost.store(on, Ordering::Relaxed);
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_string(&SettingsFile { gpu_boost: on })
+            .map_err(std::io::Error::other)?;
+        std::fs::write(path, json)
+    }
 }
 
 /// OS and GPU as shown in clients' host lists.
@@ -232,6 +291,8 @@ impl Default for HostConfig {
             description: HostDescription::default(),
             web: None,
             web_root: None,
+            settings: Arc::default(),
+            power_record: None,
         }
     }
 }
@@ -307,6 +368,8 @@ struct Session {
     input: Option<Box<dyn InputSink>>,
     input_seen: Dedup,
     input_errors: RepeatedError,
+    /// GPU clocked up while the session runs; dropped with it.
+    _gpu: Option<power::GpuBoost>,
 }
 
 impl Session {
@@ -571,6 +634,10 @@ impl HostAgent {
         let socket = fernsicht_net::socket::bind_udp(&cfg.bind)
             .with_context(|| format!("bind {}", cfg.bind))?;
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        // Clocks a crashed earlier run left raised go back first.
+        if let Some(record) = &cfg.power_record {
+            power::recover(record);
+        }
         let web = match (&cfg.web, &cfg.security) {
             (Some(addr), Some(sec)) => {
                 let (tx, requests) = bounded(4);
@@ -625,9 +692,14 @@ impl HostAgent {
         let control_stop = Arc::new(AtomicBool::new(false));
         let control = match (&self.cfg.control, &self.cfg.security) {
             (Some(path), Some(sec)) => {
-                let t =
-                    control::serve(path, sec.clone(), self.status.clone(), control_stop.clone())
-                        .with_context(|| format!("control socket {}", path.display()))?;
+                let t = control::serve(
+                    path,
+                    sec.clone(),
+                    self.status.clone(),
+                    self.cfg.settings.clone(),
+                    control_stop.clone(),
+                )
+                .with_context(|| format!("control socket {}", path.display()))?;
                 log::info!("control socket {}", path.display());
                 Some(t)
             }
@@ -1133,6 +1205,14 @@ impl HostAgent {
         };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
         let codec = encoder.codec();
+        // The encoder's GPU at full clocks while the session runs.
+        let gpu = match &self.cfg.encoder {
+            EncoderKind::Vaapi { render_node } if self.cfg.settings.gpu_boost() => {
+                let plan = power::plan(Path::new("/sys"), render_node);
+                Some(power::GpuBoost::apply(plan, self.cfg.power_record.clone()))
+            }
+            _ => None,
+        };
         shared
             .target_kbps
             .store(params.bitrate_kbps, Ordering::Relaxed);
@@ -1279,6 +1359,7 @@ impl HostAgent {
             input,
             input_seen: Dedup::default(),
             input_errors: RepeatedError::default(),
+            _gpu: gpu,
         };
         Ok((session, handshake_reply))
     }

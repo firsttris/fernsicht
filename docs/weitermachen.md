@@ -178,11 +178,14 @@ gelaufen. Sie brauchen den Benutzer am Rechner:
 ## Offene Aufgaben, nach Wichtigkeit
 
 1. **Die Live-Tests oben**, dann Fehler beheben, die dabei auftauchen.
-2. **GPU-Energieprofil auf der zentrale.** Encode bei 1440p ist
-   10 ms, weil die GPU heruntertaktet. Test (der Benutzer führt aus):
-   `echo 1 | sudo tee /sys/class/drm/card1/device/pp_power_profile_mode`.
-   Danach erneut messen. Wenn es hilft, kann der Dienst das Profil
-   während einer Sitzung setzen.
+2. **GPU-Hochtakten messen.** Gebaut ist es: Der Host setzt während
+   einer Sitzung `power_dpm_force_performance_level` auf `high`
+   (`apps/host-agent/src/power.rs`, Schalter in der App unter
+   „Einstellungen“). Encode bei 1440p war vorher 10 ms. Jetzt auf der
+   zentrale mit dem Host als Dienst (root) messen, einmal mit und einmal
+   ohne (`--no-gpu-boost` oder der Schalter), und das Encode im Overlay
+   vergleichen. Hilft `high` nicht genug, `pp_power_profile_mode`
+   probieren (z. B. Profil VR).
 3. **Bildschärfe bei nativer Auflösung** prüfen (der Benutzer fand das
    Bild bei 1080p über WLAN nicht ganz scharf). Bitrate und
    Keyframe-Qualität.

@@ -75,6 +75,11 @@ struct Args {
     /// No web viewer.
     #[arg(long)]
     no_web: bool,
+    /// Leave the GPU's clocks alone during sessions (by default they are
+    /// raised while someone watches, see docs/install.md; also switchable
+    /// in the app).
+    #[arg(long)]
+    no_gpu_boost: bool,
     /// The built web viewer (web/viewer/dist). Default:
     /// ../share/fernsicht/viewer next to this program, if it exists.
     #[arg(long)]
@@ -280,8 +285,16 @@ fn main() -> anyhow::Result<()> {
             PAIRING_OPEN_FOR.as_secs() / 60
         );
     }
+    let mut settings = fernsicht_host_agent::HostSettings::load(dir.join("settings.json"));
+    if args.no_gpu_boost {
+        settings = settings.without_gpu_boost();
+    }
+    // SAFETY: geteuid has no preconditions.
+    let root = unsafe { libc::geteuid() } == 0;
     let cfg = HostConfig {
         security: Some(std::sync::Arc::new(security)),
+        settings: Arc::new(settings),
+        power_record: root.then(|| "/run/fernsicht/gpu-power.json".into()),
         ..cfg
     };
     let agent = HostAgent::bind(cfg)?;

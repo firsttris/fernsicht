@@ -405,6 +405,16 @@ impl Backend {
         control::request(&self.control_path(), &json!({"cmd": "pair"}))
     }
 
+    /// Switches the GPU boost of this computer's host (see the host's
+    /// `power` module).
+    pub fn set_gpu_boost(&self, on: bool) -> anyhow::Result<()> {
+        control::request(
+            &self.control_path(),
+            &json!({"cmd": "set", "gpu_boost": on}),
+        )
+        .map(drop)
+    }
+
     /// Removes a device paired with this computer's host.
     pub fn unpair_from_host(&self, device: &str) -> anyhow::Result<()> {
         control::request(

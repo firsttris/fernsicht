@@ -1,7 +1,17 @@
 import { Segmented } from "@fernsicht/ui";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { DEFAULT_SETTINGS, type StreamSettings, loadSettings, saveSettings } from "../lib/api";
+import {
+  DEFAULT_SETTINGS,
+  type StreamSettings,
+  actions,
+  errorText,
+  inApp,
+  loadSettings,
+  saveSettings,
+  thisMachineQuery,
+} from "../lib/api";
 
 const SIZES = [
   { value: "host", label: "Wie der Host", size: [0, 0] },
@@ -89,7 +99,45 @@ export function SettingsPage() {
           </button>
         </div>
       </section>
+      {inApp() && <HostSettings />}
     </>
+  );
+}
+
+/** Settings of the host on this computer, when one runs. */
+function HostSettings() {
+  const queryClient = useQueryClient();
+  const { data } = useQuery(thisMachineQuery);
+  const boost = useMutation({
+    mutationFn: actions.setGpuBoost,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["this-machine"] }),
+  });
+  const host = data?.host;
+  if (!host) return null;
+  return (
+    <section className="flex max-w-[640px] flex-col gap-6 border-t border-border pt-6">
+      <h2 className="m-0 text-lg font-semibold tracking-tight">Dieser Rechner als Host</h2>
+      <Setting
+        title="Grafikkarte während Sitzungen hochtakten"
+        hint="Zwischen zwei Bildern taktet die Grafikkarte herunter, und das nächste Bild braucht zum Kodieren länger. Während eine Sitzung läuft, hält der Host sie deshalb auf vollem Takt und stellt danach alles zurück. Kostet nur in Sitzungen mehr Strom. Gilt für AMD und Intel."
+      >
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={host.gpu_boost ?? true}
+            disabled={boost.isPending}
+            onChange={(e) => boost.mutate(e.target.checked)}
+            className="m-0 size-4 accent-foreground"
+          />
+          Hochtakten
+        </label>
+      </Setting>
+      {boost.isError && (
+        <p role="alert" className="m-0 text-xs text-muted-foreground">
+          {errorText(boost.error)}
+        </p>
+      )}
+    </section>
   );
 }
 
