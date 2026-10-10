@@ -247,7 +247,10 @@ fn lost_sound_packets_are_mostly_repaired() {
         return;
     }
     let _serial = fernsicht_e2e::exclusive();
-    let (s, pcm) = tone(Impairment::loss(0.2), 3);
+    // A second more than without loss: at 20 % loss the session itself
+    // takes longer to start (lost handshake packets are sent again), which
+    // cost the 3 s version more than a second on busy CI runners.
+    let (s, pcm) = tone(Impairment::loss(0.2), 4);
     assert!(s.audio.played > 400, "{:?}", s.audio);
     // Each packet repeats the previous frame: only two losses in a row
     // (4 % of the time at 20 % loss) need concealment.
