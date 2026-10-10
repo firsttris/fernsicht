@@ -13,6 +13,8 @@ path = "src/main.rs"
 [features]
 # Hardware H.264 over VAAPI (AMD, Intel); needs FFmpeg/libva headers.
 vaapi = ["fernsicht-codec/vaapi"]
+# Hardware H.264 with NVENC (NVIDIA); CUDA is loaded at runtime.
+nvidia = ["fernsicht-codec/nvidia"]
 # Screen capture over KMS (needs CAP_SYS_ADMIN at runtime).
 kms = ["fernsicht-capture/kms"]
 

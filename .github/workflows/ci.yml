@@ -52,8 +52,9 @@ jobs:
       - run: cargo test --workspace --exclude fernsicht-e2e
         env:
           PROPTEST_CASES: "1024"
-      # Builds the hardware tests; without a GPU they skip themselves.
-      - run: cargo test -p fernsicht-codec --features vaapi
+      # Builds the hardware tests; without a GPU they skip themselves (and
+      # NVENC/NVDEC must fail cleanly without the NVIDIA driver).
+      - run: cargo test -p fernsicht-codec --features vaapi,nvidia
       # KMS capture: selection logic and error paths (capturing itself
       # needs a monitor and CAP_SYS_ADMIN, see docs/kms-capture.md).
       - run: cargo test -p fernsicht-capture -p fernsicht-host-agent --features fernsicht-capture/kms,fernsicht-host-agent/kms

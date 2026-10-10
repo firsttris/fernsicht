@@ -14,7 +14,8 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 | | VAAPI H.264 Encode/Decode | ✅ läuft auf dem AMD-Runner durch die ganze Pipeline: glass-to-glass ohne Bildschirm ≈ 10 ms (1080p60, Debug-Build) |
 | | KMS-Capture → DMA-BUF → VAAPI ohne Kopie | ✅ implementiert; Import und GPU-Farbkonvertierung in CI getestet, KMS selbst von Hand ([Anleitung](docs/kms-capture.md)) |
 | | Client-Fenster (Vulkan, winit) | ✅ VAAPI-Bild ohne Kopie in Vulkan (0,15 ms für Umrechnen + Zeichnen bei 1080p), Mailbox-Present, CPU-Rückfallweg; Render-Tests im CI mit llvmpipe |
-| | NVENC, PipeWire-Capture | ⏳ offen |
+| | NVIDIA: NVENC/NVDEC | ✅ Encoder und Decoder über FFmpeg/CUDA, getestet auf dem NVIDIA-Runner; Bilder gehen vorerst über die CPU (Bildschirmaufnahme auf NVIDIA fehlt noch) |
+| | PipeWire-Capture, Mauszeiger | ⏳ offen |
 | 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
@@ -45,6 +46,11 @@ cargo build --release -p fernsicht-client --features vaapi,window
 ./target/release/fernsicht-client <host-ip>:47800   # Fenster: Esc schließt, F11 Vollbild
 # ohne Fenster, Video in eine Datei (ffplay -framerate 60 ~/test.h264)
 ./target/release/fernsicht-client <host-ip>:47800 --headless --record ~/test.h264
+
+# NVIDIA (z. B. GTX 1080): Client mit NVDEC, Host mit NVENC (vorerst Testbild)
+cargo build --release -p fernsicht-client --features nvidia,window
+cargo build --release -p fernsicht-host-agent --features nvidia
+./target/release/fernsicht-host-agent --encoder nvenc
 ```
 
 Der Client gibt jede Sekunde das Latenz-Overlay aus:
@@ -144,8 +150,8 @@ sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
 ## Nächste Schritte (Phase 1)
 
 1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
-2. Decode auf NVIDIA (GTX 1080 als Client): Vulkan Video oder NVDEC,
-   danach NVENC als Encoder (DMA-BUF → CUDA).
+2. NVIDIA ohne Kopie: Bildschirmaufnahme (DMA-BUF → CUDA) für NVENC,
+   NVDEC-Bilder direkt in Vulkan.
 3. Mauszeiger (Cursor-Plane) ins Bild, PipeWire-Portal als zweites
    Capture-Backend.
 4. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.

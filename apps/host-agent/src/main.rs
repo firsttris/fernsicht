@@ -29,8 +29,8 @@ struct Args {
     /// Pacing rate in Mbit/s.
     #[arg(long, default_value_t = 400)]
     pace_mbit: u64,
-    /// Video encoder: "synthetic" (no GPU) or "vaapi" (hardware H.264;
-    /// needs a build with the "vaapi" feature).
+    /// Video encoder: "synthetic" (no GPU), "vaapi" (AMD/Intel) or "nvenc"
+    /// (NVIDIA); the hardware ones need the build features "vaapi"/"nvidia".
     #[arg(long, value_enum, default_value_t = EncoderArg::Synthetic)]
     encoder: EncoderArg,
     /// GPU render node for VAAPI.
@@ -40,6 +40,9 @@ struct Args {
     /// with the "kms" feature and CAP_SYS_ADMIN, see docs/kms-capture.md).
     #[arg(long, value_enum, default_value_t = CaptureArg::TestPattern)]
     capture: CaptureArg,
+    /// NVENC: CUDA device index of the NVIDIA GPU.
+    #[arg(long, default_value_t = 0)]
+    cuda_device: u32,
     /// KMS: card node, e.g. /dev/dri/card1 (default: first with a display).
     #[arg(long)]
     kms_card: Option<String>,
@@ -58,6 +61,7 @@ enum CaptureArg {
 enum EncoderArg {
     Synthetic,
     Vaapi,
+    Nvenc,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -82,6 +86,9 @@ fn main() -> anyhow::Result<()> {
             EncoderArg::Synthetic => EncoderKind::Synthetic,
             EncoderArg::Vaapi => EncoderKind::Vaapi {
                 render_node: args.render_node,
+            },
+            EncoderArg::Nvenc => EncoderKind::Nvenc {
+                gpu: args.cuda_device,
             },
         },
         ..HostConfig::default()

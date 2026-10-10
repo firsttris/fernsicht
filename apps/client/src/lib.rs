@@ -52,6 +52,8 @@ pub struct ClientConfig {
     pub host_timeout: Duration,
     /// GPU used for hardware decoding (VAAPI).
     pub render_node: String,
+    /// Which hardware H.264 decoder to use.
+    pub decoder: DecoderChoice,
     /// Writes the received bitstream here (H.264 Annex B: plays with
     /// `ffplay` or `mpv`). Only frames the decoder gets are written.
     pub record: Option<std::path::PathBuf>,
@@ -70,9 +72,21 @@ impl Default for ClientConfig {
             print_overlay: false,
             host_timeout: Duration::from_secs(5),
             render_node: "/dev/dri/renderD128".into(),
+            decoder: DecoderChoice::Auto,
             record: None,
         }
     }
+}
+
+/// Hardware decoder for H.264 streams.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecoderChoice {
+    /// VAAPI if it works (AMD, Intel), else NVDEC (NVIDIA).
+    #[default]
+    Auto,
+    Vaapi,
+    /// NVIDIA, CUDA device 0.
+    Nvdec,
 }
 
 /// Result of a client run.
@@ -215,7 +229,10 @@ pub fn run_with(
     let presenter = {
         let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
         let print = cfg.print_overlay;
-        let render_node = cfg.render_node.clone();
+        let hw = Hw {
+            render_node: cfg.render_node.clone(),
+            decoder: cfg.decoder,
+        };
         spawn_hot("present", move || {
             let mut presenter = make_presenter().unwrap_or_else(|e| {
                 log::error!("no video window ({e}); running headless");
@@ -227,7 +244,7 @@ pub fn run_with(
                 &free_tx,
                 &need_keyframe,
                 print,
-                &render_node,
+                &hw,
                 record.as_mut().map(|w| w as &mut dyn std::io::Write),
                 presenter.as_mut(),
             );
@@ -512,21 +529,54 @@ fn ratio(part: u32, total: u32) -> f32 {
     }
 }
 
-fn make_decoder(codec: Codec, render_node: &str) -> Result<Box<dyn Decoder>, CodecError> {
+/// What the present thread needs to create a hardware decoder.
+struct Hw {
+    #[cfg_attr(not(feature = "vaapi"), allow(dead_code))]
+    render_node: String,
+    decoder: DecoderChoice,
+}
+
+fn make_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
     match codec {
         Codec::Synthetic => Ok(Box::new(SyntheticDecoder::default())),
-        #[cfg(feature = "vaapi")]
-        Codec::H264 => Ok(Box::new(fernsicht_codec::vaapi::VaapiDecoder::new(
-            render_node,
-        )?)),
-        other => {
-            let _ = render_node;
-            Err(CodecError::Backend(format!(
-                "this build cannot decode {} (cargo feature \"vaapi\")",
-                overlay::codec_label(other)
-            )))
-        }
+        Codec::H264 => make_h264_decoder(hw),
+        other => Err(CodecError::Backend(format!(
+            "cannot decode {}",
+            overlay::codec_label(other)
+        ))),
     }
+}
+
+fn make_h264_decoder(hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
+    let mut errors = Vec::new();
+    if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Vaapi) {
+        #[cfg(feature = "vaapi")]
+        match fernsicht_codec::vaapi::VaapiDecoder::new(&hw.render_node) {
+            Ok(d) => {
+                log::info!("decoding with VAAPI ({})", hw.render_node);
+                return Ok(Box::new(d));
+            }
+            Err(e) => errors.push(format!("VAAPI: {e}")),
+        }
+        #[cfg(not(feature = "vaapi"))]
+        errors.push("VAAPI: not in this build (cargo feature \"vaapi\")".to_string());
+    }
+    if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Nvdec) {
+        #[cfg(feature = "nvidia")]
+        match fernsicht_codec::nvidia::NvdecDecoder::new(0) {
+            Ok(d) => {
+                log::info!("decoding with NVDEC");
+                return Ok(Box::new(d));
+            }
+            Err(e) => errors.push(format!("NVDEC: {e}")),
+        }
+        #[cfg(not(feature = "nvidia"))]
+        errors.push("NVDEC: not in this build (cargo feature \"nvidia\")".to_string());
+    }
+    Err(CodecError::Backend(format!(
+        "no H.264 decoder: {}",
+        errors.join("; ")
+    )))
 }
 
 struct PresentResult {
@@ -545,7 +595,7 @@ fn present_loop(
     free_tx: &Sender<ReceivedFrame>,
     need_keyframe: &AtomicBool,
     print_overlay: bool,
-    render_node: &str,
+    hw: &Hw,
     mut record: Option<&mut dyn std::io::Write>,
     presenter: &mut dyn Presenter,
 ) -> PresentResult {
@@ -566,7 +616,7 @@ fn present_loop(
     while let Ok(rf) = queue.recv() {
         let h = rf.header;
         if decoder.as_ref().is_none_or(|(codec, _)| *codec != rf.codec) {
-            decoder = match make_decoder(rf.codec, render_node) {
+            decoder = match make_decoder(rf.codec, hw) {
                 Ok(d) => Some((rf.codec, d)),
                 Err(e) => {
                     log::error!("no decoder for {}: {e}", overlay::codec_label(rf.codec));

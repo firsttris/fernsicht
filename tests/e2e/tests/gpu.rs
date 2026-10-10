@@ -1,38 +1,60 @@
-//! Real H.264 end to end: host agent with the VAAPI encoder, client with the
-//! VAAPI decoder, through the impaired link. Needs a GPU: runs when
-//! `FERNSICHT_GPU=amd` (the GPU CI job on the self-hosted runner), skips
-//! otherwise. Stage latencies go into the CI job summary.
-#![cfg(feature = "vaapi")]
+//! Real H.264 end to end: host agent with a hardware encoder, client with
+//! the matching hardware decoder, through the impaired link. Needs a GPU:
+//! `FERNSICHT_GPU=amd|intel` uses VAAPI (feature `vaapi`), `nvidia` uses
+//! NVENC/NVDEC (feature `nvidia`); skips otherwise. Stage latencies go into
+//! the CI job summary.
+#![cfg(any(feature = "vaapi", feature = "nvidia"))]
 
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use fernsicht_client::{ClientConfig, RunSummary, run};
+use fernsicht_client::{ClientConfig, DecoderChoice, RunSummary, run};
 use fernsicht_core::latency::Stage;
 use fernsicht_e2e::{Host, ImpairedLink, Impairment, exclusive};
 use fernsicht_host_agent::{EncoderKind, HostConfig, HostStats};
 use fernsicht_proto::Codec;
 
-fn render_node() -> Option<String> {
+/// The hardware path under test.
+struct Gpu {
+    name: &'static str,
+    encoder: EncoderKind,
+    decoder: DecoderChoice,
+    render_node: String,
+}
+
+fn gpu() -> Option<Gpu> {
+    let node =
+        std::env::var("FERNSICHT_RENDER_NODE").unwrap_or_else(|_| "/dev/dri/renderD128".into());
     match std::env::var("FERNSICHT_GPU").as_deref() {
-        Ok("amd" | "intel") => Some(
-            std::env::var("FERNSICHT_RENDER_NODE").unwrap_or_else(|_| "/dev/dri/renderD128".into()),
-        ),
-        _ => {
-            eprintln!("skipped: set FERNSICHT_GPU=amd (needs a VAAPI GPU)");
+        #[cfg(feature = "vaapi")]
+        Ok("amd" | "intel") => Some(Gpu {
+            name: "VAAPI",
+            encoder: EncoderKind::Vaapi {
+                render_node: node.clone(),
+            },
+            decoder: DecoderChoice::Vaapi,
+            render_node: node,
+        }),
+        #[cfg(feature = "nvidia")]
+        Ok("nvidia") => Some(Gpu {
+            name: "NVENC/NVDEC",
+            encoder: EncoderKind::Nvenc { gpu: 0 },
+            decoder: DecoderChoice::Nvdec,
+            render_node: node,
+        }),
+        other => {
+            eprintln!("skipped: no hardware path for FERNSICHT_GPU={other:?} in this build");
             None
         }
     }
 }
 
-fn stream(node: &str, down: Impairment) -> (RunSummary, u64) {
+fn stream(gpu: &Gpu, down: Impairment) -> (RunSummary, u64) {
     let _serial = exclusive();
     let host = Host::start(HostConfig {
-        encoder: EncoderKind::Vaapi {
-            render_node: node.into(),
-        },
+        encoder: gpu.encoder.clone(),
         ..HostConfig::default()
     });
     let stats = host.stats();
@@ -45,7 +67,8 @@ fn stream(node: &str, down: Impairment) -> (RunSummary, u64) {
             fps: 60,
             bitrate_kbps: 20_000,
             duration: Some(Duration::from_secs(4)),
-            render_node: node.into(),
+            render_node: gpu.render_node.clone(),
+            decoder: gpu.decoder,
             ..ClientConfig::default()
         },
         Arc::new(AtomicBool::new(false)),
@@ -98,9 +121,12 @@ fn report(title: &str, s: &RunSummary) {
 
 #[test]
 fn real_h264_over_loopback() {
-    let Some(node) = render_node() else { return };
-    let (s, overflows) = stream(&node, Impairment::none());
-    report("Echtes H.264 (VAAPI) 1080p60, Loopback", &s);
+    let Some(gpu) = gpu() else { return };
+    let (s, overflows) = stream(&gpu, Impairment::none());
+    report(
+        &format!("Echtes H.264 ({}) 1080p60, Loopback", gpu.name),
+        &s,
+    );
     assert_eq!(s.codec, Some(Codec::H264));
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert_eq!(s.receiver.packets_lost, 0, "{s:?}");
@@ -112,9 +138,12 @@ fn real_h264_over_loopback() {
 
 #[test]
 fn real_h264_with_one_percent_loss() {
-    let Some(node) = render_node() else { return };
-    let (s, overflows) = stream(&node, Impairment::loss(0.01));
-    report("Echtes H.264 (VAAPI) 1080p60, 1 % Paketverlust", &s);
+    let Some(gpu) = gpu() else { return };
+    let (s, overflows) = stream(&gpu, Impairment::loss(0.01));
+    report(
+        &format!("Echtes H.264 ({}) 1080p60, 1 % Paketverlust", gpu.name),
+        &s,
+    );
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert!(s.receiver.packets_recovered > 0, "{s:?}");
     assert!(

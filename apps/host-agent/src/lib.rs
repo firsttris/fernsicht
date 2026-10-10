@@ -78,6 +78,9 @@ pub enum EncoderKind {
     Synthetic,
     /// Hardware H.264 over VAAPI (needs the `vaapi` feature and a GPU).
     Vaapi { render_node: String },
+    /// Hardware H.264 with NVENC (needs the `nvidia` feature and an NVIDIA
+    /// GPU; `gpu` is the CUDA device index). Test pattern only for now.
+    Nvenc { gpu: u32 },
 }
 
 impl Default for HostConfig {
@@ -501,6 +504,20 @@ fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn
         #[cfg(not(feature = "vaapi"))]
         EncoderKind::Vaapi { .. } => {
             anyhow::bail!("this build has no VAAPI support (cargo feature \"vaapi\")")
+        }
+        #[cfg(feature = "nvidia")]
+        EncoderKind::Nvenc { gpu } => Ok(Box::new(fernsicht_codec::nvidia::NvencEncoder::new(
+            &fernsicht_codec::nvidia::NvencConfig {
+                gpu: *gpu,
+                width: u32::from(p.width),
+                height: u32::from(p.height),
+                fps: u32::from(p.fps),
+                bitrate_kbps: p.bitrate_kbps,
+            },
+        )?)),
+        #[cfg(not(feature = "nvidia"))]
+        EncoderKind::Nvenc { .. } => {
+            anyhow::bail!("this build has no NVENC support (cargo feature \"nvidia\")")
         }
     }
 }

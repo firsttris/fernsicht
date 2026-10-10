@@ -61,8 +61,9 @@ ffplay -framerate 60 ~/fernsicht-test.h264
 ```
 
 Von einem zweiten Rechner aus geht es genauso, statt `127.0.0.1` die IP des
-AMD-Rechners. Der Client dekodiert noch per VAAPI. Auf dem NVIDIA-Rechner
-fehlt dafür noch ein Decoder (Vulkan Video oder NVDEC).
+AMD-Rechners. Auf dem NVIDIA-Rechner den Client mit NVDEC bauen
+(`--features nvidia,window`); er nimmt automatisch NVDEC, wenn VAAPI nicht
+geht.
 
 ## Optionen
 

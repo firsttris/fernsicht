@@ -6,9 +6,14 @@
 //!   latency measurement run on machines without a GPU.
 //! - [`vaapi`] (feature `vaapi`): H.264 low-latency encode and decode in
 //!   hardware via FFmpeg (radeonsi on the RX 7800 XT, iHD on Intel).
-//!   Frames are uploaded from CPU memory for now; DMA-BUF import from KMS
-//!   capture comes with the capture backend. NVENC for NVIDIA follows.
+//!   Takes KMS DMA-BUFs without a copy.
+//! - [`nvidia`] (feature `nvidia`): H.264 with NVENC and NVDEC via FFmpeg
+//!   (GTX 1080 and newer). CPU NV12 in and out for now.
 
+#[cfg(any(feature = "vaapi", feature = "nvidia"))]
+mod ff;
+#[cfg(feature = "nvidia")]
+pub mod nvidia;
 pub mod synthetic;
 #[cfg(feature = "vaapi")]
 pub mod vaapi;

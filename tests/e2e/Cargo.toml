@@ -9,6 +9,8 @@ publish.workspace = true
 [features]
 # GPU end-to-end tests (tests/gpu.rs); run on the self-hosted AMD runner.
 vaapi = ["fernsicht-host-agent/vaapi", "fernsicht-client/vaapi"]
+# The same on the NVIDIA runner, with NVENC/NVDEC.
+nvidia = ["fernsicht-host-agent/nvidia", "fernsicht-client/nvidia"]
 
 [dependencies]
 fernsicht-client.workspace = true

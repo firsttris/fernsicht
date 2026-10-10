@@ -10,6 +10,9 @@ publish.workspace = true
 # H.264 over VAAPI via FFmpeg (AMD radeonsi, Intel iHD). Needs the FFmpeg
 # and libva development packages; see dev/Containerfile.
 vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc"]
+# H.264 with NVENC/NVDEC via FFmpeg (CUDA is loaded at runtime, so this
+# builds without the NVIDIA driver).
+nvidia = ["dep:ffmpeg-next", "dep:libc"]
 
 [dependencies]
 ffmpeg-next = { workspace = true, optional = true }

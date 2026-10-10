@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use clap::Parser;
-use fernsicht_client::{ClientConfig, run};
+use fernsicht_client::{ClientConfig, DecoderChoice, run};
 use fernsicht_render::overlay::ms;
 
 /// Fernsicht client: shows the host's screen in a window (build feature
@@ -35,9 +35,19 @@ struct Args {
     /// Save the received video to this file (H.264: `ffplay file.h264`).
     #[arg(long)]
     record: Option<std::path::PathBuf>,
+    /// H.264 decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
+    #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
+    decoder: DecoderArg,
     /// No window: decode only and print the overlay.
     #[arg(long)]
     headless: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum DecoderArg {
+    Auto,
+    Vaapi,
+    Nvdec,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,6 +63,11 @@ fn main() -> anyhow::Result<()> {
         duration: args.duration.map(Duration::from_secs),
         print_overlay: true,
         render_node: args.render_node,
+        decoder: match args.decoder {
+            DecoderArg::Auto => DecoderChoice::Auto,
+            DecoderArg::Vaapi => DecoderChoice::Vaapi,
+            DecoderArg::Nvdec => DecoderChoice::Nvdec,
+        },
         record: args.record,
         ..ClientConfig::default()
     };

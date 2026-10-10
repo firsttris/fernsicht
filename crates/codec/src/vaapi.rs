@@ -13,7 +13,7 @@
 //! converted to NV12 (BT.709, limited range) and scaled to the stream size
 //! by the GPU's video processor (`scale_vaapi`).
 
-use std::ffi::{CStr, CString, c_int};
+use std::ffi::{CString, c_int};
 use std::ptr;
 
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
@@ -25,32 +25,11 @@ use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
+use crate::ff::{check, eagain, ff_err, is_bt709_limited, signal_bt709_limited};
 use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
 
 /// Render node used when none is given.
 pub const DEFAULT_RENDER_NODE: &str = "/dev/dri/renderD128";
-
-fn ff_err(what: &str, code: c_int) -> CodecError {
-    let mut buf = [0 as std::ffi::c_char; 256];
-    // SAFETY: av_strerror writes a NUL-terminated string into buf.
-    let msg = unsafe {
-        ffi::av_strerror(code, buf.as_mut_ptr(), buf.len());
-        CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
-    };
-    CodecError::Backend(format!("{what}: {msg} ({code})"))
-}
-
-fn check(what: &str, code: c_int) -> Result<c_int, CodecError> {
-    if code < 0 {
-        Err(ff_err(what, code))
-    } else {
-        Ok(code)
-    }
-}
-
-fn eagain(code: c_int) -> bool {
-    code == -libc::EAGAIN
-}
 
 #[link(name = "va")]
 unsafe extern "C" {
@@ -287,12 +266,8 @@ impl VaapiEncoder {
             (*c).rc_buffer_size = (bitrate / i64::from(fps)) as c_int;
             (*c).flags |= (ffi::AV_CODEC_FLAG_LOW_DELAY | ffi::AV_CODEC_FLAG_CLOSED_GOP) as c_int;
             (*c).thread_count = 1;
-            // Written into the stream (VUI), so decoders and players convert
-            // back to RGB the way scale_vaapi converted to YCbCr.
-            (*c).color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
-            (*c).colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
-            (*c).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-            (*c).color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+            // The way scale_vaapi converts to YCbCr, written into the stream.
+            signal_bt709_limited(c);
 
             let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
             for (k, v) in [
@@ -1017,9 +992,7 @@ impl VaapiDecoder {
     /// what the encoder writes and the renderer assumes.
     pub fn last_frame_is_bt709_limited(&self) -> bool {
         // SAFETY: frame is a valid (possibly empty) AVFrame.
-        let f = unsafe { &*self.frame };
-        f.color_range == ffi::AVColorRange::AVCOL_RANGE_MPEG
-            && f.colorspace == ffi::AVColorSpace::AVCOL_SPC_BT709
+        unsafe { is_bt709_limited(self.frame) }
     }
 
     pub fn last_frame_nv12(&mut self) -> Result<Vec<u8>, CodecError> {
