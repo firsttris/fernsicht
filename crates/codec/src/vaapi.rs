@@ -8,12 +8,18 @@
 //! - CBR with a buffer of one frame, so frame sizes stay even
 //! - `async_depth = 1`: the encoder does not queue frames internally
 //!
-//! Input frames are NV12 in CPU memory and are uploaded per frame. Zero-copy
-//! DMA-BUF import from KMS capture replaces the upload later.
+//! Input is either NV12 in CPU memory, uploaded per frame, or an RGB
+//! DMA-BUF (KMS capture). A DMA-BUF is imported without a copy and
+//! converted to NV12 (BT.709, limited range) and scaled to the stream size
+//! by the GPU's video processor (`scale_vaapi`).
 
 use std::ffi::{CStr, CString, c_int};
 use std::ptr;
 
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::sync::Arc;
+
+use fernsicht_capture::dmabuf::{DmaBuf, DmaBufPlane, formats, fourcc_name};
 use fernsicht_capture::{Frame, PixelFormat};
 use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
@@ -120,6 +126,9 @@ pub struct VaapiEncoder {
     pkt: *mut ffi::AVPacket,
     width: u32,
     height: u32,
+    fps: u32,
+    /// Built on the first DMA-BUF frame, rebuilt when its geometry changes.
+    converter: Option<GpuConverter>,
     force_keyframe: bool,
     next_pts: i64,
 }
@@ -155,6 +164,8 @@ impl VaapiEncoder {
                 pkt: ffi::av_packet_alloc(),
                 width: cfg.width,
                 height: cfg.height,
+                fps: cfg.fps,
+                converter: None,
                 force_keyframe: true,
                 next_pts: 0,
             };
@@ -241,12 +252,9 @@ impl VaapiEncoder {
     }
 }
 
-impl Encoder for VaapiEncoder {
-    fn codec(&self) -> Codec {
-        Codec::H264
-    }
-
-    fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
+impl VaapiEncoder {
+    /// CPU NV12 → `self.hw`.
+    unsafe fn upload(&mut self, frame: &Frame) -> Result<(), CodecError> {
         if frame.format != PixelFormat::Nv12
             || frame.width != self.width
             || frame.height != self.height
@@ -256,12 +264,9 @@ impl Encoder for VaapiEncoder {
                 "input must be NV12 at the configured size".into(),
             ));
         }
-        out.data.clear();
-        out.keyframe = false;
-        // SAFETY: all pointers were created in new() and stay valid.
+        // SAFETY: see encode().
         unsafe {
             self.fill_sw(frame)?;
-            ffi::av_frame_unref(self.hw);
             check(
                 "get VAAPI surface",
                 ffi::av_hwframe_get_buffer(self.frames, self.hw, 0),
@@ -270,6 +275,46 @@ impl Encoder for VaapiEncoder {
                 "upload to VAAPI surface",
                 ffi::av_hwframe_transfer_data(self.hw, self.sw, 0),
             )?;
+        }
+        Ok(())
+    }
+
+    /// RGB DMA-BUF → NV12 surface in `self.hw`, all on the GPU.
+    unsafe fn convert_dmabuf(&mut self, image: &DmaBuf) -> Result<(), CodecError> {
+        image
+            .validate()
+            .map_err(|e| CodecError::Backend(e.to_string()))?;
+        let key = (image.fourcc, image.width, image.height);
+        if self.converter.as_ref().is_none_or(|c| c.key != key) {
+            self.converter = None;
+            self.converter = Some(GpuConverter::new(
+                &self._device,
+                key,
+                (self.width, self.height),
+                self.fps,
+            )?);
+        }
+        let conv = self.converter.as_mut().expect("just built");
+        // SAFETY: hw is an empty frame owned by us.
+        unsafe { conv.convert(image, self.hw) }
+    }
+}
+
+impl Encoder for VaapiEncoder {
+    fn codec(&self) -> Codec {
+        Codec::H264
+    }
+
+    fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
+        out.data.clear();
+        out.keyframe = false;
+        // SAFETY: all pointers were created in new() and stay valid.
+        unsafe {
+            ffi::av_frame_unref(self.hw);
+            match &frame.dmabuf {
+                Some(image) => self.convert_dmabuf(image)?,
+                None => self.upload(frame)?,
+            }
             (*self.hw).pts = self.next_pts;
             self.next_pts += 1;
             if self.force_keyframe {
@@ -318,6 +363,7 @@ impl Encoder for VaapiEncoder {
 
 impl Drop for VaapiEncoder {
     fn drop(&mut self) {
+        self.converter = None;
         // SAFETY: each pointer is either null or owned by us.
         unsafe {
             ffi::avcodec_free_context(&mut self.ctx);
@@ -326,6 +372,333 @@ impl Drop for VaapiEncoder {
             ffi::av_packet_free(&mut self.pkt);
             ffi::av_buffer_unref(&mut self.frames);
         }
+    }
+}
+
+/// The FFmpeg pixel format of an RGB DRM fourcc (same memory layout).
+fn sw_format_for(fourcc: u32) -> Result<ffi::AVPixelFormat, CodecError> {
+    use ffi::AVPixelFormat::*;
+    Ok(match fourcc {
+        formats::XRGB8888 => AV_PIX_FMT_BGR0,
+        formats::ARGB8888 => AV_PIX_FMT_BGRA,
+        formats::XBGR8888 => AV_PIX_FMT_RGB0,
+        formats::ABGR8888 => AV_PIX_FMT_RGBA,
+        other => {
+            return Err(CodecError::Backend(format!(
+                "DMA-BUF format {} is not supported yet",
+                fourcc_name(other)
+            )));
+        }
+    })
+}
+
+unsafe extern "C" fn free_descriptor(_opaque: *mut std::ffi::c_void, data: *mut u8) {
+    // SAFETY: data came from Box::into_raw in GpuConverter::convert.
+    drop(unsafe { Box::from_raw(data as *mut ffi::AVDRMFrameDescriptor) });
+}
+
+/// Imports RGB DMA-BUFs as VAAPI surfaces and converts them to NV12 at the
+/// stream size with the video processor: `buffer → scale_vaapi → sink`.
+struct GpuConverter {
+    /// (fourcc, width, height) of the input this was built for.
+    key: (u32, u32, u32),
+    /// Frames context the imported surfaces belong to (no own pool).
+    import_frames: *mut ffi::AVBufferRef,
+    graph: *mut ffi::AVFilterGraph,
+    src: *mut ffi::AVFilterContext,
+    sink: *mut ffi::AVFilterContext,
+    drm: *mut ffi::AVFrame,
+    mapped: *mut ffi::AVFrame,
+    next_pts: i64,
+}
+
+impl GpuConverter {
+    fn new(
+        device: &VaapiDevice,
+        key: (u32, u32, u32),
+        (out_w, out_h): (u32, u32),
+        fps: u32,
+    ) -> Result<Self, CodecError> {
+        let (fourcc, w, h) = key;
+        let sw_format = sw_format_for(fourcc)?;
+        // SAFETY: as in VaapiEncoder::new, pointers are checked and Drop
+        // handles a partly built value.
+        unsafe {
+            let mut conv = Self {
+                key,
+                import_frames: ffi::av_hwframe_ctx_alloc(device.ctx),
+                graph: ffi::avfilter_graph_alloc(),
+                src: ptr::null_mut(),
+                sink: ptr::null_mut(),
+                drm: ffi::av_frame_alloc(),
+                mapped: ffi::av_frame_alloc(),
+                next_pts: 0,
+            };
+            if conv.import_frames.is_null()
+                || conv.graph.is_null()
+                || conv.drm.is_null()
+                || conv.mapped.is_null()
+            {
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            let fc = (*conv.import_frames).data as *mut ffi::AVHWFramesContext;
+            (*fc).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
+            (*fc).sw_format = sw_format;
+            (*fc).width = w as c_int;
+            (*fc).height = h as c_int;
+            check(
+                "init VAAPI import context",
+                ffi::av_hwframe_ctx_init(conv.import_frames),
+            )?;
+
+            let g = conv.graph;
+            conv.src = ffi::avfilter_graph_alloc_filter(
+                g,
+                ffi::avfilter_get_by_name(c"buffer".as_ptr()),
+                c"in".as_ptr(),
+            );
+            let scale = ffi::avfilter_graph_alloc_filter(
+                g,
+                ffi::avfilter_get_by_name(c"scale_vaapi".as_ptr()),
+                c"convert".as_ptr(),
+            );
+            conv.sink = ffi::avfilter_graph_alloc_filter(
+                g,
+                ffi::avfilter_get_by_name(c"buffersink".as_ptr()),
+                c"out".as_ptr(),
+            );
+            if conv.src.is_null() || scale.is_null() || conv.sink.is_null() {
+                return Err(CodecError::Backend(
+                    "FFmpeg lacks the buffer, scale_vaapi or buffersink filter".into(),
+                ));
+            }
+
+            let par = ffi::av_buffersrc_parameters_alloc();
+            if par.is_null() {
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            (*par).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int;
+            (*par).width = w as c_int;
+            (*par).height = h as c_int;
+            (*par).time_base = ffi::AVRational {
+                num: 1,
+                den: fps as c_int,
+            };
+            (*par).sample_aspect_ratio = ffi::AVRational { num: 1, den: 1 };
+            (*par).hw_frames_ctx = conv.import_frames;
+            let r = ffi::av_buffersrc_parameters_set(conv.src, par);
+            ffi::av_free(par as *mut _);
+            check("configure buffer source", r)?;
+            check(
+                "init buffer source",
+                ffi::avfilter_init_str(conv.src, ptr::null()),
+            )?;
+
+            let args = CString::new(format!(
+                "w={out_w}:h={out_h}:format=nv12:out_color_matrix=bt709:out_range=tv"
+            ))
+            .expect("no NUL");
+            check(
+                "init scale_vaapi",
+                ffi::avfilter_init_str(scale, args.as_ptr()),
+            )?;
+            check(
+                "init buffer sink",
+                ffi::avfilter_init_str(conv.sink, ptr::null()),
+            )?;
+            check("link source", ffi::avfilter_link(conv.src, 0, scale, 0))?;
+            check("link sink", ffi::avfilter_link(scale, 0, conv.sink, 0))?;
+            check(
+                "configure filter graph",
+                ffi::avfilter_graph_config(g, ptr::null_mut()),
+            )?;
+            Ok(conv)
+        }
+    }
+
+    /// Imports `image` and writes the converted NV12 surface into `out`.
+    unsafe fn convert(&mut self, image: &DmaBuf, out: *mut ffi::AVFrame) -> Result<(), CodecError> {
+        if image.planes.len() > ffi::AV_DRM_MAX_PLANES as usize {
+            return Err(CodecError::Backend("too many DMA-BUF planes".into()));
+        }
+        // SAFETY: the descriptor only borrows the descriptors in `image`
+        // for the duration of av_hwframe_map, which imports them into the
+        // driver (the driver keeps its own reference to the memory).
+        unsafe {
+            let mut desc: Box<ffi::AVDRMFrameDescriptor> = Box::new(std::mem::zeroed());
+            desc.nb_objects = image.objects.len() as c_int;
+            for (o, fd) in desc.objects.iter_mut().zip(&image.objects) {
+                o.fd = fd.as_raw_fd();
+                o.size = object_size(fd)?;
+                o.format_modifier = image.modifier;
+            }
+            desc.nb_layers = 1;
+            let layer = &mut desc.layers[0];
+            layer.format = image.fourcc;
+            layer.nb_planes = image.planes.len() as c_int;
+            for (p, src) in layer.planes.iter_mut().zip(&image.planes) {
+                p.object_index = src.object as c_int;
+                p.offset = src.offset as isize;
+                p.pitch = src.pitch as isize;
+            }
+
+            ffi::av_frame_unref(self.drm);
+            ffi::av_frame_unref(self.mapped);
+            let size = std::mem::size_of::<ffi::AVDRMFrameDescriptor>();
+            let raw = Box::into_raw(desc) as *mut u8;
+            let buf = ffi::av_buffer_create(raw, size, Some(free_descriptor), ptr::null_mut(), 0);
+            if buf.is_null() {
+                free_descriptor(ptr::null_mut(), raw);
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            let d = &mut *self.drm;
+            d.buf[0] = buf;
+            d.data[0] = raw;
+            d.format = ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as c_int;
+            d.width = image.width as c_int;
+            d.height = image.height as c_int;
+
+            let m = &mut *self.mapped;
+            m.format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int;
+            m.hw_frames_ctx = ffi::av_buffer_ref(self.import_frames);
+            check(
+                "import DMA-BUF into VAAPI",
+                ffi::av_hwframe_map(self.mapped, self.drm, ffi::AV_HWFRAME_MAP_READ as c_int),
+            )?;
+            m.width = image.width as c_int;
+            m.height = image.height as c_int;
+            m.pts = self.next_pts;
+            self.next_pts += 1;
+
+            // Hands our reference to the graph (resets `mapped`); the
+            // imported surface is released once the conversion is queued.
+            check(
+                "feed video processor",
+                ffi::av_buffersrc_add_frame_flags(self.src, self.mapped, 0),
+            )?;
+            check(
+                "convert to NV12",
+                ffi::av_buffersink_get_frame(self.sink, out),
+            )?;
+            ffi::av_frame_unref(self.drm);
+        }
+        Ok(())
+    }
+}
+
+/// Size of a DMA-BUF object; seeking to the end reports it.
+fn object_size(fd: &OwnedFd) -> Result<usize, CodecError> {
+    // SAFETY: lseek on a valid descriptor; DMA-BUFs support SEEK_END.
+    let end = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END) };
+    if end <= 0 {
+        return Err(CodecError::Backend(
+            "descriptor is not a DMA-BUF (cannot get its size)".into(),
+        ));
+    }
+    // SAFETY: as above; rewinding keeps the descriptor as we found it.
+    unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) };
+    Ok(end as usize)
+}
+
+impl Drop for GpuConverter {
+    fn drop(&mut self) {
+        // SAFETY: each pointer is either null or owned by us; the graph
+        // frees its filters.
+        unsafe {
+            ffi::avfilter_graph_free(&mut self.graph);
+            ffi::av_frame_free(&mut self.drm);
+            ffi::av_frame_free(&mut self.mapped);
+            ffi::av_buffer_unref(&mut self.import_frames);
+        }
+    }
+}
+
+/// Puts a CPU image (BGRX, the memory layout of DRM `XRGB8888`) on the GPU
+/// and hands it out as a DMA-BUF, the way KMS capture delivers frames. For
+/// tests and diagnostics: it exercises the zero-copy import without needing
+/// the privileges of KMS capture.
+pub fn upload_bgrx_as_dmabuf(
+    render_node: &str,
+    width: u32,
+    height: u32,
+    bgrx: &[u8],
+) -> Result<DmaBuf, CodecError> {
+    if width == 0 || height == 0 || bgrx.len() < width as usize * height as usize * 4 {
+        return Err(CodecError::Backend(
+            "image smaller than width×height×4".into(),
+        ));
+    }
+    let device = VaapiDevice::open(render_node)?;
+    let (w, h) = (width as usize, height as usize);
+    // SAFETY: every FFmpeg object below is checked and freed before return.
+    unsafe {
+        let mut frames = ffi::av_hwframe_ctx_alloc(device.ctx);
+        let mut sw = ffi::av_frame_alloc();
+        let mut hw = ffi::av_frame_alloc();
+        let mut drm = ffi::av_frame_alloc();
+        let result = (|| {
+            if frames.is_null() || sw.is_null() || hw.is_null() || drm.is_null() {
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            let fc = (*frames).data as *mut ffi::AVHWFramesContext;
+            (*fc).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
+            (*fc).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_BGR0;
+            (*fc).width = width as c_int;
+            (*fc).height = height as c_int;
+            (*fc).initial_pool_size = 1;
+            check("init BGRX frame pool", ffi::av_hwframe_ctx_init(frames))?;
+
+            (*sw).format = ffi::AVPixelFormat::AV_PIX_FMT_BGR0 as c_int;
+            (*sw).width = width as c_int;
+            (*sw).height = height as c_int;
+            check("allocate BGRX frame", ffi::av_frame_get_buffer(sw, 0))?;
+            for row in 0..h {
+                let dst = (*sw).data[0].add(row * (*sw).linesize[0] as usize);
+                ptr::copy_nonoverlapping(bgrx.as_ptr().add(row * w * 4), dst, w * 4);
+            }
+            check("get surface", ffi::av_hwframe_get_buffer(frames, hw, 0))?;
+            check("upload BGRX", ffi::av_hwframe_transfer_data(hw, sw, 0))?;
+
+            (*drm).format = ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as c_int;
+            check(
+                "export surface as DMA-BUF",
+                ffi::av_hwframe_map(drm, hw, ffi::AV_HWFRAME_MAP_READ as c_int),
+            )?;
+            let desc = &*((*drm).data[0] as *const ffi::AVDRMFrameDescriptor);
+            // The export closes its descriptors when unmapped; keep copies.
+            let objects = desc.objects[..desc.nb_objects as usize]
+                .iter()
+                .map(|o| {
+                    BorrowedFd::borrow_raw(o.fd)
+                        .try_clone_to_owned()
+                        .map(Arc::new)
+                        .map_err(|e| CodecError::Backend(format!("dup DMA-BUF: {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut planes = Vec::new();
+            for layer in &desc.layers[..desc.nb_layers as usize] {
+                for p in &layer.planes[..layer.nb_planes as usize] {
+                    planes.push(DmaBufPlane {
+                        object: p.object_index as usize,
+                        offset: p.offset as u32,
+                        pitch: p.pitch as u32,
+                    });
+                }
+            }
+            Ok(DmaBuf {
+                width,
+                height,
+                fourcc: desc.layers[0].format,
+                modifier: desc.objects[0].format_modifier,
+                objects,
+                planes,
+            })
+        })();
+        ffi::av_frame_free(&mut drm);
+        ffi::av_frame_free(&mut hw);
+        ffi::av_frame_free(&mut sw);
+        ffi::av_buffer_unref(&mut frames);
+        result
     }
 }
 

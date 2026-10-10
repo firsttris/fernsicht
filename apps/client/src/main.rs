@@ -30,6 +30,9 @@ struct Args {
     /// GPU render node for hardware decoding (VAAPI).
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: String,
+    /// Save the received video to this file (H.264: `ffplay file.h264`).
+    #[arg(long)]
+    record: Option<std::path::PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,6 +48,7 @@ fn main() -> anyhow::Result<()> {
         duration: args.duration.map(Duration::from_secs),
         print_overlay: true,
         render_node: args.render_node,
+        record: args.record,
         ..ClientConfig::default()
     };
     let s = run(cfg, Arc::new(AtomicBool::new(false)))?;

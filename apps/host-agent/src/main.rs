@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
-use fernsicht_host_agent::{EncoderKind, HostAgent, HostConfig};
+use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig};
 
-/// Fernsicht host agent (phase 1: test pattern, synthetic or VAAPI H.264 over UDP).
+/// Fernsicht host agent (phase 1: test pattern or KMS capture, synthetic or
+/// VAAPI H.264 over UDP).
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
@@ -35,6 +36,22 @@ struct Args {
     /// GPU render node for VAAPI.
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: String,
+    /// Picture source: "test-pattern" or "kms" (the monitor; needs a build
+    /// with the "kms" feature and CAP_SYS_ADMIN, see docs/kms-capture.md).
+    #[arg(long, value_enum, default_value_t = CaptureArg::TestPattern)]
+    capture: CaptureArg,
+    /// KMS: card node, e.g. /dev/dri/card1 (default: first with a display).
+    #[arg(long)]
+    kms_card: Option<String>,
+    /// KMS: connector, e.g. DP-1 (default: first active display).
+    #[arg(long)]
+    kms_connector: Option<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum CaptureArg {
+    TestPattern,
+    Kms,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -54,6 +71,13 @@ fn main() -> anyhow::Result<()> {
         max_bitrate_kbps: args.max_bitrate,
         loss: args.loss,
         pace_bytes_per_sec: args.pace_mbit * 1_000_000 / 8,
+        capture: match args.capture {
+            CaptureArg::TestPattern => CaptureKind::TestPattern,
+            CaptureArg::Kms => CaptureKind::Kms {
+                card: args.kms_card,
+                connector: args.kms_connector,
+            },
+        },
         encoder: match args.encoder {
             EncoderArg::Synthetic => EncoderKind::Synthetic,
             EncoderArg::Vaapi => EncoderKind::Vaapi {

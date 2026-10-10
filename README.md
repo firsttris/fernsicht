@@ -11,15 +11,18 @@ TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
 |---|---|---|
 | 0 – Fundament | Workspace, CI, Latenz-Messung pro Stufe, Uhren-Sync, Overlay, Distrobox | ✅ fertig. Die Sunshine-Referenzmessung steht noch aus ([Vorlage](docs/latency-baseline.md)) |
 | 1 – Hot Path im LAN | Paketformat, FEC, Pacing, UDP, Slots, Threads | ✅ Transport fertig und getestet (inkl. 1 % Verlust ohne verlorenen Frame) |
-| | KMS-/PipeWire-Capture, VAAPI-Encode/-Decode, Vulkan-Fenster | ⏳ offen, braucht die echte GPU (Traits stehen) |
+| | VAAPI H.264 Encode/Decode | ✅ läuft auf dem AMD-Runner durch die ganze Pipeline: glass-to-glass ohne Bildschirm ≈ 10 ms (1080p60, Debug-Build) |
+| | KMS-Capture → DMA-BUF → VAAPI ohne Kopie | ✅ implementiert; Import und GPU-Farbkonvertierung in CI getestet, KMS selbst von Hand ([Anleitung](docs/kms-capture.md)) |
+| | Vulkan-Fenster, NVENC, PipeWire-Capture | ⏳ offen |
 | 2–5 | Steuerung, Sicherheit/Internet, Produkt-Hülle, Web-Viewer | ⏳ Typen und Traits für Input/Audio angelegt |
 | UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
 
-Bis die GPU-Backends da sind, läuft die komplette Pipeline mit einem
-**Testbild** und einem **synthetischen Codec**. Der synthetische Codec
-erzeugt Frames in realistischer Größe für die eingestellte Bitrate und
-prüft sie per Checksumme. Damit werden Transport, FEC, Pacing und
-Latenz-Messung echt gemessen, nur Capture und Encode sind Platzhalter.
+Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
+**synthetischen Codec**. Der erzeugt Frames in realistischer Größe für die
+eingestellte Bitrate und prüft sie per Checksumme. So messen CI und
+Rechner ohne GPU Transport, FEC, Pacing und Latenz trotzdem echt. Mit
+`--encoder vaapi` (Feature `vaapi`) wird echtes H.264 gestreamt. Mit
+`--capture kms` (Feature `kms`) kommt das Bild vom Monitor.
 
 ## Schnellstart
 
@@ -33,6 +36,12 @@ cargo build --release
 ./target/release/fernsicht-client <host-ip>:47800 --fps 60 --bitrate 20000
 # mit 1 % künstlichem Paketverlust
 ./target/release/fernsicht-client <host-ip>:47800 --loss 0.01 --duration 10
+
+# Echtes H.264 vom Monitor (AMD/Intel, als root: docs/kms-capture.md)
+cargo build --release -p fernsicht-host-agent --features vaapi,kms
+sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi
+cargo build --release -p fernsicht-client --features vaapi
+./target/release/fernsicht-client <host-ip>:47800 --record ~/test.h264
 ```
 
 Der Client gibt jede Sekunde das Latenz-Overlay aus:
@@ -66,8 +75,8 @@ docs/    Messprotokolle
 | `core` | Slot mit Kapazität 1 (latest frame wins, Puffer-Recycling), monotone Uhr, Latenz-Statistik pro Stufe, Hot-Threads mit erhöhter Priorität |
 | `proto` | UDP-Paketformat v1: Video-Shards mit Stufen-Zeitstempeln, Feedback, Clock-Ping/-Pong, Hello/Ack, Bye. Der Parser panict nie und allokiert nicht |
 | `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen; Recovery-Shards pro Gruppe binomial aus der gemessenen Verlustrate (Gruppenausfall ≤ 10⁻⁵, mindestens 10 %), Reassembly mit Keyframe-Anforderung und harten Größengrenzen, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
-| `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken) |
-| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec |
+| `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken), DMA-BUF-Beschreibung, KMS-Capture im VBlank-Takt (Feature `kms`, pures Rust) |
+| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec, VAAPI H.264 über FFmpeg (Feature `vaapi`): DMA-BUF-Import ohne Kopie, RGB→NV12 und Skalierung per `scale_vaapi` |
 | `render` | `Presenter`-Trait, Overlay-Formatierung |
 | `input`, `audio` | Event-Typen, Traits, Duplikat-Filter (Phase 2) |
 
@@ -131,13 +140,11 @@ sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
 
 ## Nächste Schritte (Phase 1)
 
-1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
-2. VAAPI-Encode H.264 (radeonsi), zuerst über `ffmpeg-next` mit
-   HW-Kontext: keine B-Frames, CBR mit kleinem Puffer. Prüfen, ob
-   Intra-Refresh und Slices verfügbar sind.
-3. KMS-Capture → DMA-BUF → VAAPI-Import ohne Kopie, danach das
-   PipeWire-Portal als zweites Backend.
-4. Client: VAAPI-Decode → Vulkan-Textur → `winit`-Fenster (Mailbox/Immediate).
+1. KMS-Capture auf dem AMD-Rechner von Hand prüfen ([Anleitung](docs/kms-capture.md)).
+2. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
+3. Client: Decode → Vulkan-Textur → `winit`-Fenster (Mailbox/Immediate).
+4. NVENC für die GTX 1080 (DMA-BUF → CUDA), danach PipeWire-Portal als
+   zweites Capture-Backend.
 5. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.
 
 ## Offene Entscheidungen

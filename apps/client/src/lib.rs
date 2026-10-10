@@ -50,6 +50,9 @@ pub struct ClientConfig {
     pub host_timeout: Duration,
     /// GPU used for hardware decoding (VAAPI).
     pub render_node: String,
+    /// Writes the received bitstream here (H.264 Annex B: plays with
+    /// `ffplay` or `mpv`). Only frames the decoder gets are written.
+    pub record: Option<std::path::PathBuf>,
 }
 
 impl Default for ClientConfig {
@@ -65,6 +68,7 @@ impl Default for ClientConfig {
             print_overlay: false,
             host_timeout: Duration::from_secs(5),
             render_node: "/dev/dri/renderD128".into(),
+            record: None,
         }
     }
 }
@@ -182,19 +186,30 @@ pub fn run(cfg: ClientConfig, stop: Arc<AtomicBool>) -> anyhow::Result<RunSummar
         free_tx.send(ReceivedFrame::empty()).unwrap();
     }
 
+    let mut record = match &cfg.record {
+        Some(path) => Some(std::io::BufWriter::new(
+            std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?,
+        )),
+        None => None,
+    };
     let presenter = {
         let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
         let print = cfg.print_overlay;
         let render_node = cfg.render_node.clone();
         spawn_hot("present", move || {
-            present_loop(
+            let r = present_loop(
                 &decode_rx,
                 &info,
                 &free_tx,
                 &need_keyframe,
                 print,
                 &render_node,
-            )
+                record.as_mut().map(|w| w as &mut dyn std::io::Write),
+            );
+            if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
+                log::error!("recording: {e}");
+            }
+            r
         })?
     };
 
@@ -494,6 +509,7 @@ fn present_loop(
     need_keyframe: &AtomicBool,
     print_overlay: bool,
     render_node: &str,
+    mut record: Option<&mut dyn std::io::Write>,
 ) -> PresentResult {
     // Created on the first frame, from the codec the host announced.
     let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
@@ -530,6 +546,12 @@ fn present_loop(
         if !chain.accept(h.frame_id, h.keyframe) {
             r.awaiting_keyframe += 1;
         } else {
+            if let Some(w) = record.as_mut()
+                && let Err(e) = w.write_all(&rf.data)
+            {
+                log::error!("recording stopped: {e}");
+                record = None;
+            }
             let result = decoder.decode(&rf.data, &mut decoded);
             let decoded_us = now_us();
             match result {

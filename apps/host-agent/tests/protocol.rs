@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use fernsicht_host_agent::{HostAgent, HostConfig};
+use fernsicht_host_agent::{CaptureKind, EncoderKind, HostAgent, HostConfig};
 use fernsicht_proto::*;
 
 struct Host {
@@ -456,4 +456,54 @@ fn stats_count_the_pipeline() {
     assert!(get(&stats.frames_encoded) >= get(&stats.frames_sent));
     assert!(get(&stats.frames_sent) >= 20);
     assert!(get(&stats.keyframes_encoded) >= 1);
+}
+
+/// A session whose capture or encoder cannot start is refused (no ack), and
+/// the host keeps serving.
+fn assert_session_refused(cfg: HostConfig) {
+    let host = Host::start(cfg);
+    let mut peer = Peer::new(host.addr);
+    peer.hello(640, 360, 60, 2_000);
+    let ack = peer.wait_for(Duration::from_millis(500), |p| match p {
+        Packet::HelloAck(a) => Some(a),
+        _ => None,
+    });
+    assert!(ack.is_none(), "session must be refused, got {ack:?}");
+    peer.send(|b| {
+        ClockPing {
+            seq: 1,
+            client_send_us: 1,
+        }
+        .encode(b)
+    });
+    assert!(
+        peer.wait_for(Duration::from_secs(2), |p| match p {
+            Packet::ClockPong(_) => Some(()),
+            _ => None,
+        })
+        .is_some(),
+        "host stopped answering"
+    );
+    host.shutdown();
+}
+
+#[test]
+fn session_without_capture_is_refused() {
+    assert_session_refused(HostConfig {
+        capture: CaptureKind::Kms {
+            card: Some("/dev/dri/card-does-not-exist".into()),
+            connector: None,
+        },
+        ..HostConfig::default()
+    });
+}
+
+#[test]
+fn session_without_encoder_is_refused() {
+    assert_session_refused(HostConfig {
+        encoder: EncoderKind::Vaapi {
+            render_node: "/dev/dri/renderD-does-not-exist".into(),
+        },
+        ..HostConfig::default()
+    });
 }

@@ -2,18 +2,24 @@
 # Builds the dev image and creates the Distrobox. Run on the host.
 #   dev/setup.sh            AMD/Intel
 #   dev/setup.sh --nvidia   NVIDIA
+#   dev/setup.sh --root     rootful box for KMS capture (docs/kms-capture.md)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 box=fernsicht
+podman=(podman)
 case "${1:-}" in
   --nvidia) box=fernsicht-nvidia ;;
+  # KMS capture needs CAP_SYS_ADMIN on the host, which a rootless container
+  # cannot have. The rootful box keeps its images in root's storage, so the
+  # image is built there.
+  --root) box=fernsicht-root; podman=(sudo podman) ;;
   "") ;;
-  *) echo "usage: $0 [--nvidia]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--nvidia|--root]" >&2; exit 2 ;;
 esac
 
 fedora="$(rpm -E %fedora 2>/dev/null || echo 44)"
-podman build --build-arg "FEDORA_VERSION=${fedora}" -t localhost/fernsicht-dev:latest -f Containerfile .
+"${podman[@]}" build --build-arg "FEDORA_VERSION=${fedora}" -t localhost/fernsicht-dev:latest -f Containerfile .
 distrobox assemble create --file distrobox.ini --name "$box" --replace
 
 cat <<MSG

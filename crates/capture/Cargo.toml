@@ -6,7 +6,15 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Capture of the scanout plane over KMS/DRM. Pure Rust (no libdrm needed),
+# but running it needs CAP_SYS_ADMIN; see docs/kms-capture.md.
+kms = ["dep:drm", "dep:libc", "dep:log"]
+
 [dependencies]
+drm = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
 fernsicht-core.workspace = true
 thiserror.workspace = true
 

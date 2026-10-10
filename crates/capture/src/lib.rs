@@ -6,13 +6,18 @@
 //! Backends:
 //! - [`TestPattern`]: synthetic moving bar at a fixed frame rate, runs
 //!   anywhere (CI, containers) and drives the pipeline end to end.
-//! - KMS/DRM (planned, phase 1): framebuffer plane → DMA-BUF, needs
-//!   `CAP_SYS_ADMIN`, works on the login screen and unattended.
+//! - [`kms`] (feature `kms`): the scanout plane of a monitor as DMA-BUF,
+//!   paced by vblank. Needs `CAP_SYS_ADMIN`, works on the login screen and
+//!   unattended.
 //! - PipeWire via xdg-desktop-portal ScreenCast (planned, phase 1):
 //!   DMA-BUF frames, user confirmation, restore token.
 
+pub mod dmabuf;
+#[cfg(feature = "kms")]
+pub mod kms;
 mod test_pattern;
 
+pub use dmabuf::{DmaBuf, DmaBufPlane};
 pub use test_pattern::TestPattern;
 
 use thiserror::Error;
@@ -35,14 +40,15 @@ impl PixelFormat {
     }
 }
 
-/// One captured frame in CPU memory. DMA-BUF frames get their own variant
-/// once the GPU backends exist.
+/// One captured frame: pixels in CPU memory (`data`), or an image that
+/// stays on the GPU (`dmabuf`, then `data` is empty and `format` is unused).
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub format: PixelFormat,
     pub data: Vec<u8>,
+    pub dmabuf: Option<DmaBuf>,
     /// Source sequence number, increments per captured frame.
     pub seq: u64,
     /// Local monotonic clock (µs): when the image was produced (vblank).
@@ -58,6 +64,21 @@ impl Frame {
             height,
             format,
             data: vec![0; format.frame_bytes(width, height)],
+            dmabuf: None,
+            seq: 0,
+            capture_us: 0,
+            ready_us: 0,
+        }
+    }
+
+    /// A frame for a GPU image; capture backends fill the timestamps.
+    pub fn from_dmabuf(image: DmaBuf) -> Self {
+        Self {
+            width: image.width,
+            height: image.height,
+            format: PixelFormat::Bgrx,
+            data: Vec::new(),
+            dmabuf: Some(image),
             seq: 0,
             capture_us: 0,
             ready_us: 0,

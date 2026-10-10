@@ -13,6 +13,8 @@ path = "src/main.rs"
 [features]
 # Hardware H.264 over VAAPI (AMD, Intel); needs FFmpeg/libva headers.
 vaapi = ["fernsicht-codec/vaapi"]
+# Screen capture over KMS (needs CAP_SYS_ADMIN at runtime).
+kms = ["fernsicht-capture/kms"]
 
 [dependencies]
 anyhow.workspace = true

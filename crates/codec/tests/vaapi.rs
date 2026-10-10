@@ -9,8 +9,13 @@
 use std::io::Write;
 use std::time::Instant;
 
+use std::sync::Arc;
+
+use fernsicht_capture::dmabuf::{DmaBuf, DmaBufPlane, formats};
 use fernsicht_capture::{Frame, FrameSource, PixelFormat, TestPattern};
-use fernsicht_codec::vaapi::{DEFAULT_RENDER_NODE, VaapiDecoder, VaapiEncoder, VaapiEncoderConfig};
+use fernsicht_codec::vaapi::{
+    DEFAULT_RENDER_NODE, VaapiDecoder, VaapiEncoder, VaapiEncoderConfig, upload_bgrx_as_dmabuf,
+};
 use fernsicht_codec::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder};
 
 fn render_node() -> Option<String> {
@@ -235,4 +240,212 @@ fn many_encoders_can_be_created_and_dropped() {
             dec.decode(&out.data, &mut d).unwrap();
         }
     }
+}
+
+// --- DMA-BUF input (what KMS capture delivers) -----------------------------
+
+/// Solid colour patches across the top half, as (R, G, B).
+const PATCHES: [(u8, u8, u8); 6] = [
+    (255, 0, 0),
+    (0, 255, 0),
+    (0, 0, 255),
+    (255, 255, 255),
+    (16, 16, 16),
+    (128, 128, 128),
+];
+
+/// BGRX test image: the colour patches on top, a grey ramp below that moves
+/// with `shift` so the encoder sees motion.
+fn bgrx_image(w: usize, h: usize, shift: usize) -> Vec<u8> {
+    let mut img = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let (r, g, b) = if y < h / 2 {
+                PATCHES[x * PATCHES.len() / w]
+            } else {
+                let v = (((x + shift) % w) * 255 / w) as u8;
+                (v, v, v)
+            };
+            img[(y * w + x) * 4..][..4].copy_from_slice(&[b, g, r, 0]);
+        }
+    }
+    img
+}
+
+/// BT.709 limited range, the conversion the encoder path promises.
+fn bt709(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let (r, g, b) = (
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    );
+    let (kr, kb) = (0.2126, 0.0722);
+    let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+    (
+        16.0 + 219.0 * y,
+        128.0 + 224.0 * (b - y) / (2.0 * (1.0 - kb)),
+        128.0 + 224.0 * (r - y) / (2.0 * (1.0 - kr)),
+    )
+}
+
+/// Checks the mean Y, Cb, Cr in the middle of every patch of a decoded
+/// NV12 picture against BT.709.
+fn assert_patch_colours(nv12: &[u8], w: usize, h: usize) {
+    let pw = w / PATCHES.len();
+    for (i, &(r, g, b)) in PATCHES.iter().enumerate() {
+        let (x0, x1) = (i * pw + pw / 4, (i + 1) * pw - pw / 4);
+        let (y0, y1) = (h / 8, h * 3 / 8);
+        let (mut ys, mut cbs, mut crs, mut n, mut nc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                ys += f64::from(nv12[y * w + x]);
+                n += 1.0;
+                if y % 2 == 0 && x % 2 == 0 {
+                    let uv = w * h + (y / 2) * w + x;
+                    cbs += f64::from(nv12[uv]);
+                    crs += f64::from(nv12[uv + 1]);
+                    nc += 1.0;
+                }
+            }
+        }
+        let got = (ys / n, cbs / nc, crs / nc);
+        let want = bt709(r, g, b);
+        assert!(
+            (got.0 - want.0).abs() < 4.0
+                && (got.1 - want.1).abs() < 5.0
+                && (got.2 - want.2).abs() < 5.0,
+            "patch {i} RGB({r},{g},{b}): got YCbCr {got:.1?}, BT.709 wants {want:.1?}"
+        );
+    }
+}
+
+fn dmabuf_frame(image: &DmaBuf, seq: u64) -> Frame {
+    let mut f = Frame::from_dmabuf(image.clone());
+    f.seq = seq;
+    f
+}
+
+#[test]
+fn dmabuf_zero_copy_bt709_and_latency() {
+    let Some(node) = render_node() else { return };
+    let (w, h) = (1920usize, 1080usize);
+    let images: Vec<DmaBuf> = (0..2)
+        .map(|i| {
+            upload_bgrx_as_dmabuf(&node, w as u32, h as u32, &bgrx_image(w, h, i * 64)).unwrap()
+        })
+        .collect();
+    let mut enc = VaapiEncoder::new(&config(&node, w as u32, h as u32, 60, 20_000)).unwrap();
+    let mut dec = VaapiDecoder::new(&node).unwrap();
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let mut enc_ms = Vec::new();
+    for i in 0..120u64 {
+        let frame = dmabuf_frame(&images[(i % 2) as usize], i);
+        let t = Instant::now();
+        enc.encode(&frame, &mut out).unwrap();
+        enc_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        assert_eq!(out.keyframe, i == 0);
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    assert_eq!((d.width, d.height), (w as u32, h as u32));
+    let nv12 = dec.last_frame_nv12().unwrap();
+    assert_patch_colours(&nv12, w, h);
+
+    // The ramp in the bottom half is what the last frame showed.
+    let expected: Vec<u8> = bgrx_image(w, h, 64)
+        .chunks_exact(4)
+        .map(|p| bt709(p[2], p[1], p[0]).0.round() as u8)
+        .collect();
+    let lower = w * h / 2;
+    let psnr = psnr_y(&expected[lower..], &nv12[lower..w * h], w * h / 2);
+
+    summary("### VAAPI H.264 aus DMA-BUF (ohne Kopie), 1080p60");
+    summary("| Messung | Wert |\n|---|---|");
+    summary(&format!(
+        "| Import + RGB→NV12 + Encode, Median / p95 | {:.2} / {:.2} ms |",
+        percentile(enc_ms.clone(), 0.5),
+        percentile(enc_ms.clone(), 0.95)
+    ));
+    summary(&format!(
+        "| Modifier des Testbilds | {:#x} |",
+        images[0].modifier
+    ));
+    summary(&format!("| PSNR (Y) des Grauverlaufs | {psnr:.1} dB |\n"));
+    assert!(psnr > 30.0, "{psnr:.1} dB");
+    assert!(percentile(enc_ms, 0.95) < 16.0);
+}
+
+#[test]
+fn dmabuf_is_scaled_to_the_stream_size() {
+    let Some(node) = render_node() else { return };
+    let image = upload_bgrx_as_dmabuf(&node, 2560, 1440, &bgrx_image(2560, 1440, 0)).unwrap();
+    let mut enc = VaapiEncoder::new(&config(&node, 1920, 1080, 60, 20_000)).unwrap();
+    let mut dec = VaapiDecoder::new(&node).unwrap();
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    for i in 0..5 {
+        enc.encode(&dmabuf_frame(&image, i), &mut out).unwrap();
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    assert_eq!((d.width, d.height), (1920, 1080));
+    assert_patch_colours(&dec.last_frame_nv12().unwrap(), 1920, 1080);
+}
+
+#[test]
+fn cpu_and_dmabuf_input_mix_and_the_source_size_may_change() {
+    let Some(node) = render_node() else { return };
+    let (w, h) = (1280u32, 720u32);
+    let mut enc = VaapiEncoder::new(&config(&node, w, h, 60, 8_000)).unwrap();
+    let mut dec = VaapiDecoder::new(&node).unwrap();
+    let small = upload_bgrx_as_dmabuf(&node, w, h, &bgrx_image(w as usize, h as usize, 0)).unwrap();
+    let big = upload_bgrx_as_dmabuf(&node, 1920, 1080, &bgrx_image(1920, 1080, 0)).unwrap();
+    let cpu = frames(w, h, 1).remove(0);
+    let inputs = [
+        cpu.clone(),
+        dmabuf_frame(&small, 1),
+        dmabuf_frame(&big, 2),
+        dmabuf_frame(&small, 3),
+        cpu,
+    ];
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    for f in &inputs {
+        enc.encode(f, &mut out).unwrap();
+        dec.decode(&out.data, &mut d).unwrap();
+        assert_eq!((d.width, d.height), (w, h));
+    }
+}
+
+#[test]
+fn bad_dmabufs_are_rejected_and_the_encoder_keeps_working() {
+    let Some(node) = render_node() else { return };
+    let mut enc = VaapiEncoder::new(&config(&node, 640, 360, 30, 1_000)).unwrap();
+    let mut out = EncodedFrame::default();
+    let good = upload_bgrx_as_dmabuf(&node, 640, 360, &bgrx_image(640, 360, 0)).unwrap();
+
+    let not_a_dmabuf = DmaBuf {
+        objects: vec![Arc::new(std::fs::File::open("/dev/null").unwrap().into())],
+        ..good.clone()
+    };
+    let ten_bit = DmaBuf {
+        fourcc: formats::XRGB2101010,
+        ..good.clone()
+    };
+    let dangling = DmaBuf {
+        planes: vec![DmaBufPlane {
+            object: 3,
+            offset: 0,
+            pitch: 2560,
+        }],
+        ..good.clone()
+    };
+    for (name, bad) in [
+        ("/dev/null", not_a_dmabuf),
+        ("10 bit", ten_bit),
+        ("dangling plane", dangling),
+    ] {
+        assert!(
+            enc.encode(&dmabuf_frame(&bad, 0), &mut out).is_err(),
+            "{name} must be rejected"
+        );
+    }
+    enc.encode(&dmabuf_frame(&good, 1), &mut out).unwrap();
+    assert!(out.keyframe, "the first good frame is the keyframe");
 }

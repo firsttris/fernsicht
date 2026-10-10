@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 # H.264 over VAAPI via FFmpeg (AMD radeonsi, Intel iHD). Needs the FFmpeg
 # and libva development packages; see dev/Containerfile.
-vaapi = ["dep:ffmpeg-next", "dep:libc"]
+vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc"]
 
 [dependencies]
 ffmpeg-next = { workspace = true, optional = true }

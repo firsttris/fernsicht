@@ -54,6 +54,9 @@ jobs:
           PROPTEST_CASES: "1024"
       # Builds the hardware tests; without a GPU they skip themselves.
       - run: cargo test -p fernsicht-codec --features vaapi
+      # KMS capture: selection logic and error paths (capturing itself
+      # needs a monitor and CAP_SYS_ADMIN, see docs/kms-capture.md).
+      - run: cargo test -p fernsicht-capture -p fernsicht-host-agent --features fernsicht-capture/kms,fernsicht-host-agent/kms
 
   rust-e2e:
     name: Rust · end-to-end (impaired network, binaries)

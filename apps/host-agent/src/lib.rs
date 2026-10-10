@@ -48,7 +48,26 @@ pub struct HostConfig {
     pub pace_bytes_per_sec: u64,
     /// A session ends when the client has been silent this long.
     pub client_timeout: Duration,
+    pub capture: CaptureKind,
     pub encoder: EncoderKind,
+}
+
+/// Where session frames come from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CaptureKind {
+    /// Moving bar in CPU memory; runs anywhere.
+    #[default]
+    TestPattern,
+    /// The monitor's scanout plane as DMA-BUF (needs the `kms` feature,
+    /// CAP_SYS_ADMIN and an encoder that takes DMA-BUFs, i.e. VAAPI; the
+    /// synthetic encoder ignores the picture). The encoder scales to the
+    /// session resolution.
+    Kms {
+        /// `/dev/dri/cardN`; `None` picks the first card with a display.
+        card: Option<String>,
+        /// e.g. `DP-1`; `None` picks the first active display.
+        connector: Option<String>,
+    },
 }
 
 /// Which video encoder sessions use.
@@ -72,6 +91,7 @@ impl Default for HostConfig {
             loss: 0.0,
             pace_bytes_per_sec: 50_000_000,
             client_timeout: Duration::from_secs(5),
+            capture: CaptureKind::default(),
             encoder: EncoderKind::default(),
         }
     }
@@ -317,11 +337,7 @@ impl HostAgent {
         let frame_slot = Arc::new(Slot::new());
         let (send_tx, send_rx) = bounded::<EncodedFrame>(SEND_QUEUE);
 
-        let source = TestPattern::new(
-            u32::from(params.width),
-            u32::from(params.height),
-            u32::from(params.fps),
-        );
+        let source = make_source(&self.cfg.capture, &params)?;
         let (free_frames_tx, free_frames_rx) = bounded(BUFFERS);
         for _ in 0..BUFFERS {
             free_frames_tx.send(source.alloc_frame()).unwrap();
@@ -414,7 +430,7 @@ fn new_session_id() -> u32 {
 }
 
 fn capture_loop(
-    mut source: TestPattern,
+    mut source: Box<dyn FrameSource>,
     shared: &Shared,
     slot: &Slot<Frame>,
     free_rx: &Receiver<Frame>,
@@ -434,6 +450,36 @@ fn capture_loop(
         }
     }
     slot.close();
+}
+
+fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn FrameSource>> {
+    match kind {
+        CaptureKind::TestPattern => Ok(Box::new(TestPattern::new(
+            u32::from(p.width),
+            u32::from(p.height),
+            u32::from(p.fps),
+        ))),
+        #[cfg(feature = "kms")]
+        CaptureKind::Kms { card, connector } => {
+            let cap =
+                fernsicht_capture::kms::KmsCapture::open(&fernsicht_capture::kms::KmsConfig {
+                    card: card.as_ref().map(Into::into),
+                    connector: connector.clone(),
+                    fps: u32::from(p.fps),
+                })?;
+            log::info!(
+                "capturing {}×{} over KMS ({:?})",
+                cap.width(),
+                cap.height(),
+                cap.selection()
+            );
+            Ok(Box::new(cap))
+        }
+        #[cfg(not(feature = "kms"))]
+        CaptureKind::Kms { .. } => {
+            anyhow::bail!("this build has no KMS capture (cargo feature \"kms\")")
+        }
+    }
 }
 
 fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn Encoder>> {

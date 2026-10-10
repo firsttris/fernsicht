@@ -232,6 +232,45 @@ fn handshake_and_stream() {
 }
 
 #[test]
+fn received_stream_is_recorded() {
+    let host = FakeHost::start(Script::default());
+    let path = std::env::temp_dir().join(format!("fernsicht-record-{}.bin", std::process::id()));
+    let s = run(
+        ClientConfig {
+            host: host.addr.clone(),
+            duration: Some(Duration::from_secs(1)),
+            host_timeout: Duration::from_millis(600),
+            record: Some(path.clone()),
+            ..ClientConfig::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    host.finish();
+    let data = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    // Synthetic frames start with their magic; every decoded frame is in
+    // the file, in order.
+    assert!(
+        data.starts_with(b"FSYN"),
+        "{:?}",
+        &data[..data.len().min(8)]
+    );
+    let frames = data.windows(4).filter(|w| w == b"FSYN").count() as u64;
+    assert!(frames >= s.frames_presented, "{frames} recorded, {s:?}");
+
+    let bad = run(
+        ClientConfig {
+            host: "127.0.0.1:9".into(),
+            record: Some("/does/not/exist/x.h264".into()),
+            ..ClientConfig::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert!(bad.unwrap_err().to_string().contains("/does/not/exist"));
+}
+
+#[test]
 fn hello_is_retried_until_acked() {
     let host = FakeHost::start(Script {
         ignore_hellos: 2,
