@@ -28,6 +28,7 @@ raw-window-handle = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 
 [dev-dependencies]
+env_logger.workspace = true
 proptest.workspace = true
 
 [lints]

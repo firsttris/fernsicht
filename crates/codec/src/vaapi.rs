@@ -25,7 +25,9 @@ use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
-use crate::ff::{check, eagain, ff_err, is_bt709_limited, signal_bt709_limited};
+use crate::ff::{
+    check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_bt709_limited,
+};
 use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
 
 /// Render node used when none is given.
@@ -299,16 +301,7 @@ impl VaapiEncoder {
                 "make upload frame writable",
                 ffi::av_frame_make_writable(self.sw),
             )?;
-            let sw = &*self.sw;
-            let (y, uv) = frame.data.split_at(w * h);
-            for row in 0..h {
-                let dst = sw.data[0].add(row * sw.linesize[0] as usize);
-                ptr::copy_nonoverlapping(y.as_ptr().add(row * w), dst, w);
-            }
-            for row in 0..h / 2 {
-                let dst = sw.data[1].add(row * sw.linesize[1] as usize);
-                ptr::copy_nonoverlapping(uv.as_ptr().add(row * w), dst, w);
-            }
+            nv12_into_frame(&frame.data, self.sw, w, h);
         }
         Ok(())
     }
@@ -1012,18 +1005,7 @@ impl VaapiDecoder {
                 "download surface",
                 ffi::av_hwframe_transfer_data(self.sw, self.frame, 0),
             )?;
-            let sw = &*self.sw;
-            let (w, h) = (sw.width as usize, sw.height as usize);
-            out.clear();
-            out.reserve(w * h * 3 / 2);
-            for row in 0..h {
-                let src = sw.data[0].add(row * sw.linesize[0] as usize);
-                out.extend_from_slice(std::slice::from_raw_parts(src, w));
-            }
-            for row in 0..h / 2 {
-                let src = sw.data[1].add(row * sw.linesize[1] as usize);
-                out.extend_from_slice(std::slice::from_raw_parts(src, w));
-            }
+            nv12_from_frame(self.sw, out);
             Ok(())
         }
     }

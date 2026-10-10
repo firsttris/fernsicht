@@ -23,6 +23,8 @@ const STRIPES: [(u8, u8, u8); 6] = [
 ];
 
 fn renderer() -> Option<Renderer> {
+    // RUST_LOG=fernsicht_render=debug shows the steps of the Vulkan setup.
+    let _ = env_logger::builder().is_test(true).try_init();
     match Gpu::new() {
         Ok(gpu) => {
             eprintln!("Vulkan device: {}", gpu.name());

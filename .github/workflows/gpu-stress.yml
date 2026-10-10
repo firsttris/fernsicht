@@ -1,0 +1,50 @@
+name: GPU stress
+
+# On demand: runs the Vulkan renderer tests many times on one GPU machine
+# to catch rare crashes (e.g. in the driver), with the Vulkan setup steps
+# and loader messages logged, so a crash shows where it happened.
+#   gh workflow run gpu-stress.yml -f gpu=nvidia -f runs=50
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: "Machine: amd or nvidia"
+        default: nvidia
+      runs:
+        description: "How many times"
+        default: "50"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: Vulkan renderer × ${{ inputs.runs }} · ${{ inputs.gpu }}
+    if: github.repository == 'firsttris/fernsicht'
+    runs-on: [self-hosted, linux, "gpu-${{ inputs.gpu }}"]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the tests
+        run: cargo test -p fernsicht-render --features vulkan --test vulkan --no-run
+      - name: Run them ${{ inputs.runs }} times
+        env:
+          FERNSICHT_REQUIRE_VULKAN: "1"
+          RUST_LOG: fernsicht_render=debug
+          VK_LOADER_DEBUG: error,warn
+          RUNS: ${{ inputs.runs }}
+        run: |
+          bin=$(cargo test -p fernsicht-render --features vulkan --test vulkan --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.profile.test == true and .target.name == "vulkan") | .executable')
+          failed=0
+          for i in $(seq "$RUNS"); do
+            if ! "$bin" --test-threads=1 --nocapture > run.log 2>&1; then
+              failed=$((failed + 1))
+              echo "::group::run $i failed (exit $?)"
+              tail -40 run.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "### Vulkan renderer: $failed of $RUNS runs failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "$failed of $RUNS runs failed"
+          test "$failed" -eq 0

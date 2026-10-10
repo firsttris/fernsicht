@@ -60,7 +60,9 @@ impl Gpu {
         // SAFETY: loading the system Vulkan loader; every object created
         // below is destroyed in Drop or on the error path.
         unsafe {
+            log::debug!("loading the Vulkan loader");
             let entry = ash::Entry::load().map_err(|e| format!("no Vulkan loader: {e}"))?;
+            log::debug!("creating the instance");
             let app = vk::ApplicationInfo::default()
                 .application_name(c"fernsicht")
                 .api_version(vk::API_VERSION_1_3);
@@ -72,6 +74,7 @@ impl Gpu {
                     None,
                 )
                 .map_err(|e| format!("create Vulkan instance: {e}"))?;
+            log::debug!("instance created");
             match Self::with_instance(entry, instance.clone(), present) {
                 Ok(gpu) => Ok(gpu),
                 Err(e) => {
@@ -90,6 +93,7 @@ impl Gpu {
         // SAFETY: instance is valid; see create().
         unsafe {
             let wanted = std::env::var(DEVICE_ENV).ok().map(|s| s.to_lowercase());
+            log::debug!("enumerating devices");
             let mut candidates = Vec::new();
             for pd in instance
                 .enumerate_physical_devices()
@@ -118,6 +122,10 @@ impl Gpu {
                 }
             }
             candidates.sort_by_key(|c| c.0);
+            log::debug!(
+                "candidates: {:?}",
+                candidates.iter().map(|c| &c.3).collect::<Vec<_>>()
+            );
             let Some((_, physical, queue_family, name)) = candidates.into_iter().next() else {
                 return Err(match wanted {
                     Some(w) => format!("no Vulkan 1.3 device matching {DEVICE_ENV}={w}"),
@@ -160,6 +168,7 @@ impl Gpu {
                     None,
                 )
                 .map_err(|e| format!("create Vulkan device on {name}: {e}"))?;
+            log::debug!("device created on {name}");
             let queue = device.get_device_queue(queue_family, 0);
             Ok(Self {
                 memory: instance.get_physical_device_memory_properties(physical),
