@@ -122,10 +122,13 @@ Gemessene Latenz (frühere Sitzungen):
 Diese Punkte sind automatisch getestet, aber nie auf echter Hardware
 gelaufen. Sie brauchen den Benutzer am Rechner.
 
-Live bestätigt (10.10.2026, laut Benutzer): Der Web-Viewer verbindet
-sich, und die bazzite (NVIDIA, Client) verbindet sich mit der zentrale
-(AMD, Host). Beides „hat alles funktioniert“. Die Einzelprüfungen unten
-(Ton, Eingabe, Firefox, Handy) sind damit nicht einzeln abgehakt.
+Live bestätigt (10.10.2026, laut Benutzer):
+
+- Web-Viewer, auch mit Firefox und am Handy: Bild, Maus und Tastatur.
+- bazzite (NVIDIA, Client) → zentrale (AMD, Host): Bild, Maus und
+  Tastatur; das App-Fenster zeigt unter NVIDIA etwas (Punkt 3 erledigt).
+- **Ton** ist dabei nicht geprüft worden, weder im Web-Viewer noch in
+  der App.
 
 1. **Dienst auf der zentrale.**
    - Vorher den alten Host stoppen, den der Benutzer in der Root-Box
@@ -150,10 +153,9 @@ sich, und die bazzite (NVIDIA, Client) verbindet sich mit der zentrale
      - Overlay in der App.
      - Trennen.
      - Schließen der App beendet die Sitzung.
-3. **App auf NVIDIA (bazzite).** Die App setzt
-   `WEBKIT_DISABLE_DMABUF_RENDERER=1`, wenn `/proc/driver/nvidia`
-   existiert (leere Fenster sonst, tauri#9394). Prüfen, ob das Fenster
-   etwas zeigt.
+3. ~~**App auf NVIDIA (bazzite).**~~ Erledigt, siehe oben. (Die App
+   setzt `WEBKIT_DISABLE_DMABUF_RENDERER=1`, wenn `/proc/driver/nvidia`
+   existiert; ohne bleiben die Fenster leer, tauri#9394.)
 4. **Web-Viewer echt.** Auf der zentrale nach der Dienst-Installation
    von einem anderen Gerät `http://192.168.178.87:47800` öffnen, PIN, dann
    KMS-Bild, Ton, Maus und Tastatur prüfen. Auch mit Firefox und einem
