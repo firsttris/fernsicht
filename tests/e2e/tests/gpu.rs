@@ -22,6 +22,8 @@ struct Gpu {
     encoder: EncoderKind,
     decoder: DecoderChoice,
     render_node: String,
+    /// What "auto" must end up with when this GPU is host and client.
+    best: Codec,
 }
 
 fn gpu() -> Option<Gpu> {
@@ -36,6 +38,8 @@ fn gpu() -> Option<Gpu> {
             },
             decoder: DecoderChoice::Vaapi,
             render_node: node,
+            // RX 7800 XT (VCN 4): AV1 both ways.
+            best: Codec::Av1,
         }),
         #[cfg(feature = "nvidia")]
         Ok("nvidia") => Some(Gpu {
@@ -43,6 +47,8 @@ fn gpu() -> Option<Gpu> {
             encoder: EncoderKind::Nvenc { gpu: 0 },
             decoder: DecoderChoice::Nvdec,
             render_node: node,
+            // GTX 1080 (Pascal): HEVC, no AV1.
+            best: Codec::Hevc,
         }),
         other => {
             eprintln!("skipped: no hardware path for FERNSICHT_GPU={other:?} in this build");
@@ -155,13 +161,17 @@ fn real_h264_with_one_percent_loss() {
 }
 
 #[test]
-fn hevc_by_default_over_loopback() {
+fn auto_takes_the_best_codec_over_loopback() {
     let Some(gpu) = gpu() else { return };
-    // Both GPUs under test (RX 7800 XT, GTX 1080) encode and decode HEVC,
-    // so "auto" must end up there.
     let (s, overflows) = stream(&gpu, CodecChoice::Auto, Impairment::none());
-    report(&format!("HEVC ({}) 1080p60, Loopback", gpu.name), &s);
-    assert_eq!(s.codec, Some(Codec::Hevc), "{s:?}");
+    report(
+        &format!(
+            "Automatisch: {:?} ({}) 1080p60, Loopback",
+            gpu.best, gpu.name
+        ),
+        &s,
+    );
+    assert_eq!(s.codec, Some(gpu.best), "{s:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert_eq!(s.receiver.packets_lost, 0, "{s:?}");
     assert!(u64::from(s.receiver.frames_dropped) <= overflows, "{s:?}");
@@ -180,6 +190,24 @@ fn hevc_with_one_percent_loss() {
     assert_eq!(s.codec, Some(Codec::Hevc), "{s:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert!(s.receiver.packets_recovered > 0, "{s:?}");
+    assert!(
+        u64::from(s.receiver.frames_dropped) <= overflows,
+        "FEC must hide 1 % loss: {s:?}"
+    );
+    assert!(s.frames_presented >= 4 * 60 * 8 / 10, "{s:?}");
+}
+
+#[test]
+fn av1_with_one_percent_loss() {
+    let Some(gpu) = gpu() else { return };
+    if gpu.best != Codec::Av1 {
+        eprintln!("skipped: {} has no AV1", gpu.name);
+        return;
+    }
+    let (s, overflows) = stream(&gpu, CodecChoice::Av1, Impairment::loss(0.01));
+    report(&format!("AV1 ({}) 1080p60, 1 % Paketverlust", gpu.name), &s);
+    assert_eq!(s.codec, Some(Codec::Av1), "{s:?}");
+    assert_eq!(s.decode_errors, 0, "{s:?}");
     assert!(
         u64::from(s.receiver.frames_dropped) <= overflows,
         "FEC must hide 1 % loss: {s:?}"

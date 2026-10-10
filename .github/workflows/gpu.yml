@@ -77,7 +77,7 @@ jobs:
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}
         env:
           FERNSICHT_GPU: amd
-        run: cargo test -p fernsicht-e2e --features vaapi --test gpu --test web_gpu -- --nocapture
+        run: cargo test -p fernsicht-e2e --features vaapi --no-fail-fast --test gpu --test web_gpu -- --nocapture
       - name: NVENC/NVDEC on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         env:
@@ -87,4 +87,4 @@ jobs:
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         env:
           FERNSICHT_GPU: nvidia
-        run: cargo test -p fernsicht-e2e --features nvidia --test gpu --test web_gpu -- --nocapture
+        run: cargo test -p fernsicht-e2e --features nvidia --no-fail-fast --test gpu --test web_gpu -- --nocapture
