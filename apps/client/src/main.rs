@@ -52,15 +52,15 @@ struct Args {
     /// GPU render node for hardware decoding (VAAPI).
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: String,
-    /// Save the received video to this file (`ffplay file.h264`, or
-    /// `file.h265` for HEVC).
+    /// Save the received video to this file (`ffplay file.h264`; HEVC as
+    /// `file.h265`; AV1 is raw OBUs, `ffplay -f obu file.obu`).
     #[arg(long)]
     record: Option<std::path::PathBuf>,
     /// H.264 decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     decoder: DecoderArg,
-    /// Video codec: "auto" (HEVC if this machine decodes it and the host
-    /// encodes it, else H.264), "h264" or "hevc".
+    /// Video codec: "auto" (the best this machine decodes in hardware and
+    /// the host encodes: AV1, HEVC, else H.264), "h264", "hevc" or "av1".
     #[arg(long, value_enum, default_value_t = CodecArg::Auto)]
     codec: CodecArg,
     /// Do not play the host's sound.
@@ -251,6 +251,7 @@ enum CodecArg {
     Auto,
     H264,
     Hevc,
+    Av1,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -300,6 +301,7 @@ fn main() -> anyhow::Result<()> {
             CodecArg::Auto => CodecChoice::Auto,
             CodecArg::H264 => CodecChoice::H264,
             CodecArg::Hevc => CodecChoice::Hevc,
+            CodecArg::Av1 => CodecChoice::Av1,
         },
         record: args.record,
         audio: if args.no_audio {

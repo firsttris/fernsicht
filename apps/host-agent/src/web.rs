@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, bounded, select};
 use fernsicht_codec::EncodedFrame;
 use fernsicht_input::InputSink;
-use fernsicht_proto::{BTN_PAD_FIRST, BTN_PAD_LAST, InputEvent, MAX_PADS, PadAxis};
+use fernsicht_proto::{
+    BTN_PAD_FIRST, BTN_PAD_LAST, Codec, CodecSet, InputEvent, MAX_PADS, PadAxis,
+};
 use serde_json::{Value, json};
 use str0m::change::{SdpAnswer, SdpOffer};
 use str0m::channel::ChannelId;
@@ -106,6 +108,35 @@ impl WebError {
 pub(crate) struct WebSetup {
     rtc: Rtc,
     socket: UdpSocket,
+    browser_codecs: CodecSet,
+}
+
+impl WebSetup {
+    /// The video codecs the browser offered that we answered with.
+    pub(crate) fn browser_codecs(&self) -> CodecSet {
+        self.browser_codecs
+    }
+}
+
+/// The video codecs a browser's offer lists that our encoders make: H.264,
+/// and AV1, which Chrome and Firefox decode even without a hardware decoder.
+/// HEVC is left out: few browsers take it over WebRTC.
+pub(crate) fn codecs_in_offer(sdp: &str) -> CodecSet {
+    let has = |name: &str| {
+        sdp.lines().any(|l| {
+            l.strip_prefix("a=rtpmap:")
+                .and_then(|rest| rest.split_once(' '))
+                .is_some_and(|(_, enc)| enc.eq_ignore_ascii_case(name))
+        })
+    };
+    let mut set = CodecSet::EMPTY;
+    if has("H264/90000") {
+        set = set.with(Codec::H264);
+    }
+    if has("AV1/90000") {
+        set = set.with(Codec::Av1);
+    }
+    set
 }
 
 /// H.264 as our encoders make it: High profile, and Constrained Baseline
@@ -116,10 +147,12 @@ const H264: [(u8, u8, u32); 2] = [(114, 115, 0x64_00_1f), (108, 109, 0x42_e0_1f)
 pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSetup, SdpAnswer)> {
     static CRYPTO: Once = Once::new();
     CRYPTO.call_once(|| str0m::crypto::from_feature_flags().install_process_default());
+    let browser_codecs = codecs_in_offer(&offer.to_sdp_string());
     let mut cfg = RtcConfig::new()
         .set_ice_lite(true)
         .clear_codecs()
-        .enable_opus(true, false);
+        .enable_opus(true, false)
+        .enable_av1(true);
     for (pt, rtx, profile) in H264 {
         cfg.codec_config()
             .add_h264(pt.into(), Some(rtx.into()), true, profile);
@@ -133,7 +166,14 @@ pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSe
         .sdp_api()
         .accept_offer(offer)
         .map_err(|e| anyhow::anyhow!("offer: {e}"))?;
-    Ok((WebSetup { rtc, socket }, answer))
+    Ok((
+        WebSetup {
+            rtc,
+            socket,
+            browser_codecs,
+        },
+        answer,
+    ))
 }
 
 /// Our address towards `peer` (the route the kernel would take).
@@ -155,6 +195,7 @@ pub(crate) fn local_ip_towards(peer: IpAddr) -> std::io::Result<IpAddr> {
 /// session ends.
 pub(crate) fn spawn(
     setup: WebSetup,
+    codec: Codec,
     shared: Arc<Shared>,
     out: Receiver<WebOut>,
     input: Option<Box<dyn InputSink>>,
@@ -162,7 +203,7 @@ pub(crate) fn spawn(
     std::thread::Builder::new()
         .name("webrtc".into())
         .spawn(move || {
-            let mut s = RtcSession::new(setup, shared.clone(), input);
+            let mut s = RtcSession::new(setup, codec, shared.clone(), input);
             if let Err(e) = s.run(&out) {
                 log::warn!("web session: {e:#}");
             }
@@ -176,6 +217,8 @@ struct RtcSession {
     shared: Arc<Shared>,
     input: Option<Box<dyn InputSink>>,
     connected: bool,
+    /// What the encoder makes: H.264 or AV1.
+    codec: Codec,
     video: Option<(Mid, Pt)>,
     audio: Option<(Mid, Pt)>,
     channel: Option<ChannelId>,
@@ -184,13 +227,19 @@ struct RtcSession {
 }
 
 impl RtcSession {
-    fn new(setup: WebSetup, shared: Arc<Shared>, input: Option<Box<dyn InputSink>>) -> Self {
+    fn new(
+        setup: WebSetup,
+        codec: Codec,
+        shared: Arc<Shared>,
+        input: Option<Box<dyn InputSink>>,
+    ) -> Self {
         Self {
             rtc: setup.rtc,
             socket: setup.socket,
             shared,
             input,
             connected: false,
+            codec,
             video: None,
             audio: None,
             channel: None,
@@ -277,7 +326,9 @@ impl RtcSession {
                 };
                 let params: Vec<_> = writer.payload_params().cloned().collect();
                 match m.kind {
-                    MediaKind::Video => self.video = pick_video(&params).map(|pt| (m.mid, pt)),
+                    MediaKind::Video => {
+                        self.video = pick_video(&params, self.codec).map(|pt| (m.mid, pt));
+                    }
                     MediaKind::Audio => {
                         self.audio = params
                             .iter()
@@ -410,9 +461,15 @@ fn receive_thread(
     Ok((t, rx))
 }
 
-/// The H.264 payload type to send with: High if the browser takes it,
-/// else any packetization-mode-1 H.264.
-fn pick_video(params: &[str0m::format::PayloadParams]) -> Option<Pt> {
+/// The payload type to send `codec` with. For H.264: High if the browser
+/// takes it, else any packetization-mode-1 H.264.
+fn pick_video(params: &[str0m::format::PayloadParams], codec: Codec) -> Option<Pt> {
+    if codec == Codec::Av1 {
+        return params
+            .iter()
+            .find(|p| p.spec().codec == RtcCodec::Av1)
+            .map(|p| p.pt());
+    }
     let h264 = |p: &&str0m::format::PayloadParams| {
         let s = p.spec();
         s.codec == RtcCodec::H264 && s.format.packetization_mode == Some(1)
@@ -782,6 +839,25 @@ pub(crate) fn check_pin(sec: &HostSecurity, pin: &str) -> Result<(), WebError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codecs_are_read_from_the_offer() {
+        // Abridged from Chrome, Firefox and Safari offers.
+        let chrome = "m=video 9 UDP/TLS/RTP/SAVPF 96 45 103\r\n\
+                      a=rtpmap:96 VP8/90000\r\n\
+                      a=rtpmap:45 AV1/90000\r\n\
+                      a=rtpmap:103 H264/90000\r\n";
+        assert_eq!(
+            codecs_in_offer(chrome),
+            CodecSet::of(&[Codec::H264, Codec::Av1])
+        );
+        let safari = "a=rtpmap:96 H264/90000\r\na=rtpmap:98 H265/90000\r\n";
+        assert_eq!(codecs_in_offer(safari), CodecSet::H264);
+        // Lower case, and a codec named only in an attribute: not offered.
+        let odd = "a=rtpmap:41 av1/90000\r\na=fmtp:100 apt=AV1/90000\r\n";
+        assert_eq!(codecs_in_offer(odd), CodecSet::of(&[Codec::Av1]));
+        assert_eq!(codecs_in_offer(""), CodecSet::EMPTY);
+    }
 
     #[test]
     fn input_messages() {

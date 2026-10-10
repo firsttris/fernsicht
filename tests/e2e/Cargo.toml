@@ -23,6 +23,8 @@ fernsicht-proto.workspace = true
 
 [dev-dependencies]
 escargot.workspace = true
+# tests/web_gpu.rs decodes what the browser side received.
+fernsicht-codec.workspace = true
 serde_json.workspace = true
 str0m.workspace = true
 

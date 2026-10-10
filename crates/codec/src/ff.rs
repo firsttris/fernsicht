@@ -100,11 +100,15 @@ pub(crate) unsafe fn is_bt709_limited(frame: *const ffi::AVFrame) -> bool {
 
 /// FFmpeg's names for a codec on one hardware backend.
 pub(crate) struct CodecNames {
-    pub id: ffi::AVCodecID,
+    /// FFmpeg's own decoder, which uses the hardware through the device
+    /// context. Chosen by name: for AV1, FFmpeg lists the CPU decoder
+    /// libdav1d first.
+    pub decoder: &'static CStr,
     pub encoder: &'static CStr,
-    /// The profile every hardware decoder takes: H.264 High, HEVC Main
-    /// (8 bit 4:2:0).
-    pub profile: &'static CStr,
+    /// The profile every hardware decoder takes: H.264 High, HEVC Main,
+    /// AV1 Main (8 bit 4:2:0). `None` where the encoder has no such option
+    /// (av1_nvenc: Main is all it makes).
+    pub profile: Option<&'static CStr>,
     pub label: &'static str,
 }
 
@@ -124,22 +128,34 @@ pub(crate) fn names(
     use fernsicht_proto::Codec;
     Ok(match (codec, backend) {
         (Codec::H264, b) => CodecNames {
-            id: ffi::AVCodecID::AV_CODEC_ID_H264,
+            decoder: c"h264",
             encoder: match b {
                 Backend::Vaapi => c"h264_vaapi",
                 Backend::Nvenc => c"h264_nvenc",
             },
-            profile: c"high",
+            profile: Some(c"high"),
             label: "H.264",
         },
         (Codec::Hevc, b) => CodecNames {
-            id: ffi::AVCodecID::AV_CODEC_ID_HEVC,
+            decoder: c"hevc",
             encoder: match b {
                 Backend::Vaapi => c"hevc_vaapi",
                 Backend::Nvenc => c"hevc_nvenc",
             },
-            profile: c"main",
+            profile: Some(c"main"),
             label: "HEVC",
+        },
+        (Codec::Av1, b) => CodecNames {
+            decoder: c"av1",
+            encoder: match b {
+                Backend::Vaapi => c"av1_vaapi",
+                Backend::Nvenc => c"av1_nvenc",
+            },
+            profile: match b {
+                Backend::Vaapi => Some(c"main"),
+                Backend::Nvenc => None,
+            },
+            label: "AV1",
         },
         (other, _) => {
             return Err(CodecError::Backend(format!(

@@ -109,11 +109,15 @@ Danach kam dazu:
      „Diesen Rechner freigeben“.
    - Noch nicht live getestet: das Einrichten mit Passwort-Dialog.
 
-9. **HEVC.** Standard, wo Host und Client es in Hardware können, sonst
-   H.264; Einstellung „Videoformat“ in der App, `--codec` am Client.
-   Details und Messungen in [performance.md](performance.md#3--av1--hevc).
-   Noch nicht live zwischen den beiden Rechnern gesehen: Das Overlay
-   zeigt den Codec; zentrale → bazzite sollte „HEVC“ zeigen.
+9. **AV1 und HEVC.** Jede Verbindung nimmt das Beste, das beide Seiten in
+   Hardware können (AV1, HEVC, H.264); der Web-Viewer AV1, wenn der
+   Browser es anbietet, sonst H.264. Einstellung „Videoformat“ in der App,
+   `--codec` am Client. Details und Messungen in
+   [performance.md](performance.md#3--av1--hevc).
+   Noch nicht live gesehen:
+   - App auf der bazzite → zentrale: das Overlay sollte „HEVC“ zeigen.
+   - Chrome/Firefox auf der bazzite → zentrale: „AV1“ (im Overlay des
+     Web-Viewers; in Chrome auch unter `chrome://webrtc-internals`).
 
 Gemessene Latenz (frühere Sitzungen):
 

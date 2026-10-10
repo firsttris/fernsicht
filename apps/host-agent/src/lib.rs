@@ -934,8 +934,9 @@ impl HostAgent {
             height: 0,
             fps: 60.min(self.cfg.max_fps),
             bitrate_kbps: 0,
-            // Browsers take H.264 over WebRTC; HEVC only some, and not all.
-            codecs: CodecSet::H264,
+            // What the browser offered: H.264, and AV1 from Chrome and
+            // Firefox (they decode it on the CPU if need be).
+            codecs: setup.browser_codecs(),
         };
         let who = format!("Browser {}", req.browser.ip());
         match self.start_session(params, req.browser, None, Some(setup)) {
@@ -1345,7 +1346,7 @@ impl HostAgent {
         // it there (the host's loop only polls every 100 ms).
         let webrtc = match (web, web_out) {
             (Some(setup), Some((_, rx))) => {
-                Some(web::spawn(setup, shared.clone(), rx, input.take())?)
+                Some(web::spawn(setup, codec, shared.clone(), rx, input.take())?)
             }
             _ => None,
         };
@@ -1740,9 +1741,10 @@ pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
     Ok(kind)
 }
 
-/// Codecs in the order the host prefers them: HEVC is as fast as H.264 and
-/// needs 30–50 % less bitrate for the same picture.
-pub const CODEC_PREFERENCE: [Codec; 2] = [Codec::Hevc, Codec::H264];
+/// Codecs in the order the host prefers them: each is as fast as the next
+/// in hardware and needs less bitrate for the same picture (HEVC 30–50 %
+/// less than H.264, AV1 another 10–20 % less than HEVC).
+pub const CODEC_PREFERENCE: [Codec; 3] = [Codec::Av1, Codec::Hevc, Codec::H264];
 
 /// The codecs to try for a client that can decode `client`, best first.
 pub fn codec_candidates(client: CodecSet) -> Vec<Codec> {
@@ -1764,7 +1766,7 @@ fn make_encoder(kind: &EncoderKind, p: &SessionParams) -> anyhow::Result<Box<dyn
     }
     let candidates = codec_candidates(p.codecs);
     if candidates.is_empty() {
-        anyhow::bail!("the client decodes neither HEVC nor H.264");
+        anyhow::bail!("the client decodes none of AV1, HEVC and H.264");
     }
     let mut errors = Vec::new();
     for codec in candidates {
@@ -2004,8 +2006,11 @@ mod tests {
             codec_candidates(CodecSet::of(&[Codec::Hevc])),
             vec![Codec::Hevc]
         );
-        // AV1 is not offered (no encoder for it yet).
-        assert!(codec_candidates(CodecSet::of(&[Codec::Av1])).is_empty());
+        let all = CodecSet::of(&[Codec::H264, Codec::Av1, Codec::Hevc]);
+        assert_eq!(
+            codec_candidates(all),
+            vec![Codec::Av1, Codec::Hevc, Codec::H264]
+        );
     }
 
     fn params(codecs: CodecSet) -> SessionParams {
@@ -2024,11 +2029,14 @@ mod tests {
         let gpu = EncoderKind::Vaapi {
             render_node: "/dev/dri/renderD-does-not-exist".into(),
         };
-        let both = params(CodecSet::of(&[Codec::H264, Codec::Hevc]));
-        let err = make_encoder(&gpu, &both).err().unwrap().to_string();
-        assert!(err.contains("Hevc") && err.contains("H264"), "{err}");
+        let all = params(CodecSet::of(&[Codec::H264, Codec::Hevc, Codec::Av1]));
+        let err = make_encoder(&gpu, &all).err().unwrap().to_string();
+        assert!(
+            err.contains("Av1") && err.contains("Hevc") && err.contains("H264"),
+            "{err}"
+        );
         let nothing = make_encoder(&gpu, &params(CodecSet::EMPTY)).err().unwrap();
-        assert!(nothing.to_string().contains("neither"), "{nothing}");
+        assert!(nothing.to_string().contains("none of"), "{nothing}");
         // The synthetic encoder does not care what the client decodes.
         let synthetic = make_encoder(&EncoderKind::Synthetic, &params(CodecSet::EMPTY)).unwrap();
         assert_eq!(synthetic.codec(), Codec::Synthetic);

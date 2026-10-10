@@ -1274,6 +1274,7 @@ dependencies = [
  "escargot",
  "fernsicht-audio",
  "fernsicht-client",
+ "fernsicht-codec",
  "fernsicht-core",
  "fernsicht-host-agent",
  "fernsicht-input",

@@ -1,5 +1,5 @@
-//! H.264 and HEVC encode and decode on NVIDIA GPUs (NVENC, NVDEC), via
-//! FFmpeg.
+//! H.264, HEVC and AV1 encode and decode on NVIDIA GPUs (NVENC, NVDEC),
+//! via FFmpeg (AV1 decoding from RTX 30, encoding from RTX 40).
 //!
 //! The encoder uses NVIDIA's low-latency settings, the counterpart of the
 //! VAAPI ones: preset p1, tune "ull", zero latency, no B-frames, no
@@ -39,7 +39,7 @@ use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, P
 pub struct NvencConfig {
     /// CUDA device index (0 = first NVIDIA GPU).
     pub gpu: u32,
-    /// H.264 or HEVC.
+    /// H.264, HEVC or AV1.
     pub codec: Codec,
     pub width: u32,
     pub height: u32,
@@ -163,9 +163,11 @@ impl NvencEncoder {
                 (c"delay", c"0"),
                 (c"rc-lookahead", c"0"),
                 (c"forced-idr", c"1"),
-                (c"profile", names.profile),
             ] {
                 ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
+            }
+            if let Some(profile) = names.profile {
+                ffi::av_dict_set(&mut opts, c"profile".as_ptr(), profile.as_ptr(), 0);
             }
             let r = ffi::avcodec_open2(c, codec, &mut opts);
             ffi::av_dict_free(&mut opts);
@@ -381,13 +383,14 @@ impl Drop for NvencEncoder {
     }
 }
 
-/// Whether NVDEC on CUDA device `gpu` decodes `codec` (H.264 or HEVC,
+/// Whether NVDEC on CUDA device `gpu` decodes `codec` (H.264, HEVC or AV1,
 /// 8 bit, up to at least 1080p). False without the NVIDIA driver.
 pub fn decodes(gpu: u32, codec: Codec) -> bool {
     let cuvid = match codec {
         Codec::H264 => cuda::CUVID_H264,
         Codec::Hevc => cuda::CUVID_HEVC,
-        _ => return false,
+        Codec::Av1 => cuda::CUVID_AV1,
+        Codec::Synthetic => return false,
     };
     let index = CString::new(gpu.to_string()).expect("digits");
     let mut device = ptr::null_mut();
@@ -456,13 +459,13 @@ impl NvdecDecoder {
         Self::for_codec(gpu, Codec::H264)
     }
 
-    /// A decoder for `codec` (H.264 or HEVC).
+    /// A decoder for `codec` (H.264, HEVC or AV1).
     pub fn for_codec(gpu: u32, codec: Codec) -> Result<Self, CodecError> {
         let names = ff::names(codec, ff::Backend::Nvenc)?;
         let index = CString::new(gpu.to_string()).expect("digits");
         // SAFETY: as in NvencEncoder::new.
         unsafe {
-            let codec = ffi::avcodec_find_decoder(names.id);
+            let codec = ffi::avcodec_find_decoder_by_name(names.decoder.as_ptr());
             if codec.is_null() {
                 return Err(CodecError::Backend(format!(
                     "FFmpeg has no {} decoder",

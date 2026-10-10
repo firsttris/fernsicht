@@ -73,18 +73,18 @@ jobs:
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-codec --features vaapi --test vaapi -- --test-threads=1 --nocapture
-      - name: Real H.264 end to end (host → impaired link → client)
+      - name: Real video end to end (host → impaired link → client; web viewer)
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}
         env:
           FERNSICHT_GPU: amd
-        run: cargo test -p fernsicht-e2e --features vaapi --test gpu -- --nocapture
+        run: cargo test -p fernsicht-e2e --features vaapi --test gpu --test web_gpu -- --nocapture
       - name: NVENC/NVDEC on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         env:
           FERNSICHT_GPU: nvidia
         run: cargo test -p fernsicht-codec --features nvidia --test nvidia -- --test-threads=1 --nocapture
-      - name: Real H.264 end to end (NVENC → impaired link → NVDEC)
+      - name: Real video end to end (NVENC → impaired link → NVDEC; web viewer)
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         env:
           FERNSICHT_GPU: nvidia
-        run: cargo test -p fernsicht-e2e --features nvidia --test gpu -- --nocapture
+        run: cargo test -p fernsicht-e2e --features nvidia --test gpu --test web_gpu -- --nocapture

@@ -34,6 +34,7 @@ const BITRATES = [
 
 const CODECS: { value: VideoCodec; label: string }[] = [
   { value: "auto", label: "Automatisch" },
+  { value: "av1", label: "AV1" },
   { value: "hevc", label: "HEVC" },
   { value: "h264", label: "H.264" },
 ];
@@ -98,7 +99,7 @@ export function SettingsPage() {
         </Setting>
         <Setting
           title="Videoformat"
-          hint="HEVC zeigt bei gleicher Bitrate ein deutlich schärferes Bild, vor allem über WLAN. „Automatisch“ nimmt HEVC, wenn beide Rechner es in Hardware können, sonst H.264."
+          hint="AV1 und HEVC zeigen bei gleicher Bitrate ein deutlich schärferes Bild als H.264, vor allem über WLAN. „Automatisch“ nimmt das Beste, das beide Rechner in Hardware können: AV1, sonst HEVC, sonst H.264."
         >
           <Segmented<VideoCodec>
             className="flex-wrap"

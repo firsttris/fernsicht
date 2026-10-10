@@ -334,6 +334,7 @@ struct DecodeCaps {
 /// cudaVideoCodec values.
 pub const CUVID_H264: c_uint = 4;
 pub const CUVID_HEVC: c_uint = 8;
+pub const CUVID_AV1: c_uint = 11;
 
 /// Whether NVDEC on the GPU of the current context decodes `cuvid_codec`
 /// in 8-bit 4:2:0 up to at least 1920×1080 (pre-Pascal GPUs lack HEVC).

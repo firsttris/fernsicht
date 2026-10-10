@@ -663,3 +663,35 @@ fn nvdec_reports_what_it_decodes() {
         "no such GPU"
     );
 }
+
+#[test]
+fn av1_is_offered_only_where_nvidia_has_it() {
+    if !nvidia() {
+        return;
+    }
+    // Decoding from RTX 30, encoding from RTX 40. What the GPU reports and
+    // what opening a decoder or encoder does must agree: the client offers
+    // AV1 by the report, the host falls back when the encoder fails.
+    let decodes = fernsicht_codec::nvidia::decodes(0, Codec::Av1);
+    summary(&format!(
+        "- NVDEC dekodiert AV1: {}",
+        if decodes { "ja" } else { "nein" }
+    ));
+    match NvencEncoder::new(&NvencConfig {
+        codec: Codec::Av1,
+        ..config(1280, 720, 60, 8_000)
+    }) {
+        Ok(mut enc) => {
+            let f = frames(1280, 720, 1).remove(0);
+            let mut out = EncodedFrame::default();
+            enc.encode(&f, &mut out).unwrap();
+            assert!(out.keyframe);
+            summary("- NVENC kodiert AV1: ja");
+        }
+        Err(e) => {
+            // Refused for want of hardware, not for our settings.
+            assert!(!decodes || e.to_string().contains("av1_nvenc"), "{e}");
+            summary("- NVENC kodiert AV1: nein (der Host nimmt dann HEVC oder H.264)");
+        }
+    }
+}

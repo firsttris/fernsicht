@@ -359,12 +359,13 @@ pub fn window_to_stream(
 /// The video codec a client asks for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CodecChoice {
-    /// HEVC if this machine decodes it in hardware, else H.264; the host
-    /// picks the best it can encode.
+    /// What this machine decodes in hardware (AV1, HEVC) and H.264; the
+    /// host picks the best it can encode.
     #[default]
     Auto,
     H264,
     Hevc,
+    Av1,
 }
 
 /// What to offer the host for `choice`, given which codecs the hardware
@@ -373,10 +374,14 @@ pub fn offered_codecs(choice: CodecChoice, decodes: impl Fn(Codec) -> bool) -> C
     match choice {
         CodecChoice::H264 => CodecSet::H264,
         CodecChoice::Hevc => CodecSet::of(&[Codec::Hevc]),
+        CodecChoice::Av1 => CodecSet::of(&[Codec::Av1]),
         // H.264 always: it is what every host encodes, and the decoder is
-        // looked for only once the stream arrives.
-        CodecChoice::Auto if decodes(Codec::Hevc) => CodecSet::of(&[Codec::H264, Codec::Hevc]),
-        CodecChoice::Auto => CodecSet::H264,
+        // looked for only once the stream arrives. The others only where
+        // the hardware decodes them: no decoding on the CPU.
+        CodecChoice::Auto => [Codec::Hevc, Codec::Av1]
+            .into_iter()
+            .filter(|&c| decodes(c))
+            .fold(CodecSet::H264, CodecSet::with),
     }
 }
 
@@ -663,8 +668,16 @@ fn network_loop(
     };
     let codecs = offered_codecs(cfg.codec, |c| hw.decodes(c));
     log::debug!("offering {codecs:?}");
-    if cfg.codec == CodecChoice::Hevc && !hw.decodes(Codec::Hevc) {
-        log::warn!("HEVC asked for, but no hardware decoder here reports HEVC support");
+    let forced = match cfg.codec {
+        CodecChoice::Hevc => Some(Codec::Hevc),
+        CodecChoice::Av1 => Some(Codec::Av1),
+        _ => None,
+    };
+    if let Some(c) = forced.filter(|&c| !hw.decodes(c)) {
+        log::warn!(
+            "{} asked for, but no hardware decoder here reports support for it",
+            overlay::codec_label(c)
+        );
     }
     let hello = Hello {
         width: cfg.width,
@@ -1035,11 +1048,7 @@ impl Hw {
 fn make_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
     match codec {
         Codec::Synthetic => Ok(Box::new(SyntheticDecoder::default())),
-        Codec::H264 | Codec::Hevc => make_hw_decoder(codec, hw),
-        other => Err(CodecError::Backend(format!(
-            "cannot decode {}",
-            overlay::codec_label(other)
-        ))),
+        Codec::H264 | Codec::Hevc | Codec::Av1 => make_hw_decoder(codec, hw),
     }
 }
 
@@ -1065,12 +1074,16 @@ fn make_hw_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError
     }
     if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Nvdec) {
         #[cfg(feature = "nvidia")]
-        match fernsicht_codec::nvidia::NvdecDecoder::for_codec(0, codec) {
-            Ok(d) => {
-                log::info!("decoding {label} with NVDEC");
-                return Ok(Box::new(d));
+        if !fernsicht_codec::nvidia::decodes(0, codec) {
+            errors.push(format!("NVDEC: this GPU does not decode {label}"));
+        } else {
+            match fernsicht_codec::nvidia::NvdecDecoder::for_codec(0, codec) {
+                Ok(d) => {
+                    log::info!("decoding {label} with NVDEC");
+                    return Ok(Box::new(d));
+                }
+                Err(e) => errors.push(format!("NVDEC: {e}")),
             }
-            Err(e) => errors.push(format!("NVDEC: {e}")),
         }
         #[cfg(not(feature = "nvidia"))]
         errors.push("NVDEC: not in this build (cargo feature \"nvidia\")".to_string());
@@ -1348,9 +1361,19 @@ mod tests {
     fn auto_offers_hevc_only_where_it_is_decoded() {
         let none = |_: Codec| false;
         let hevc = |c: Codec| c == Codec::Hevc;
+        let all = |_: Codec| true;
         let both = CodecSet::of(&[Codec::H264, Codec::Hevc]);
+        // The GTX 1080: HEVC in hardware, no AV1.
         assert_eq!(offered_codecs(CodecChoice::Auto, hevc), both);
         assert_eq!(offered_codecs(CodecChoice::Auto, none), CodecSet::H264);
+        assert_eq!(
+            offered_codecs(CodecChoice::Auto, all),
+            CodecSet::of(&[Codec::H264, Codec::Hevc, Codec::Av1])
+        );
+        assert_eq!(
+            offered_codecs(CodecChoice::Av1, none),
+            CodecSet::of(&[Codec::Av1])
+        );
         // A choice is passed on as it is.
         assert_eq!(offered_codecs(CodecChoice::H264, hevc), CodecSet::H264);
         assert_eq!(

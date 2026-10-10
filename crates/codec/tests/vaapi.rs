@@ -738,3 +738,148 @@ fn vaapi_reports_what_it_decodes() {
     assert!(fernsicht_codec::vaapi::decodes(&node, Codec::Hevc));
     assert!(!fernsicht_codec::vaapi::decodes(&node, Codec::Synthetic));
 }
+
+// --- AV1 -------------------------------------------------------------------
+
+/// OBU types in a low-overhead AV1 bitstream (every OBU has a size field).
+fn av1_obu_types(data: &[u8]) -> Vec<u8> {
+    let mut types = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        let header = data[i];
+        types.push((header >> 3) & 0xf);
+        let ext = header & 0x4 != 0;
+        let mut j = i + 1 + usize::from(ext);
+        // leb128 size
+        let (mut size, mut shift) = (0usize, 0);
+        loop {
+            let Some(&b) = data.get(j) else { return types };
+            size |= usize::from(b & 0x7f) << shift;
+            j += 1;
+            shift += 7;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        i = j + size;
+    }
+    types
+}
+
+const AV1_SEQUENCE_HEADER: u8 = 1;
+
+#[test]
+fn av1_keyframes_carry_the_sequence_header_and_a_late_decoder_joins() {
+    let Some(node) = render_node() else { return };
+    if !fernsicht_codec::vaapi::decodes(&node, Codec::Av1) {
+        eprintln!("skipped: this GPU has no AV1");
+        return;
+    }
+    let (w, h) = (1280, 720);
+    let mut enc = VaapiEncoder::new(&VaapiEncoderConfig {
+        codec: Codec::Av1,
+        ..config(&node, w, h, 60, 8_000)
+    })
+    .unwrap();
+    assert_eq!(enc.codec(), Codec::Av1);
+    let input = frames(w, h, 30);
+    let mut packets = Vec::new();
+    for (i, f) in input.iter().enumerate() {
+        if i == 20 {
+            enc.request_keyframe();
+        }
+        let mut out = EncodedFrame::default();
+        enc.encode(f, &mut out).unwrap();
+        packets.push(out);
+    }
+    let keyframes: Vec<usize> = (0..packets.len())
+        .filter(|&i| packets[i].keyframe)
+        .collect();
+    assert_eq!(keyframes, vec![0, 20]);
+    for k in keyframes {
+        let types = av1_obu_types(&packets[k].data);
+        assert!(
+            types.contains(&AV1_SEQUENCE_HEADER),
+            "keyframe {k}: {types:?}"
+        );
+    }
+    let mut dec = VaapiDecoder::for_codec(&node, Codec::Av1).unwrap();
+    let mut d = DecodedFrame::default();
+    for p in &packets[20..] {
+        dec.decode(&p.data, &mut d).unwrap();
+    }
+    let psnr = psnr_y(
+        &input[29].data,
+        &dec.last_frame_nv12().unwrap(),
+        (w * h) as usize,
+    );
+    assert!(psnr > 30.0, "{psnr:.1} dB after joining at the keyframe");
+}
+
+#[test]
+fn av1_hevc_and_h264_at_the_same_bitrate() {
+    let Some(node) = render_node() else { return };
+    if !fernsicht_codec::vaapi::decodes(&node, Codec::Av1) {
+        eprintln!("skipped: this GPU has no AV1");
+        return;
+    }
+    let input = frames(1920, 1080, 60);
+    summary("### AV1, HEVC und H.264 bei gleicher Bitrate (VAAPI, 1080p60, 4 Mbit/s)");
+    summary("| Codec | Ø Delta-Frame | PSNR (Y), schlechtester Frame |\n|---|---|---|");
+    let mut psnr = Vec::new();
+    for (codec, name) in [
+        (Codec::H264, "H.264"),
+        (Codec::Hevc, "HEVC"),
+        (Codec::Av1, "AV1"),
+    ] {
+        let (bytes, p) = quality(&node, codec, &input, 4_000);
+        summary(&format!("| {name} | {bytes:.0} Bytes | {p:.1} dB |"));
+        psnr.push(p);
+    }
+    summary("");
+    assert!(
+        psnr[2] > psnr[0] - 0.5,
+        "AV1 {:.1} dB vs H.264 {:.1} dB",
+        psnr[2],
+        psnr[0]
+    );
+}
+
+#[test]
+fn av1_from_a_dmabuf_keeps_its_colours() {
+    let Some(node) = render_node() else { return };
+    if !fernsicht_codec::vaapi::decodes(&node, Codec::Av1) {
+        eprintln!("skipped: this GPU has no AV1");
+        return;
+    }
+    let (w, h) = (1920u32, 1080u32);
+    let image = upload_as_dmabuf(
+        &node,
+        w,
+        h,
+        formats::ABGR2101010,
+        &rgb_image(w as usize, h as usize, 0, formats::ABGR2101010),
+    )
+    .unwrap();
+    let mut enc = VaapiEncoder::new(&VaapiEncoderConfig {
+        codec: Codec::Av1,
+        ..config(&node, w, h, 60, 20_000)
+    })
+    .unwrap();
+    let mut dec = VaapiDecoder::for_codec(&node, Codec::Av1).unwrap();
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let mut ms = Vec::new();
+    for i in 0..60 {
+        let t = Instant::now();
+        enc.encode(&dmabuf_frame(&image, i), &mut out).unwrap();
+        ms.push(t.elapsed().as_secs_f64() * 1e3);
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    assert_patch_colours(&dec.last_frame_nv12().unwrap(), w as usize, h as usize);
+    let p95 = percentile(ms[1..].to_vec(), 0.95);
+    summary(&format!(
+        "- AV1 aus DMA-BUF (AB30, 1080p): Farben ok, Encode Median / p95 {:.2} / {p95:.2} ms\n",
+        percentile(ms[1..].to_vec(), 0.5)
+    ));
+    assert!(p95 < 16.0);
+}

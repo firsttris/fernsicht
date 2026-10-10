@@ -136,7 +136,7 @@ docs/    Messprotokolle
 | `proto` | UDP-Paketformat v1: Video-Shards mit Stufen-Zeitstempeln, Feedback, Clock-Ping/-Pong, Hello/Ack, Bye. Der Parser panict nie und allokiert nicht |
 | `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen; Recovery-Shards pro Gruppe binomial aus der gemessenen Verlustrate (Gruppenausfall ≤ 10⁻⁵, mindestens 10 %), Reassembly mit Keyframe-Anforderung und harten Größengrenzen, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
 | `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken), DMA-BUF-Beschreibung, KMS-Capture im VBlank-Takt (Feature `kms`, pures Rust) |
-| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec, VAAPI H.264 und HEVC über FFmpeg (Feature `vaapi`): DMA-BUF-Import ohne Kopie, RGB→NV12 und Skalierung per `scale_vaapi`; NVENC/NVDEC (Feature `nvidia`), Bildschirm über Vulkan → CUDA ohne CPU-Kopie |
+| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec, VAAPI H.264, HEVC und AV1 über FFmpeg (Feature `vaapi`): DMA-BUF-Import ohne Kopie, RGB→NV12 und Skalierung per `scale_vaapi`; NVENC/NVDEC (Feature `nvidia`), Bildschirm über Vulkan → CUDA ohne CPU-Kopie |
 | `gpu` | Vulkan-Gerät und DMA-BUF-Import ohne Kopie (für Renderer und Encoder), RGB-DMA-BUF → NV12 per Compute-Shader für NVENC |
 | `render` | `Presenter`-Trait, Overlay-Formatierung |
 | `input`, `audio` | Event-Typen, Traits, Duplikat-Filter (Phase 2) |

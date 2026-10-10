@@ -65,6 +65,7 @@ pub enum CodecSetting {
     Auto,
     H264,
     Hevc,
+    Av1,
 }
 
 impl StreamSettings {
@@ -92,6 +93,7 @@ impl StreamSettings {
             CodecSetting::Auto => {}
             CodecSetting::H264 => a.extend(["--codec".into(), "h264".into()]),
             CodecSetting::Hevc => a.extend(["--codec".into(), "hevc".into()]),
+            CodecSetting::Av1 => a.extend(["--codec".into(), "av1".into()]),
         }
         if self.gaming {
             a.push("--gaming".into());
@@ -576,7 +578,9 @@ mod tests {
         // Older UIs send no codec: automatic, no argument.
         let h264: StreamSettings = serde_json::from_str(r#"{"codec":"h264"}"#).unwrap();
         assert_eq!(h264.args(), ["--codec", "h264"]);
-        assert!(serde_json::from_str::<StreamSettings>(r#"{"codec":"av1"}"#).is_err());
+        let av1: StreamSettings = serde_json::from_str(r#"{"codec":"av1"}"#).unwrap();
+        assert_eq!(av1.args(), ["--codec", "av1"]);
+        assert!(serde_json::from_str::<StreamSettings>(r#"{"codec":"vp9"}"#).is_err());
     }
 
     #[test]

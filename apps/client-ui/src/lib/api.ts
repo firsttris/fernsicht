@@ -119,11 +119,11 @@ export interface StreamSettings {
   fps: number;
   /** 0 = the host's choice for the size. */
   bitrateMbit: number;
-  /** "auto": HEVC where both sides can, else H.264. */
+  /** "auto": the best both sides do in hardware (AV1, HEVC, H.264). */
   codec: VideoCodec;
 }
 
-export type VideoCodec = "auto" | "h264" | "hevc";
+export type VideoCodec = "auto" | "h264" | "hevc" | "av1";
 
 export const DEFAULT_SETTINGS: StreamSettings = {
   width: 0,

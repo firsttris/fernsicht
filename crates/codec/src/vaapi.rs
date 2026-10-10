@@ -1,4 +1,4 @@
-//! H.264 and HEVC encode and decode in hardware over VAAPI, via FFmpeg.
+//! H.264, HEVC and AV1 encode and decode in hardware over VAAPI, via FFmpeg.
 //!
 //! Works with AMD (radeonsi) and Intel (iHD). Settings follow what Sunshine
 //! uses for low latency:
@@ -132,6 +132,7 @@ const VA_FOURCC_X2B10G10R10: u32 = 0x3033_4258;
 
 const VA_PROFILE_H264_HIGH: c_int = 7;
 const VA_PROFILE_HEVC_MAIN: c_int = 17;
+const VA_PROFILE_AV1_PROFILE0: c_int = 32;
 const VA_ENTRYPOINT_VLD: c_int = 1;
 
 /// Whether the GPU behind `render_node` decodes `codec` (H.264 High or
@@ -140,7 +141,8 @@ pub fn decodes(render_node: &str, codec: Codec) -> bool {
     let profile = match codec {
         Codec::H264 => VA_PROFILE_H264_HIGH,
         Codec::Hevc => VA_PROFILE_HEVC_MAIN,
-        _ => return false,
+        Codec::Av1 => VA_PROFILE_AV1_PROFILE0,
+        Codec::Synthetic => return false,
     };
     let Ok(device) = VaapiDevice::open(render_node) else {
         return false;
@@ -220,7 +222,7 @@ impl Drop for VaapiDevice {
 #[derive(Clone, Debug)]
 pub struct VaapiEncoderConfig {
     pub render_node: String,
-    /// H.264 or HEVC.
+    /// H.264, HEVC or AV1.
     pub codec: Codec,
     pub width: u32,
     pub height: u32,
@@ -325,12 +327,11 @@ impl VaapiEncoder {
             signal_bt709_limited(c);
 
             let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
-            for (k, v) in [
-                (c"rc_mode", c"CBR"),
-                (c"async_depth", c"1"),
-                (c"profile", names.profile),
-            ] {
+            for (k, v) in [(c"rc_mode", c"CBR"), (c"async_depth", c"1")] {
                 ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
+            }
+            if let Some(profile) = names.profile {
+                ffi::av_dict_set(&mut opts, c"profile".as_ptr(), profile.as_ptr(), 0);
             }
             let r = ffi::avcodec_open2(c, codec, &mut opts);
             ffi::av_dict_free(&mut opts);
@@ -994,13 +995,13 @@ impl VaapiDecoder {
         Self::for_codec(render_node, Codec::H264)
     }
 
-    /// A decoder for `codec` (H.264 or HEVC).
+    /// A decoder for `codec` (H.264, HEVC or AV1).
     pub fn for_codec(render_node: &str, codec: Codec) -> Result<Self, CodecError> {
         let names = ff::names(codec, ff::Backend::Vaapi)?;
         let device = VaapiDevice::open(render_node)?;
         // SAFETY: see VaapiEncoder::new.
         unsafe {
-            let codec = ffi::avcodec_find_decoder(names.id);
+            let codec = ffi::avcodec_find_decoder_by_name(names.decoder.as_ptr());
             if codec.is_null() {
                 return Err(CodecError::Backend(format!(
                     "FFmpeg has no {} decoder",
