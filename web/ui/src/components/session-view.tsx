@@ -1,5 +1,8 @@
 import {
   ClipboardList,
+  Keyboard,
+  MousePointer2,
+  ZoomOut,
   Maximize,
   Minimize,
   Monitor,
@@ -30,6 +33,14 @@ export interface SessionViewProps {
   /** The host's monitors; with two or more, a menu switches between them. */
   monitors?: HostMonitors;
   onSelectMonitor?: (index: number) => void;
+  /** Opens the on-screen keyboard (the web viewer on phones). */
+  onShowKeyboard?: () => void;
+  /** Touch screens: the finger clicks where it is, or works as a touchpad. */
+  touchMode?: "direct" | "trackpad";
+  onTouchModeChange?: (mode: "direct" | "trackpad") => void;
+  /** The picture is zoomed in here (pinch); offers a way back. */
+  zoomed?: boolean;
+  onResetZoom?: () => void;
   /** Fullscreen button (the web viewer; the app's window has its own). */
   fullscreen?: boolean;
   onFullscreenChange?: (on: boolean) => void;
@@ -51,6 +62,11 @@ export function SessionView({
   onSendKeys,
   monitors,
   onSelectMonitor,
+  onShowKeyboard,
+  touchMode,
+  onTouchModeChange,
+  zoomed = false,
+  onResetZoom,
   fullscreen = false,
   onFullscreenChange,
   onDisconnect,
@@ -107,7 +123,40 @@ export function SessionView({
                 </Button>
               ))}
               <Divider />
+              {onShowKeyboard && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Bildschirmtastatur"
+                  onClick={onShowKeyboard}
+                >
+                  <Keyboard size={16} />
+                </Button>
+              )}
               {onSendKeys && <SendKeysMenu onSend={onSendKeys} />}
+              {touchMode && onTouchModeChange && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Touchpad-Modus"
+                  aria-pressed={touchMode === "trackpad"}
+                  onClick={() =>
+                    onTouchModeChange(touchMode === "trackpad" ? "direct" : "trackpad")
+                  }
+                >
+                  <MousePointer2 size={16} />
+                </Button>
+              )}
+              {zoomed && onResetZoom && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Zoom zurücksetzen"
+                  onClick={onResetZoom}
+                >
+                  <ZoomOut size={16} />
+                </Button>
+              )}
               {monitors && monitors.list.length > 1 && onSelectMonitor && (
                 <MenuButton
                   label="Bildschirm wählen"

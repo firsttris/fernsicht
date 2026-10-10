@@ -33,9 +33,15 @@ test.describe("Web-Viewer", () => {
     await expectNoHorizontalScroll(page);
   });
 
-  test("the session view is accessible", async ({ page }) => {
+  test("the session view is accessible and fits the screen", async ({ page }) => {
     await page.goto(`${VIEWER}/session/214776390`);
     await expect(page.getByRole("toolbar")).toBeVisible();
     await expectAccessible(page);
+    await expectNoHorizontalScroll(page);
+    // Toolbar and its buttons stay on screen, also with little height.
+    const bar = await page.getByRole("toolbar").boundingBox();
+    const view = page.viewportSize()!;
+    expect(bar!.y + bar!.height).toBeLessThanOrEqual(view.height);
+    await expect(page.getByRole("button", { name: "Trennen" })).toBeInViewport();
   });
 });

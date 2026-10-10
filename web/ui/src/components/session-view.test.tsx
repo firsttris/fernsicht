@@ -91,6 +91,34 @@ describe("SessionView", () => {
     expect(screen.queryByRole("button", { name: "Bildschirm wählen" })).not.toBeInTheDocument();
   });
 
+  it("offers the on-screen keyboard, the touch mode and a way out of the zoom", async () => {
+    const onShowKeyboard = vi.fn();
+    const onTouchModeChange = vi.fn();
+    const onResetZoom = vi.fn();
+    const { user } = setup({
+      onShowKeyboard,
+      touchMode: "direct",
+      onTouchModeChange,
+      zoomed: true,
+      onResetZoom,
+    });
+    await user.click(screen.getByRole("button", { name: "Bildschirmtastatur" }));
+    expect(onShowKeyboard).toHaveBeenCalledOnce();
+    const pad = screen.getByRole("button", { name: "Touchpad-Modus" });
+    expect(pad).toHaveAttribute("aria-pressed", "false");
+    await user.click(pad);
+    expect(onTouchModeChange).toHaveBeenCalledWith("trackpad");
+    await user.click(screen.getByRole("button", { name: "Zoom zurücksetzen" }));
+    expect(onResetZoom).toHaveBeenCalledOnce();
+    cleanup();
+    setup({ touchMode: "trackpad", onTouchModeChange, zoomed: false, onResetZoom });
+    expect(screen.getByRole("button", { name: "Touchpad-Modus" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.queryByRole("button", { name: "Zoom zurücksetzen" })).not.toBeInTheDocument();
+  });
+
   it("has no keys menu or fullscreen button without a handler", () => {
     setup();
     expect(screen.queryByRole("button", { name: "Tasten senden" })).not.toBeInTheDocument();

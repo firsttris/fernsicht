@@ -214,6 +214,13 @@ Live bestätigt (10.10.2026, laut Benutzer):
     Monitor, Zeiger an der richtigen Stelle. Ein Monitor anderer Größe
     wird auf die Stream-Größe vom Sitzungsbeginn skaliert (verzerrt, wenn
     das Seitenverhältnis abweicht).
+11. **Web-Viewer am Handy.** Gebaut, nie live gesehen: Gesten
+    (`web/viewer/src/lib/touch.ts`), Touchpad-Modus, lokaler Zoom,
+    Bildschirmtastatur (`lib/textkeys.ts`, Layout nach Browsersprache),
+    Gaming-Modus am Handy ohne Zeigerfang. Prüfen auf einem echten Handy
+    (Android Chrome, iPhone Safari): Tippen, Ziehen, Rechtsklick lang,
+    Scrollen mit zwei Fingern, Zoom und Zurücksetzen, Tippen mit
+    Gboard/iOS-Tastatur (auch Wortvorschläge), Drehen.
 
 ## Offene Aufgaben, nach Wichtigkeit
 

@@ -224,6 +224,57 @@ describe("Web-Viewer am Host", () => {
     Reflect.deleteProperty(document, "pointerLockElement");
   });
 
+  it("a finger taps where it is, and works as a touchpad in gaming mode", async () => {
+    const { pc, screenEl } = await connected();
+    const sent = () => pc.channel.sent;
+    const before = sent().length;
+    const finger = { pointerType: "touch", pointerId: 7, clientX: 0, clientY: 0 };
+    fireEvent.pointerDown(screenEl, finger);
+    fireEvent.pointerUp(screenEl, finger);
+    expect(sent().slice(before)).toEqual([
+      { t: "m", x: 0, y: 0 },
+      { t: "b", c: 0x110, p: true },
+      { t: "b", c: 0x110, p: false },
+    ]);
+  });
+
+  it("gaming mode on a touch screen clicks instead of waiting for a pointer lock", async () => {
+    const { pc, screenEl } = await connected("gaming");
+    const lock = vi.fn();
+    Object.assign(screenEl, { requestPointerLock: lock });
+    const finger = { pointerType: "touch", pointerId: 3, clientX: 10, clientY: 10 };
+    fireEvent.pointerDown(screenEl, finger);
+    fireEvent.pointerMove(screenEl, { ...finger, clientX: 40 });
+    fireEvent.pointerUp(screenEl, { ...finger, clientX: 40 });
+    expect(lock).not.toHaveBeenCalled();
+    // Moved: relative motion, no click; then a tap clicks in place.
+    expect(pc.channel.sent.at(-1)).toMatchObject({ t: "r", dy: 0 });
+    fireEvent.pointerDown(screenEl, finger);
+    fireEvent.pointerUp(screenEl, finger);
+    expect(pc.channel.sent.slice(-2)).toEqual([
+      { t: "b", c: 0x110, p: true },
+      { t: "b", c: 0x110, p: false },
+    ]);
+  });
+
+  it("types what the on-screen keyboard writes", async () => {
+    const { pc } = await connected();
+    fireEvent.click(screen.getByRole("button", { name: "Bildschirmtastatur" }));
+    const field = screen.getByLabelText("Text an den Host");
+    expect(field).toHaveFocus();
+    const sentKeys = () =>
+      pc.channel.sent.filter((m) => m.t === "k").map((m) => `${m.p ? "+" : "-"}${m.c}`);
+    const before = sentKeys().length;
+    const z = "\u200b\u200b";
+    fireEvent.input(field, { target: { value: `${z}hi` } });
+    expect(sentKeys().slice(before)).toEqual(["+35", "-35", "+23", "-23"]);
+    // Backspace deletes one of the invisible characters: one Backspace.
+    fireEvent.input(field, { target: { value: "\u200b" } });
+    expect(sentKeys().slice(-2)).toEqual(["+14", "-14"]);
+    fireEvent.keyDown(field, { key: "Enter", code: "" });
+    expect(sentKeys().slice(-2)).toEqual(["+28", "-28"]);
+  });
+
   it("disconnects with a goodbye", async () => {
     const { pc, router, user } = await connected();
     await user.click(screen.getByRole("button", { name: "Trennen" }));

@@ -1,4 +1,4 @@
-import { Keyboard } from "lucide-react";
+import { Command } from "lucide-react";
 
 import { MenuButton } from "./menu-button";
 
@@ -31,7 +31,7 @@ export function SendKeysMenu({ onSend }: { onSend: (codes: number[]) => void }) 
   return (
     <MenuButton
       label="Tasten senden"
-      icon={<Keyboard size={16} />}
+      icon={<Command size={16} />}
       items={KEY_COMBOS.map((k) => ({ label: k.label, onSelect: () => onSend(k.codes) }))}
     />
   );

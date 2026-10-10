@@ -124,14 +124,33 @@ So funktioniert es:
 
 - **Zugang:** Die PIN gilt für eine Sitzung. Der Browser wird nicht
   gekoppelt und braucht beim nächsten Mal eine neue PIN.
-- **Übertragung:** Bild (H.264), Ton und Eingaben laufen verschlüsselt
-  über WebRTC.
+- **Übertragung:** Bild (AV1, wenn Browser und Grafikkarte des Hosts es
+  können, sonst H.264), Ton und Eingaben laufen verschlüsselt über WebRTC.
 - **Eingabe:** Im Modus **Desktop** steuert die Maus direkt. Im Modus
   **Gaming** fängt ein Klick ins Bild den Mauszeiger, Esc gibt ihn frei.
   Controller gehen über die Gamepad-API; manche Browser geben sie nur auf
   HTTPS-Seiten heraus.
+- **Handy und Tablet:**
+  - Tippen klickt dort, wo der Finger ist; Ziehen zieht; lange drücken ist
+    ein Rechtsklick.
+  - Zwei Finger: zusammen bewegen scrollt, kurz tippen ist ein
+    Rechtsklick, spreizen zoomt ins Bild (nur hier, der Host merkt nichts).
+    Im Zoom verschieben zwei Finger den Ausschnitt; die Lupe in der
+    Toolbar setzt ihn zurück.
+  - **Touchpad-Modus** (Zeiger-Symbol in der Toolbar): Der Finger schiebt
+    den Zeiger wie auf einem Touchpad, Tippen klickt an der
+    Zeigerposition, lange drücken und bewegen zieht. Im Gaming-Modus gilt
+    das immer.
+  - **Bildschirmtastatur:** Tastatur-Symbol in der Toolbar. Das Getippte
+    geht als Tasten an den Host; dafür nimmt der Viewer an, dass der Host
+    das Tastaturlayout der Browsersprache hat (Deutsch oder US).
+  - Hoch- und Querformat gehen beide; das Bild passt sich beim Drehen an.
+- **Systemtasten:** Strg+Alt+Entf, Windows-Taste und Co. im Menü „Tasten
+  senden“. Im Vollbild (Knopf in der Toolbar) lassen Chrome und Edge auch
+  Windows-Taste, Alt+Tab und Esc durch; zum Verlassen Esc gedrückt halten.
 - **Was nicht geht:** Tasten, die der Browser selbst behält (z. B.
-  Strg+W), kommen nicht beim Host an. Dafür ist die App da.
+  Strg+W), kommen nicht beim Host an. Dafür ist die App da. Am iPhone
+  gibt es kein Vollbild für Webseiten.
 
 Grenzen:
 

@@ -17,6 +17,8 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
     },
     { name: "mobile", use: { ...devices["Pixel 7"] } },
+    // The same phone turned sideways: little height for toolbar and picture.
+    { name: "mobile-landscape", use: { ...devices["Pixel 7 landscape"] } },
   ],
   webServer: [
     {
