@@ -605,6 +605,16 @@ impl InputEvent {
         let a = r.u32()? as i32;
         let b = r.u32()? as i32;
         let pressed = flags & FLAG_PRESSED != 0;
+        // Fields a kind does not use must be zero: one meaning per byte
+        // sequence (what parses re-encodes to the same bytes).
+        let unused_ok = match kind {
+            1 | 2 | 4 => flags == 0 && code == 0,
+            3 | 5 => flags & !FLAG_PRESSED == 0 && a == 0 && b == 0,
+            _ => true,
+        };
+        if !unused_ok {
+            return Err(DecodeError::Invalid("unused input event field set"));
+        }
         let event = match kind {
             1 => InputEvent::MouseAbs {
                 x: u16::try_from(a).map_err(|_| DecodeError::Invalid("pointer x"))?,
@@ -1109,6 +1119,15 @@ mod tests {
         let mut unknown = buf[..n].to_vec();
         unknown[InputHeader::LEN + 4] = 99;
         assert!(Packet::decode(&unknown).is_err());
+        // Unused fields set (found by the fuzzer: a button with motion bytes).
+        let crash = [
+            0xf5, 0x01, 0x0a, 0x00, 0x00, 0xff, 0xff, 0xdf, 0x01, 0x03, 0x00, 0x01, 0x03, 0x04,
+            0xfd, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0xfc, 0x03, 0x00, 0x03, 0xf5,
+        ];
+        assert!(Packet::decode(&crash).is_err());
+        let mut flagged = buf[..n].to_vec();
+        flagged[InputHeader::LEN + 5] = 0x03; // pressed + an unknown flag
+        assert!(Packet::decode(&flagged).is_err());
         // Pointer coordinates beyond 16 bit.
         let mut wide = buf[..n].to_vec();
         wide[InputHeader::LEN + 4] = 1;
