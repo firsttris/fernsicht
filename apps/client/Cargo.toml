@@ -18,6 +18,9 @@ vaapi = ["fernsicht-codec/vaapi"]
 # Hardware AV1, HEVC and H.264 decoding with NVDEC (NVIDIA); CUDA is loaded at
 # runtime.
 nvidia = ["fernsicht-codec/nvidia"]
+# Hardware AV1, HEVC and H.264 decoding with Vulkan Video (any GPU whose
+# driver has it), on the window's own Vulkan device; needs FFmpeg with Vulkan.
+vulkan = ["fernsicht-codec/vulkan", "fernsicht-render/vulkan", "dep:fernsicht-gpu"]
 # The video window (Vulkan via ash, winit); without it the client is
 # headless and prints the overlay only.
 window = [
@@ -43,6 +46,7 @@ env_logger.workspace = true
 fernsicht-audio.workspace = true
 fernsicht-capture.workspace = true
 fernsicht-codec.workspace = true
+fernsicht-gpu = { workspace = true, optional = true }
 fernsicht-core.workspace = true
 fernsicht-input = { workspace = true, features = ["gamepad"] }
 fernsicht-net.workspace = true

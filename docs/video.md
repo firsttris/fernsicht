@@ -115,8 +115,16 @@ H.264 5.0 ms glass-to-glass on the GTX 1080).
 ## Decoding and display
 
 The client decodes with FFmpeg's own decoders on the GPU (chosen by name, so FFmpeg's CPU decoder for
-AV1 is never picked): VAAPI on AMD/Intel, NVDEC on NVIDIA. Decoder output is a frame per packet, no
-frame threading.
+AV1 is never picked). It tries, in this order:
+
+1. **Vulkan Video**, on any GPU whose driver has it (NVIDIA from Pascal, AMD and Intel with Mesa) and
+   FFmpeg 7.1 or newer. FFmpeg decodes on the window's own Vulkan device: it gets our instance,
+   device and queues (one lock per queue, shared with the renderer) and decodes into its pool of NV12
+   images, which the renderer samples where they are (`Picture::Vulkan`).
+2. VAAPI on AMD/Intel.
+3. NVDEC on NVIDIA.
+
+`--decoder` picks one. Decoder output is a frame per packet, no frame threading.
 
 With several GPUs, Vulkan runs on the one that holds the pictures: the client's window on the VAAPI
 decoder's GPU (matched by render node, `VK_EXT_physical_device_drm`), the host's NVENC converter on
@@ -130,6 +138,12 @@ window, and the host's pointer over it:
 - NVDEC pictures are copied on the GPU into memory CUDA exports as a file descriptor, which Vulkan
   imports (CUDA's virtual memory API; `Picture::Exported`): 0.3 ms to copy, convert and draw at
   1080p on the GTX 1080, against 1.1 ms through the CPU before.
+- Vulkan Video pictures need neither: the renderer views the two planes of the decoded image (it is
+  created with `MUTABLE_FORMAT`) and draws them, 0.07 ms at 1080p on the GTX 1080. The image is
+  coded larger than the picture (1088 rows for 1080); the shader shows only the picture's part. Each
+  submission waits for the image's timeline semaphore and signals the next value, FFmpeg's contract
+  for its frames. Decoding itself takes as long as NVDEC (the same engine), and `decode` waits for
+  it, so the overlay's Decode stays the decoder's time.
 
 The window presents in mailbox mode: no tearing, and a new frame replaces one that has not been shown
 yet. Presenting immediately (with tearing, for games) is a possible next step

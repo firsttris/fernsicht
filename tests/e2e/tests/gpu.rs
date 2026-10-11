@@ -58,15 +58,15 @@ fn gpu() -> Option<Gpu> {
 }
 
 fn stream(gpu: &Gpu, codec: CodecChoice, down: Impairment) -> (RunSummary, u64) {
-    stream_with(gpu, codec, down, false)
+    stream_with(gpu, codec, down, |_| {})
 }
 
-/// `refresh`: the client asks for intra refresh (`--smooth`).
+/// [`stream`] with the client's settings changed by `tweak`.
 fn stream_with(
     gpu: &Gpu,
     codec: CodecChoice,
     down: Impairment,
-    refresh: bool,
+    tweak: impl FnOnce(&mut ClientConfig),
 ) -> (RunSummary, u64) {
     let _serial = exclusive();
     let host = Host::start(HostConfig {
@@ -75,23 +75,20 @@ fn stream_with(
     });
     let stats = host.stats();
     let link = ImpairedLink::start(host.addr(), down, Impairment::none(), 7);
-    let summary = run(
-        ClientConfig {
-            host: link.addr().to_string(),
-            width: 1920,
-            height: 1080,
-            fps: 60,
-            bitrate_kbps: 20_000,
-            duration: Some(Duration::from_secs(4)),
-            render_node: gpu.render_node.clone(),
-            decoder: gpu.decoder,
-            codec,
-            refresh,
-            ..ClientConfig::default()
-        },
-        Arc::new(AtomicBool::new(false)),
-    )
-    .expect("client failed");
+    let mut cfg = ClientConfig {
+        host: link.addr().to_string(),
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        bitrate_kbps: 20_000,
+        duration: Some(Duration::from_secs(4)),
+        render_node: gpu.render_node.clone(),
+        decoder: gpu.decoder,
+        codec,
+        ..ClientConfig::default()
+    };
+    tweak(&mut cfg);
+    let summary = run(cfg, Arc::new(AtomicBool::new(false))).expect("client failed");
     drop(link);
     host.stop();
     (summary, HostStats::get(&stats.send_overflows))
@@ -237,7 +234,7 @@ fn intra_refresh_rides_out_a_blackout() {
         blackout: Some((Duration::from_secs(1), Duration::from_millis(300))),
         ..Impairment::none()
     };
-    let (s, _) = stream_with(&gpu, CodecChoice::H264, down(), true);
+    let (s, _) = stream_with(&gpu, CodecChoice::H264, down(), |c| c.refresh = true);
     report(
         &format!(
             "H.264 ({}) 1080p60, Intra-Refresh, 300 ms Ausfall",
@@ -257,6 +254,49 @@ fn intra_refresh_rides_out_a_blackout() {
     assert!(s.frames_presented >= 4 * 60 * 6 / 10, "{s:?}");
 
     // The same gap without refresh: the frames after it wait.
-    let (k, _) = stream_with(&gpu, CodecChoice::H264, down(), false);
+    let (k, _) = stream_with(&gpu, CodecChoice::H264, down(), |_| {});
     assert!(k.frames_awaiting_keyframe > 0, "{k:?}");
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn vulkan_video_decodes_end_to_end() {
+    let Some(gpu) = gpu() else { return };
+    for codec in [CodecChoice::H264, CodecChoice::Hevc] {
+        let (s, overflows) = stream_with(&gpu, codec, Impairment::none(), |c| {
+            c.decoder = DecoderChoice::Vulkan;
+        });
+        report(
+            &format!("{codec:?} ({} → Vulkan Video) 1080p60, Loopback", gpu.name),
+            &s,
+        );
+        assert_eq!(s.decode_errors, 0, "{s:?}");
+        assert_eq!(s.receiver.packets_lost, 0, "{s:?}");
+        assert!(u64::from(s.receiver.frames_dropped) <= overflows, "{s:?}");
+        assert!(s.frames_presented >= 4 * 60 * 8 / 10, "{s:?}");
+        assert!(s.total.p95 < 50_000, "{:?}", s.total);
+    }
+
+    // Losses: a gap the decoder has to wait out (keyframe), and one it
+    // decodes across (intra refresh, NVENC only).
+    let down = || Impairment {
+        blackout: Some((Duration::from_secs(1), Duration::from_millis(300))),
+        ..Impairment::none()
+    };
+    let (s, _) = stream_with(&gpu, CodecChoice::H264, down(), |c| {
+        c.decoder = DecoderChoice::Vulkan;
+    });
+    assert!(s.receiver.frames_dropped > 0, "{s:?}");
+    assert!(s.keyframes_decoded >= 2, "{s:?}");
+    assert_eq!(s.decode_errors, 0, "{s:?}");
+    assert!(s.frames_presented >= 4 * 60 * 6 / 10, "{s:?}");
+    if matches!(gpu.encoder, EncoderKind::Nvenc { .. }) {
+        let (s, _) = stream_with(&gpu, CodecChoice::H264, down(), |c| {
+            c.decoder = DecoderChoice::Vulkan;
+            c.refresh = true;
+        });
+        assert_eq!(s.frames_awaiting_keyframe, 0, "{s:?}");
+        assert_eq!(s.decode_errors, 0, "{s:?}");
+        assert!(s.frames_presented >= 4 * 60 * 6 / 10, "{s:?}");
+    }
 }

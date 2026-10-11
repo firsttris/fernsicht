@@ -344,7 +344,7 @@ impl WindowPresenter {
         let indices = [index as u32];
         // SAFETY: the image was acquired and rendered above.
         let presented = unsafe {
-            let _queue = gpu.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let _queue = gpu.queue_lock.lock();
             swapchain_fn.queue_present(
                 gpu.queue,
                 &vk::PresentInfoKHR::default()
@@ -365,6 +365,10 @@ impl WindowPresenter {
 impl Presenter for WindowPresenter {
     fn wants(&self) -> Option<PictureKind> {
         Some(self.wants)
+    }
+
+    fn gpu(&self) -> Option<std::sync::Arc<fernsicht_gpu::Gpu>> {
+        Some(self.renderer.gpu().clone())
     }
 
     fn present(

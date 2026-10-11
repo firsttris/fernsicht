@@ -34,7 +34,7 @@ legt sie an):
 
 ```sh
 pnpm install && pnpm --filter @fernsicht/client-ui build
-cargo build --release -p fernsicht-client --features vaapi,window
+cargo build --release -p fernsicht-client --features vaapi,vulkan,window
 cd apps/desktop && cargo build --release
 FERNSICHT_CLIENT=../../target/release/fernsicht-client ./target/release/fernsicht
 ```

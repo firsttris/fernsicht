@@ -53,6 +53,13 @@ pub trait Presenter {
 
     /// The latency overlay, about once per second.
     fn overlay(&mut self, _lines: &[String]) {}
+
+    /// The Vulkan device it draws with, for a decoder whose pictures it
+    /// can then sample where they were decoded.
+    #[cfg(feature = "vulkan")]
+    fn gpu(&self) -> Option<Arc<fernsicht_gpu::Gpu>> {
+        None
+    }
 }
 
 /// The picture's size relative to a target of `dst` pixels when `src` is

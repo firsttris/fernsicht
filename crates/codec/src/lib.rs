@@ -10,16 +10,21 @@
 //! - [`nvidia`] (feature `nvidia`): H.264, HEVC and AV1 with NVENC and
 //!   NVDEC via FFmpeg (GTX 1080 and newer); pictures stay on the GPU (screen
 //!   input through Vulkan, decoded pictures exported from CUDA).
+//! - [`vulkan`] (feature `vulkan`): H.264, HEVC and AV1 decode with Vulkan
+//!   Video via FFmpeg, on the presenter's own Vulkan device: any GPU whose
+//!   driver has it, and the pictures are sampled where they were decoded.
 
 #[cfg(feature = "nvidia")]
 mod cuda;
-#[cfg(any(feature = "vaapi", feature = "nvidia"))]
+#[cfg(any(feature = "vaapi", feature = "nvidia", feature = "vulkan"))]
 mod ff;
 #[cfg(feature = "nvidia")]
 pub mod nvidia;
 pub mod synthetic;
 #[cfg(feature = "vaapi")]
 pub mod vaapi;
+#[cfg(feature = "vulkan")]
+pub mod vulkan;
 
 use std::os::fd::BorrowedFd;
 
@@ -111,6 +116,61 @@ pub enum Picture<'a> {
         /// Byte offset and row pitch of the Y and the interleaved UV plane.
         planes: [(u64, u32); 2],
     },
+    /// A Vulkan image on the presenter's own device (FFmpeg's Vulkan
+    /// decoder): multi-planar NV12 (`G8_B8R8_2PLANE_420_UNORM`, created
+    /// with `MUTABLE_FORMAT`, so each plane can be viewed on its own),
+    /// sampled where it was decoded.
+    Vulkan(VkPicture<'a>),
+}
+
+/// A decoded picture in a Vulkan image; see [`Picture::Vulkan`]. Handles
+/// are raw (`ash`'s `from_raw`).
+#[derive(Clone, Copy)]
+pub struct VkPicture<'a> {
+    pub image: u64,
+    /// The image's size; the picture is the top-left `width`×`height`.
+    pub coded: (u32, u32),
+    pub width: u32,
+    pub height: u32,
+    /// Changes when the decoder's images do (a new decoder, a new size):
+    /// views of images of another pool are stale.
+    pub pool: u64,
+    pub sync: &'a dyn VkSync,
+}
+
+impl std::fmt::Debug for VkPicture<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VkPicture")
+            .field("image", &self.image)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How a submission that reads a [`VkPicture`] keeps step with the
+/// decoder: it waits for the image's timeline semaphore at `wait` and
+/// signals it at `wait + 1`.
+pub trait VkSync {
+    /// Locks the picture for one submission; [`VkSync::end`] right after
+    /// the submission unlocks it.
+    fn begin(&self) -> VkAccess;
+    /// The submission is queued (or failed: `submitted` false): record
+    /// the layout it left the image in.
+    fn end(&self, submitted: bool, layout: i32, access: u64);
+}
+
+/// The state of a [`VkPicture`]'s image when a submission begins.
+#[derive(Clone, Copy, Debug)]
+pub struct VkAccess {
+    /// `VkImageLayout`.
+    pub layout: i32,
+    /// `VkAccessFlags` of the last use.
+    pub access: u64,
+    /// The image's timeline semaphore and the value to wait for.
+    pub semaphore: u64,
+    pub wait: u64,
 }
 
 pub trait Decoder: Send {

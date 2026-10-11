@@ -18,6 +18,8 @@ window = ["vulkan", "dep:ash-window", "dep:raw-window-handle", "dep:winit"]
 vaapi = ["fernsicht-codec/vaapi"]
 # GPU tests that feed the renderer from NVDEC (memory exported by CUDA).
 nvidia = ["fernsicht-codec/nvidia"]
+# GPU tests that feed the renderer from FFmpeg's Vulkan decoder.
+vulkan-video = ["fernsicht-codec/vulkan"]
 # TypeScript types of what goes to the app and the web viewer (ts-rs).
 ts = ["dep:ts-rs"]
 

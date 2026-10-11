@@ -1,8 +1,9 @@
 //! NV12 → RGB on the GPU.
 //!
 //! A picture comes either from CPU memory (copied into two plane images
-//! through a staging buffer) or as a DMA-BUF from the decoder, imported
-//! once per decoder surface and sampled in place. Either way the fragment
+//! through a staging buffer), as a DMA-BUF from the decoder, imported
+//! once per decoder surface and sampled in place, or as an image of
+//! FFmpeg's Vulkan decoder on this very device, sampled in place too. Either way the fragment
 //! shader converts BT.709 limited range to RGB while drawing a quad that
 //! keeps the aspect ratio.
 
@@ -10,7 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ash::vk;
-use fernsicht_codec::Picture;
+use ash::vk::Handle;
+use fernsicht_codec::{Picture, VkSync};
 
 use crate::CursorOverlay;
 
@@ -19,6 +21,10 @@ use super::import;
 
 /// The shaders (`shader.wgsl`), compiled by the build script.
 const SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.spv"));
+
+/// Push constants: the quad's scale and offset, and the part of the
+/// picture's image shown (all `vec2<f32>`).
+const PUSH_SIZE: u32 = 24;
 
 /// Imported decoder surfaces kept at most; a decoder cycles through far
 /// fewer, more means surfaces of an old decoder are still cached.
@@ -65,6 +71,13 @@ pub(crate) struct Target {
     pub extent: vk::Extent2D,
     /// Layout the image is left in (present or transfer source).
     pub final_layout: vk::ImageLayout,
+}
+
+/// Plane views of an image of the Vulkan decoder (which owns the image)
+/// and the descriptor set sampling them.
+struct DecodedViews {
+    views: [vk::ImageView; 2],
+    set: vk::DescriptorSet,
 }
 
 /// Y and UV images of one picture and the descriptor set sampling them.
@@ -148,6 +161,12 @@ enum Source {
     /// In the shared buffer: byte offset and row pitch of each plane.
     Shared([(u64, u32); 2]),
     Foreign(u64),
+    /// An image of the Vulkan decoder; the picture is its top-left
+    /// `crop` part.
+    Decoded {
+        image: u64,
+        crop: [f32; 2],
+    },
 }
 
 /// A frame made ready to draw: the work that can fail (staging, imports,
@@ -156,6 +175,8 @@ enum Source {
 /// an acquired image behind.
 pub(crate) struct Prepared<'c> {
     source: Source,
+    /// How the submission keeps step with the decoder ([`Source::Decoded`]).
+    sync: Option<&'c dyn VkSync>,
     size: (u32, u32),
     pipeline: vk::Pipeline,
     /// The pointer, whether its image was staged anew, and its pipeline.
@@ -181,6 +202,9 @@ pub struct Renderer {
     cpu: Option<CpuPlanes>,
     shared: Option<Shared>,
     imported: HashMap<u64, Planes>,
+    /// Views of the Vulkan decoder's images, by image, and their pool.
+    decoded: HashMap<u64, DecodedViews>,
+    decoded_pool: u64,
     offscreen: Option<Offscreen>,
 }
 
@@ -211,6 +235,8 @@ impl Renderer {
                 cpu: None,
                 shared: None,
                 imported: HashMap::new(),
+                decoded: HashMap::new(),
+                decoded_pool: 0,
                 offscreen: None,
                 gpu: gpu.clone(),
             };
@@ -243,7 +269,7 @@ impl Renderer {
                 .map_err(e("descriptor layout"))?;
             let push = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX)
-                .size(16)];
+                .size(PUSH_SIZE)];
             let layouts = [r.set_layout];
             r.pipeline_layout = d
                 .create_pipeline_layout(
@@ -267,18 +293,18 @@ impl Renderer {
             let sizes = [
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLED_IMAGE,
-                    descriptor_count: 2 * (MAX_IMPORTED as u32 + 2),
+                    descriptor_count: 2 * (2 * MAX_IMPORTED as u32 + 2),
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLER,
-                    descriptor_count: MAX_IMPORTED as u32 + 2,
+                    descriptor_count: 2 * MAX_IMPORTED as u32 + 2,
                 },
             ];
             r.pool = d
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
                         .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                        .max_sets(MAX_IMPORTED as u32 + 2)
+                        .max_sets(2 * MAX_IMPORTED as u32 + 2)
                         .pool_sizes(&sizes),
                     None,
                 )
@@ -629,14 +655,30 @@ impl Renderer {
     /// for a target of `format`: everything about a frame that can fail.
     pub(crate) fn prepare<'c>(
         &mut self,
-        picture: Option<&Picture<'_>>,
+        picture: Option<&Picture<'c>>,
         cursor: Option<&'c CursorOverlay>,
         format: vk::Format,
     ) -> Result<Prepared<'c>, RenderError> {
         // The last frame's commands, staging and imports are free again.
         self.settle()?;
+        let mut sync = None;
         let (source, size) = match picture {
             None => (Source::None, (1, 1)),
+            Some(Picture::Vulkan(p)) => {
+                self.decoded_views(p.image, p.pool)?;
+                sync = Some(p.sync);
+                let crop = [
+                    p.width as f32 / p.coded.0.max(1) as f32,
+                    p.height as f32 / p.coded.1.max(1) as f32,
+                ];
+                (
+                    Source::Decoded {
+                        image: p.image,
+                        crop,
+                    },
+                    (p.width, p.height),
+                )
+            }
             Some(Picture::Nv12 {
                 width,
                 height,
@@ -666,7 +708,10 @@ impl Renderer {
         let pipeline = self.pipeline(format, false)?;
         // The pointer only makes sense on a picture.
         let pointer = match (cursor, &source) {
-            (Some(c), Source::Cpu | Source::Shared(_) | Source::Foreign(_)) => {
+            (
+                Some(c),
+                Source::Cpu | Source::Shared(_) | Source::Foreign(_) | Source::Decoded { .. },
+            ) => {
                 let upload = self.stage_cursor(c)?;
                 let pipeline = self.pipeline(format, true)?;
                 Some((c, upload, pipeline))
@@ -675,6 +720,7 @@ impl Renderer {
         };
         Ok(Prepared {
             source,
+            sync,
             size,
             pipeline,
             pointer,
@@ -693,25 +739,68 @@ impl Renderer {
     ) -> Result<(), RenderError> {
         let Prepared {
             source,
+            sync,
             size,
             pipeline,
             pointer,
         } = frame;
-        let planes = match source {
-            Source::None => None,
+        // Locked from here until the submission is queued.
+        let decoded = sync.map(|s| (s, s.begin()));
+        let result = self.record_and_submit(
+            &source,
+            decoded.map(|(_, a)| a),
+            size,
+            pipeline,
+            pointer,
+            target,
+            wait,
+            signal,
+            after,
+        );
+        if let Some((s, _)) = decoded {
+            s.end(
+                result.is_ok(),
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL.as_raw(),
+                u64::from(vk::AccessFlags::SHADER_READ.as_raw()),
+            );
+        }
+        result?;
+        self.in_flight = true;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_and_submit(
+        &self,
+        source: &Source,
+        decoded: Option<fernsicht_codec::VkAccess>,
+        size: (u32, u32),
+        pipeline: vk::Pipeline,
+        pointer: Option<(&CursorOverlay, bool, vk::Pipeline)>,
+        target: &Target,
+        wait: Option<vk::Semaphore>,
+        signal: Option<vk::Semaphore>,
+        after: impl FnOnce(&ash::Device, vk::CommandBuffer),
+    ) -> Result<(), RenderError> {
+        let planes = match *source {
+            Source::None | Source::Decoded { .. } => None,
             Source::Cpu | Source::Shared(_) => self.cpu.as_ref().map(|c| &c.planes),
             Source::Foreign(key) => self.imported.get(&key),
         };
+        let (set, crop) = match *source {
+            Source::Decoded { image, crop } => (self.decoded.get(&image).map(|v| v.set), crop),
+            _ => (planes.map(|p| p.set), [1.0, 1.0]),
+        };
         // Where a copied picture comes from: the buffer, each plane's
         // offset and row pitch, and whether another API hands it over.
-        let copy_from = match source {
+        let copy_from = match *source {
             Source::Cpu => self.cpu.as_ref().and_then(|c| {
                 let w = c.width;
                 let packed = [(0, w), (u64::from(w) * u64::from(c.height), w)];
                 c.staging.as_ref().map(|s| (s.buffer, packed, false))
             }),
             Source::Shared(layout) => self.shared.as_ref().map(|s| (s.buffer, layout, true)),
-            Source::None | Source::Foreign(_) => None,
+            Source::None | Source::Foreign(_) | Source::Decoded { .. } => None,
         };
         let d = &self.gpu.device;
         let cmd = self.cmd;
@@ -743,7 +832,29 @@ impl Renderer {
             )
             .map_err(other("begin command buffer"))?;
 
-            match (&source, planes, copy_from) {
+            if let (Source::Decoded { image, .. }, Some(a)) = (source, decoded) {
+                // After the decoder (its semaphore is waited for), into
+                // the layout for sampling; all planes at once.
+                let take = vk::ImageMemoryBarrier::default()
+                    .image(vk::Image::from_raw(*image))
+                    .old_layout(vk::ImageLayout::from_raw(a.layout))
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::from_raw(a.access as u32))
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .subresource_range(color);
+                d.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[take],
+                );
+            }
+            match (source, planes, copy_from) {
                 (_, Some(p), Some((from, layout, external))) => {
                     let (w, h) = size;
                     // Memory another API wrote: taken over before the copy,
@@ -956,7 +1067,7 @@ impl Renderer {
                     .layer_count(1)
                     .color_attachments(&attachments),
             );
-            if let Some(p) = planes {
+            if let Some(set) = set {
                 d.cmd_set_viewport(
                     cmd,
                     0,
@@ -976,11 +1087,11 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     self.pipeline_layout,
                     0,
-                    &[p.set],
+                    &[set],
                     &[],
                 );
                 let [sx, sy] = letterbox(size, (target.extent.width, target.extent.height));
-                let push: Vec<u8> = [sx, sy, 0.0f32, 0.0]
+                let push: Vec<u8> = [sx, sy, 0.0f32, 0.0, crop[0], crop[1]]
                     .iter()
                     .flat_map(|v| v.to_ne_bytes())
                     .collect();
@@ -1009,7 +1120,11 @@ impl Renderer {
                         &[tex.set],
                         &[],
                     );
-                    let push: Vec<u8> = rect.iter().flat_map(|v| v.to_ne_bytes()).collect();
+                    let push: Vec<u8> = rect
+                        .iter()
+                        .chain(&[1.0, 1.0])
+                        .flat_map(|v| v.to_ne_bytes())
+                        .collect();
                     d.cmd_push_constants(
                         cmd,
                         self.pipeline_layout,
@@ -1047,7 +1162,7 @@ impl Renderer {
                     dst_access,
                 )],
             );
-            if let (Source::Foreign(_), Some(p)) = (&source, planes) {
+            if let (Source::Foreign(_), Some(p)) = (source, planes) {
                 // Hand the images back to the decoder.
                 let release = p.images.map(|i| {
                     barrier(
@@ -1075,11 +1190,95 @@ impl Renderer {
                 .map_err(other("end command buffer"))?;
 
             // Not waited for here: a window presents first (see settle).
-            fernsicht_gpu::submit(&self.gpu, &[cmd], wait, signal, self.fence)
+            let timeline = decoded.map(|a| fernsicht_gpu::Timeline {
+                semaphore: vk::Semaphore::from_raw(a.semaphore),
+                wait: a.wait,
+                signal: a.wait + 1,
+            });
+            fernsicht_gpu::submit_timeline(&self.gpu, &[cmd], wait, signal, timeline, self.fence)
                 .map_err(RenderError::Other)?;
         }
-        self.in_flight = true;
         Ok(())
+    }
+
+    /// Views of an image of the Vulkan decoder, made once per image of a
+    /// pool.
+    fn decoded_views(&mut self, image: u64, pool: u64) -> Result<(), RenderError> {
+        if pool != self.decoded_pool || self.decoded.len() >= MAX_IMPORTED {
+            self.forget_decoded();
+            self.decoded_pool = pool;
+        }
+        if self.decoded.contains_key(&image) {
+            return Ok(());
+        }
+        let d = &self.gpu.device;
+        let view = |format, aspect| {
+            // Only sampled: the image has usages the plane formats lack.
+            let mut usage =
+                vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::SAMPLED);
+            // SAFETY: the decoder's image, alive while its pool is.
+            unsafe {
+                d.create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(vk::Image::from_raw(image))
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(format)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::default()
+                                .aspect_mask(aspect)
+                                .level_count(1)
+                                .layer_count(1),
+                        )
+                        .push_next(&mut usage),
+                    None,
+                )
+            }
+            .map_err(|e| RenderError::Import(format!("view of a decoded plane: {e}")))
+        };
+        let y = view(vk::Format::R8_UNORM, vk::ImageAspectFlags::PLANE_0)?;
+        let uv = match view(vk::Format::R8G8_UNORM, vk::ImageAspectFlags::PLANE_1) {
+            Ok(uv) => uv,
+            Err(e) => {
+                // SAFETY: just made, unused.
+                unsafe { d.destroy_image_view(y, None) };
+                return Err(e);
+            }
+        };
+        let set = match self.descriptor_set([y, uv]) {
+            Ok(set) => set,
+            Err(e) => {
+                // SAFETY: as above.
+                unsafe {
+                    d.destroy_image_view(y, None);
+                    d.destroy_image_view(uv, None);
+                }
+                return Err(e);
+            }
+        };
+        self.decoded.insert(
+            image,
+            DecodedViews {
+                views: [y, uv],
+                set,
+            },
+        );
+        Ok(())
+    }
+
+    /// Drops the views of the Vulkan decoder's images (their pool is gone
+    /// or about to be).
+    fn forget_decoded(&mut self) {
+        let d = &self.gpu.device;
+        for (_, v) in self.decoded.drain() {
+            // SAFETY: every frame waits for its fence before the next is
+            // prepared, so the GPU is done with these.
+            unsafe {
+                let _ = d.free_descriptor_sets(self.pool, &[v.set]);
+                for view in v.views {
+                    d.destroy_image_view(view, None);
+                }
+            }
+        }
     }
 
     /// Renders `picture` into a `width`×`height` RGBA image and returns its
@@ -1270,6 +1469,7 @@ impl Renderer {
         for (_, p) in std::mem::take(&mut self.imported) {
             self.destroy_planes(p);
         }
+        self.forget_decoded();
         self.forget_shared();
     }
 }

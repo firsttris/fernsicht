@@ -1,5 +1,8 @@
 //! FFmpeg helpers shared by the hardware backends.
 
+// The Vulkan backend only decodes so far.
+#![cfg_attr(not(any(feature = "vaapi", feature = "nvidia")), allow(dead_code))]
+
 use std::ffi::{CStr, c_int};
 use std::ptr;
 
@@ -174,6 +177,8 @@ pub(crate) enum Backend {
     Vaapi,
     #[cfg_attr(not(feature = "nvidia"), allow(dead_code))]
     Nvenc,
+    #[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
+    Vulkan,
 }
 
 pub(crate) fn names(
@@ -187,6 +192,7 @@ pub(crate) fn names(
             encoder: match b {
                 Backend::Vaapi => c"h264_vaapi",
                 Backend::Nvenc => c"h264_nvenc",
+                Backend::Vulkan => c"h264_vulkan",
             },
             profile: Some(c"high"),
             label: "H.264",
@@ -196,6 +202,7 @@ pub(crate) fn names(
             encoder: match b {
                 Backend::Vaapi => c"hevc_vaapi",
                 Backend::Nvenc => c"hevc_nvenc",
+                Backend::Vulkan => c"hevc_vulkan",
             },
             profile: Some(c"main"),
             label: "HEVC",
@@ -205,10 +212,11 @@ pub(crate) fn names(
             encoder: match b {
                 Backend::Vaapi => c"av1_vaapi",
                 Backend::Nvenc => c"av1_nvenc",
+                Backend::Vulkan => c"av1_vulkan",
             },
             profile: match b {
                 Backend::Vaapi => Some(c"main"),
-                Backend::Nvenc => None,
+                Backend::Nvenc | Backend::Vulkan => None,
             },
             label: "AV1",
         },

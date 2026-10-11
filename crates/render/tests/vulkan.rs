@@ -569,3 +569,129 @@ mod nvidia {
         );
     }
 }
+
+#[cfg(all(feature = "nvidia", feature = "vulkan-video"))]
+mod vulkan_video {
+    use std::time::Instant;
+
+    use fernsicht_capture::{Frame, PixelFormat};
+    use fernsicht_codec::nvidia::{NvencConfig, NvencEncoder};
+    use fernsicht_codec::vulkan::{VulkanDecoder, decodes};
+    use fernsicht_codec::{DecodedFrame, Decoder, EncodedFrame, Encoder, PictureKind};
+    use fernsicht_proto::Codec;
+
+    use super::*;
+
+    fn median(mut v: Vec<f64>) -> f64 {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    }
+
+    /// NVENC makes the stream; the Vulkan decoder decodes it on the
+    /// renderer's device, which draws the decoded image where it is.
+    fn decode_and_show(codec: Codec) {
+        if std::env::var("FERNSICHT_GPU").as_deref() != Ok("nvidia") {
+            eprintln!("skipped: set FERNSICHT_GPU=nvidia");
+            return;
+        }
+        let Some(mut r) = renderer() else { return };
+        if !decodes(r.gpu(), codec) {
+            eprintln!(
+                "skipped: {} has no Vulkan decoder for {codec:?}",
+                r.gpu().name()
+            );
+            return;
+        }
+        let (w, h) = (1920u32, 1080u32);
+        let mut enc = NvencEncoder::new(&NvencConfig {
+            gpu: 0,
+            codec,
+            width: w,
+            height: h,
+            fps: 60,
+            bitrate_kbps: 20_000,
+            intra_refresh: false,
+        })
+        .unwrap();
+        let mut dec = VulkanDecoder::for_codec(r.gpu().clone(), codec).unwrap();
+        let mut frame = Frame::new(w, h, PixelFormat::Nv12);
+        frame.data = stripes_nv12(w as usize, h as usize);
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        let (mut in_place_ms, mut download_ms) = (Vec::new(), Vec::new());
+        let (mut in_place, mut via_cpu) = (Vec::new(), Vec::new());
+        for i in 0..60u64 {
+            frame.seq = i;
+            enc.encode(&frame, &mut out).unwrap();
+            dec.decode(&out.data, &mut d).unwrap();
+            assert_eq!((d.width, d.height), (w, h));
+            let pic = dec.picture(PictureKind::Gpu).unwrap().unwrap();
+            assert!(
+                matches!(pic, Picture::Vulkan(_)),
+                "the Vulkan decoder handed out {pic:?}"
+            );
+            // Waits for the decoder: both ways below start from a
+            // decoded picture.
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
+
+            let t = Instant::now();
+            let pic = dec.picture(PictureKind::Gpu).unwrap().unwrap();
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
+            in_place_ms.push(t.elapsed().as_secs_f64() * 1e3);
+            if i == 59 {
+                in_place = r.render_to_rgba(Some(&pic), None, w, h).unwrap();
+            }
+
+            let t = Instant::now();
+            let pic = dec.picture(PictureKind::Nv12).unwrap().unwrap();
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
+            download_ms.push(t.elapsed().as_secs_f64() * 1e3);
+            if i == 59 {
+                via_cpu = r.render_to_rgba(Some(&pic), None, w, h).unwrap();
+            }
+        }
+        assert!(dec.last_frame_is_bt709_limited());
+        // Both ways show the stripes (no padding rows: the picture is
+        // cropped from the larger image), and the same picture.
+        assert_stripes(&in_place, w as usize, h as usize, 6);
+        assert_stripes(&via_cpu, w as usize, h as usize, 6);
+        let differ = in_place
+            .iter()
+            .zip(&via_cpu)
+            .filter(|(a, b)| (i32::from(**a) - i32::from(**b)).abs() > 2)
+            .count();
+        assert!(
+            differ < via_cpu.len() / 1000,
+            "{differ} bytes differ between the two paths"
+        );
+
+        let summary = format!(
+            "### Vulkan-Video-Decoder ({codec:?}), 1080p ({})\n\
+             | Weg | Median: Bild holen, umrechnen, zeichnen |\n|---|---|\n\
+             | Bild des Decoders, an Ort und Stelle | {:.2} ms |\n\
+             | Download über die CPU | {:.2} ms |\n",
+            r.gpu().name(),
+            median(in_place_ms.clone()),
+            median(download_ms.clone()),
+        );
+        println!("{summary}");
+        if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(f, "{summary}").unwrap();
+        }
+        assert!(
+            median(in_place_ms) < median(download_ms),
+            "sampling in place should beat the download"
+        );
+    }
+
+    #[test]
+    fn vulkan_decoded_h264_is_sampled_in_place() {
+        decode_and_show(Codec::H264);
+    }
+
+    #[test]
+    fn vulkan_decoded_hevc_is_sampled_in_place() {
+        decode_and_show(Codec::Hevc);
+    }
+}

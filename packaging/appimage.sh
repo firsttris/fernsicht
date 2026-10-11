@@ -14,7 +14,7 @@ fi
 
 pnpm install --frozen-lockfile
 cargo build --release --locked -p fernsicht-host-agent --features vaapi,kms,nvidia
-cargo build --release --locked -p fernsicht-client --features vaapi,nvidia,window
+cargo build --release --locked -p fernsicht-client --features vaapi,nvidia,vulkan,window
 
 # Tauri takes extra programs as "sidecars", named with the target triple.
 triple=$(rustc -vV | sed -n 's/^host: //p')

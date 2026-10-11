@@ -24,9 +24,13 @@ use crate::network::{OVERLAY_INTERVAL, ReceivedFrame};
 
 /// What the present thread needs to create a hardware decoder.
 pub(crate) struct Hw {
-    #[cfg_attr(not(feature = "vaapi"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "vaapi", feature = "vulkan")), allow(dead_code))]
     pub(crate) render_node: String,
     pub(crate) decoder: DecoderChoice,
+    /// A Vulkan device of our own, for Vulkan Video without a window
+    /// (and to ask what it decodes); made when first needed.
+    #[cfg(feature = "vulkan")]
+    own_gpu: std::sync::OnceLock<Option<std::sync::Arc<fernsicht_gpu::Gpu>>>,
 }
 
 impl Hw {
@@ -35,12 +39,36 @@ impl Hw {
         Self {
             render_node: cfg.render_node.clone(),
             decoder: cfg.decoder,
+            #[cfg(feature = "vulkan")]
+            own_gpu: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The GPU the window would take (the VAAPI decoder's), with Vulkan.
+    #[cfg(feature = "vulkan")]
+    fn own_gpu(&self) -> Option<std::sync::Arc<fernsicht_gpu::Gpu>> {
+        self.own_gpu
+            .get_or_init(|| {
+                let prefer = fernsicht_gpu::Prefer::render_node(&self.render_node);
+                fernsicht_gpu::Gpu::preferring(prefer)
+                    .inspect_err(|e| log::info!("no Vulkan for decoding: {e}"))
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+            .clone()
     }
 
     /// Whether one of the allowed hardware decoders reports `codec`.
     #[allow(unused_variables)]
     pub(crate) fn decodes(&self, codec: Codec) -> bool {
+        #[cfg(feature = "vulkan")]
+        if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Vulkan)
+            && self
+                .own_gpu()
+                .is_some_and(|g| fernsicht_codec::vulkan::decodes(&g, codec))
+        {
+            return true;
+        }
         #[cfg(feature = "vaapi")]
         if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Vaapi)
             && fernsicht_codec::vaapi::decodes(&self.render_node, codec)
@@ -57,17 +85,48 @@ impl Hw {
     }
 }
 
-fn make_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
+fn make_decoder(
+    codec: Codec,
+    hw: &Hw,
+    presenter: &dyn Presenter,
+) -> Result<Box<dyn Decoder>, CodecError> {
     match codec {
         Codec::Synthetic => Ok(Box::new(SyntheticDecoder::default())),
-        Codec::H264 | Codec::Hevc | Codec::Av1 => make_hw_decoder(codec, hw),
+        Codec::H264 | Codec::Hevc | Codec::Av1 => make_hw_decoder(codec, hw, presenter),
     }
 }
 
 #[allow(unused_variables)]
-fn make_hw_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError> {
+fn make_hw_decoder(
+    codec: Codec,
+    hw: &Hw,
+    presenter: &dyn Presenter,
+) -> Result<Box<dyn Decoder>, CodecError> {
     let label = overlay::codec_label(codec);
     let mut errors = Vec::new();
+    if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Vulkan) {
+        // On the window's device, so its pictures are drawn in place.
+        #[cfg(feature = "vulkan")]
+        match presenter.gpu().or_else(|| hw.own_gpu()) {
+            Some(gpu) if fernsicht_codec::vulkan::decodes(&gpu, codec) => {
+                let name = gpu.name().to_string();
+                match fernsicht_codec::vulkan::VulkanDecoder::for_codec(gpu, codec) {
+                    Ok(d) => {
+                        log::info!("decoding {label} with Vulkan Video ({name})");
+                        return Ok(Box::new(d));
+                    }
+                    Err(e) => errors.push(format!("Vulkan Video: {e}")),
+                }
+            }
+            Some(gpu) => errors.push(format!(
+                "Vulkan Video: {} does not decode {label}",
+                gpu.name()
+            )),
+            None => errors.push("Vulkan Video: no Vulkan device".to_string()),
+        }
+        #[cfg(not(feature = "vulkan"))]
+        errors.push("Vulkan Video: not in this build (cargo feature \"vulkan\")".to_string());
+    }
     if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Vaapi) {
         #[cfg(feature = "vaapi")]
         if !fernsicht_codec::vaapi::decodes(&hw.render_node, codec) {
@@ -161,7 +220,7 @@ pub(crate) fn present_loop(
 
     while let Ok(rf) = queue.recv() {
         if decoder.as_ref().is_none_or(|(codec, _)| *codec != rf.codec) {
-            decoder = make_decoder(rf.codec, hw)
+            decoder = make_decoder(rf.codec, hw, &*presenter)
                 .inspect_err(|e| {
                     log::error!("no decoder for {}: {e}", overlay::codec_label(rf.codec))
                 })

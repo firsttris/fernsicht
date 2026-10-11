@@ -12,6 +12,26 @@ const DMABUF_EXTENSIONS: [&CStr; 4] = [
     ash::ext::queue_family_foreign::NAME,
 ];
 
+/// Device extensions for video work on the GPU (FFmpeg's Vulkan codecs),
+/// each enabled where the driver has it: the queues, then the codecs.
+const VIDEO_EXTENSIONS: [&CStr; 3] = [
+    c"VK_KHR_video_queue",
+    c"VK_KHR_video_maintenance1",
+    c"VK_KHR_video_maintenance2",
+];
+const DECODE_EXTENSIONS: [&CStr; 4] = [
+    c"VK_KHR_video_decode_queue",
+    c"VK_KHR_video_decode_h264",
+    c"VK_KHR_video_decode_h265",
+    c"VK_KHR_video_decode_av1",
+];
+const ENCODE_EXTENSIONS: [&CStr; 4] = [
+    c"VK_KHR_video_encode_queue",
+    c"VK_KHR_video_encode_h264",
+    c"VK_KHR_video_encode_h265",
+    c"VK_KHR_video_encode_av1",
+];
+
 /// How often device creation is tried before giving up.
 const DEVICE_ATTEMPTS: u64 = 4;
 
@@ -28,16 +48,78 @@ fn device_error_is_transient(e: vk::Result) -> bool {
 /// `llvmpipe` for the software rasterizer.
 pub const DEVICE_ENV: &str = "FERNSICHT_VULKAN_DEVICE";
 
+/// A queue's lock: Vulkan requires submissions to one queue to be
+/// serialized. Unlike a mutex guard it can also be taken and given back
+/// by separate calls, as FFmpeg's `lock_queue`/`unlock_queue` do.
+#[derive(Default)]
+pub struct QueueLock {
+    held: std::sync::Mutex<bool>,
+    freed: std::sync::Condvar,
+}
+
+/// Holds a [`QueueLock`] until dropped.
+pub struct QueueGuard<'a>(&'a QueueLock);
+
+impl QueueLock {
+    pub fn lock(&self) -> QueueGuard<'_> {
+        self.acquire();
+        QueueGuard(self)
+    }
+
+    /// Takes the lock; [`Self::release`] gives it back.
+    pub fn acquire(&self) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        while *held {
+            held = self.freed.wait(held).unwrap_or_else(|e| e.into_inner());
+        }
+        *held = true;
+    }
+
+    /// Gives back what [`Self::acquire`] took.
+    pub fn release(&self) {
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.freed.notify_one();
+    }
+}
+
+impl Drop for QueueGuard<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// A queue family for video work: its index, the codec operations it
+/// does, and the lock of its first queue (the one created).
+pub struct VideoQueue {
+    pub family: u32,
+    pub operations: vk::VideoCodecOperationFlagsKHR,
+    pub lock: QueueLock,
+}
+
+/// Features enabled beyond Vulkan 1.0 (FFmpeg has to be told).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Features {
+    pub sampler_ycbcr_conversion: bool,
+    pub timeline_semaphore: bool,
+    pub synchronization2: bool,
+}
+
 pub struct Gpu {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
     pub physical: vk::PhysicalDevice,
     pub device: ash::Device,
     pub queue: vk::Queue,
-    /// Vulkan requires submissions to one queue to be serialized; several
-    /// renderers may share a device.
-    pub queue_lock: std::sync::Mutex<()>,
+    /// Several renderers, and FFmpeg, may share the queue.
+    pub queue_lock: QueueLock,
     pub queue_family: u32,
+    /// Video decode and encode queues, where the GPU has them.
+    pub decode: Option<VideoQueue>,
+    pub encode: Option<VideoQueue>,
+    /// What the instance and device were created with.
+    pub instance_extensions: Vec<std::ffi::CString>,
+    pub device_extensions: Vec<&'static CStr>,
+    pub features: Features,
     memory: vk::PhysicalDeviceMemoryProperties,
     /// Present when the DMA-BUF import extensions are enabled.
     pub memory_fd: Option<ash::khr::external_memory_fd::Device>,
@@ -149,18 +231,59 @@ pub unsafe fn submit(
     signal: Option<vk::Semaphore>,
     fence: vk::Fence,
 ) -> Result<(), String> {
-    let waits: Vec<vk::Semaphore> = wait.into_iter().collect();
-    let stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; waits.len()];
-    let signals: Vec<vk::Semaphore> = signal.into_iter().collect();
-    let submit = vk::SubmitInfo::default()
+    // SAFETY: passed on.
+    unsafe { submit_timeline(gpu, cmds, wait, signal, None, fence) }
+}
+
+/// A timeline semaphore a submission waits for (before anything) and
+/// signals.
+#[derive(Clone, Copy, Debug)]
+pub struct Timeline {
+    pub semaphore: vk::Semaphore,
+    pub wait: u64,
+    pub signal: u64,
+}
+
+/// [`submit`], also waiting for and signalling `timeline`.
+///
+/// # Safety
+/// As for [`submit`]; the timeline semaphore belongs to the device too.
+pub unsafe fn submit_timeline(
+    gpu: &Gpu,
+    cmds: &[vk::CommandBuffer],
+    wait: Option<vk::Semaphore>,
+    signal: Option<vk::Semaphore>,
+    timeline: Option<Timeline>,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    let mut waits: Vec<vk::Semaphore> = wait.into_iter().collect();
+    let mut stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; waits.len()];
+    let mut signals: Vec<vk::Semaphore> = signal.into_iter().collect();
+    // Values for binary semaphores are ignored.
+    let mut wait_values = vec![0; waits.len()];
+    let mut signal_values = vec![0; signals.len()];
+    if let Some(t) = timeline {
+        waits.push(t.semaphore);
+        stages.push(vk::PipelineStageFlags::ALL_COMMANDS);
+        wait_values.push(t.wait);
+        signals.push(t.semaphore);
+        signal_values.push(t.signal);
+    }
+    let mut values = vk::TimelineSemaphoreSubmitInfo::default()
+        .wait_semaphore_values(&wait_values)
+        .signal_semaphore_values(&signal_values);
+    let mut submit = vk::SubmitInfo::default()
         .command_buffers(cmds)
         .wait_semaphores(&waits)
         .wait_dst_stage_mask(&stages)
         .signal_semaphores(&signals);
+    if timeline.is_some() {
+        submit = submit.push_next(&mut values);
+    }
     // SAFETY: as the caller promises; submissions are serialized by the
     // queue lock.
     unsafe {
-        let _queue = gpu.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _queue = gpu.queue_lock.lock();
         gpu.device
             .queue_submit(gpu.queue, &[submit], fence)
             .map_err(|e| format!("submit: {e}"))
@@ -206,6 +329,66 @@ pub unsafe fn submit_and_wait(
 ) -> Result<(), String> {
     // SAFETY: passed on.
     unsafe { submit_with(gpu, cmds, None, None, fence) }
+}
+
+/// The queue families for video decode and encode with the codec
+/// operations each does; the first of each kind.
+type VideoFamily = (u32, vk::VideoCodecOperationFlagsKHR);
+
+/// # Safety
+/// `physical` belongs to `instance`.
+unsafe fn video_families(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+) -> (Option<VideoFamily>, Option<VideoFamily>) {
+    // SAFETY: as the caller promises; the property structs outlive the
+    // query.
+    unsafe {
+        let n = instance.get_physical_device_queue_family_properties2_len(physical);
+        let mut video = vec![vk::QueueFamilyVideoPropertiesKHR::default(); n];
+        let mut props: Vec<vk::QueueFamilyProperties2> = video
+            .iter_mut()
+            .map(|v| vk::QueueFamilyProperties2::default().push_next(v))
+            .collect();
+        instance.get_physical_device_queue_family_properties2(physical, &mut props);
+        let flags: Vec<vk::QueueFlags> = props
+            .iter()
+            .map(|p| p.queue_family_properties.queue_flags)
+            .collect();
+        drop(props);
+        let find = |kind: vk::QueueFlags| {
+            flags
+                .iter()
+                .zip(&video)
+                .position(|(f, v)| f.contains(kind) && !v.video_codec_operations.is_empty())
+                .map(|i| (i as u32, video[i].video_codec_operations))
+        };
+        (
+            find(vk::QueueFlags::VIDEO_DECODE_KHR),
+            find(vk::QueueFlags::VIDEO_ENCODE_KHR),
+        )
+    }
+}
+
+/// Which of the features we use the device has.
+///
+/// # Safety
+/// `physical` belongs to `instance`.
+unsafe fn supported_features(instance: &ash::Instance, physical: vk::PhysicalDevice) -> Features {
+    let mut v11 = vk::PhysicalDeviceVulkan11Features::default();
+    let mut v12 = vk::PhysicalDeviceVulkan12Features::default();
+    let mut v13 = vk::PhysicalDeviceVulkan13Features::default();
+    let mut all = vk::PhysicalDeviceFeatures2::default()
+        .push_next(&mut v11)
+        .push_next(&mut v12)
+        .push_next(&mut v13);
+    // SAFETY: as the caller promises.
+    unsafe { instance.get_physical_device_features2(physical, &mut all) };
+    Features {
+        sampler_ycbcr_conversion: v11.sampler_ycbcr_conversion == vk::TRUE,
+        timeline_semaphore: v12.timeline_semaphore == vk::TRUE,
+        synchronization2: v13.synchronization2 == vk::TRUE,
+    }
 }
 
 /// Device kinds from best to worst for video.
@@ -255,7 +438,11 @@ impl Gpu {
                 )
                 .map_err(|e| format!("create Vulkan instance: {e}"))?;
             log::debug!("instance created");
-            match Self::with_instance(entry, instance.clone(), present, prefer) {
+            let names = instance_extensions
+                .iter()
+                .map(|&n| CStr::from_ptr(n).to_owned())
+                .collect();
+            match Self::with_instance(entry, instance.clone(), names, present, prefer) {
                 Ok(gpu) => Ok(gpu),
                 Err(e) => {
                     instance.destroy_instance(None);
@@ -268,6 +455,7 @@ impl Gpu {
     unsafe fn with_instance(
         entry: ash::Entry,
         instance: ash::Instance,
+        instance_extensions: Vec<std::ffi::CString>,
         present: bool,
         prefer: Prefer,
     ) -> Result<Self, String> {
@@ -362,11 +550,53 @@ impl Gpu {
                 extensions.push(ash::khr::swapchain::NAME.as_ptr());
             }
 
+            // Video queues, and what the codecs need besides.
+            let (decode, encode) = video_families(&instance, physical);
+            let decode = decode.filter(|_| has(DECODE_EXTENSIONS[0]) && has(VIDEO_EXTENSIONS[0]));
+            let encode = encode.filter(|_| has(ENCODE_EXTENSIONS[0]) && has(VIDEO_EXTENSIONS[0]));
+            let mut video: Vec<&'static CStr> = Vec::new();
+            if decode.is_some() || encode.is_some() {
+                video.extend(VIDEO_EXTENSIONS.iter().filter(|n| has(n)));
+            }
+            if decode.is_some() {
+                video.extend(DECODE_EXTENSIONS.iter().filter(|n| has(n)));
+            }
+            if encode.is_some() {
+                video.extend(ENCODE_EXTENSIONS.iter().filter(|n| has(n)));
+            }
+            extensions.extend(video.iter().map(|n| n.as_ptr()));
+            let mut device_extensions: Vec<&'static CStr> = Vec::new();
+            if dmabuf {
+                device_extensions.extend(DMABUF_EXTENSIONS);
+            }
+            if present {
+                device_extensions.push(ash::khr::swapchain::NAME);
+            }
+            device_extensions.extend(&video);
+
+            let features = supported_features(&instance, physical);
             let priorities = [1.0];
-            let queues = [vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(queue_family)
-                .queue_priorities(&priorities)];
-            let mut v13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
+            let mut families = vec![queue_family];
+            for (family, _) in decode.iter().chain(&encode) {
+                if !families.contains(family) {
+                    families.push(*family);
+                }
+            }
+            let queues: Vec<vk::DeviceQueueCreateInfo> = families
+                .into_iter()
+                .map(|family| {
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(family)
+                        .queue_priorities(&priorities)
+                })
+                .collect();
+            let mut v11 = vk::PhysicalDeviceVulkan11Features::default()
+                .sampler_ycbcr_conversion(features.sampler_ycbcr_conversion);
+            let mut v12 = vk::PhysicalDeviceVulkan12Features::default()
+                .timeline_semaphore(features.timeline_semaphore);
+            let mut v13 = vk::PhysicalDeviceVulkan13Features::default()
+                .dynamic_rendering(true)
+                .synchronization2(features.synchronization2);
             // The NVIDIA driver now and then refuses a device right after
             // another one was released (seen in CI: about 1 in 25 runs).
             // It works a moment later, so try a few times.
@@ -377,6 +607,8 @@ impl Gpu {
                     &vk::DeviceCreateInfo::default()
                         .queue_create_infos(&queues)
                         .enabled_extension_names(&extensions)
+                        .push_next(&mut v11)
+                        .push_next(&mut v12)
                         .push_next(&mut v13),
                     None,
                 );
@@ -396,7 +628,20 @@ impl Gpu {
             let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut ids);
             instance.get_physical_device_properties2(physical, &mut props2);
             let uuid = ids.device_uuid;
+            if let Some((family, _)) = decode {
+                log::debug!("video decode on queue family {family}");
+            }
+            let video_queue = |(family, operations)| VideoQueue {
+                family,
+                operations,
+                lock: QueueLock::default(),
+            };
             Ok(Self {
+                decode: decode.map(video_queue),
+                encode: encode.map(video_queue),
+                instance_extensions,
+                device_extensions,
+                features,
                 uuid,
                 memory: instance.get_physical_device_memory_properties(physical),
                 memory_fd: dmabuf
@@ -407,7 +652,7 @@ impl Gpu {
                 physical,
                 device,
                 queue,
-                queue_lock: std::sync::Mutex::new(()),
+                queue_lock: QueueLock::default(),
                 queue_family,
                 name,
             })
@@ -433,9 +678,32 @@ impl Gpu {
     /// Waits until the GPU is done with everything submitted. Holds the
     /// queue lock: Vulkan requires the queues to be left alone meanwhile.
     pub fn wait_idle(&self) {
-        let _queue = self.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _queue = self.queue_lock.lock();
+        let mut video: Vec<&QueueLock> = Vec::new();
+        for q in [&self.decode, &self.encode].into_iter().flatten() {
+            if let Some(lock) = self.queue_lock_for(q.family)
+                && !std::ptr::eq(lock, &self.queue_lock)
+                && !video.iter().any(|l| std::ptr::eq(*l, lock))
+            {
+                video.push(lock);
+            }
+        }
+        let _video: Vec<QueueGuard<'_>> = video.into_iter().map(QueueLock::lock).collect();
         // SAFETY: valid device; the queues are not used concurrently.
         let _ = unsafe { self.device.device_wait_idle() };
+    }
+
+    /// The lock of the (first) queue of `family`; one queue of a family is
+    /// created, so families that coincide share it.
+    pub fn queue_lock_for(&self, family: u32) -> Option<&QueueLock> {
+        if family == self.queue_family {
+            return Some(&self.queue_lock);
+        }
+        [&self.decode, &self.encode]
+            .into_iter()
+            .flatten()
+            .find(|q| q.family == family)
+            .map(|q| &q.lock)
     }
 
     /// A memory type allowed by `bits` with all of `flags`.
@@ -502,6 +770,35 @@ mod tests {
             | ((300000u64 & !0xff) << 12)
             | ((4097u64 & !0xfff) << 32);
         assert_eq!(dev_numbers(big), (4097, 300000));
+    }
+
+    #[test]
+    fn a_queue_lock_taken_by_one_call_waits_for_the_release() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let lock = Arc::new(QueueLock::default());
+        // As FFmpeg does: lock_queue, submit, unlock_queue.
+        lock.acquire();
+        let entered = Arc::new(AtomicBool::new(false));
+        let other = std::thread::spawn({
+            let (lock, entered) = (lock.clone(), entered.clone());
+            move || {
+                let _guard = lock.lock();
+                entered.store(true, Ordering::SeqCst);
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !entered.load(Ordering::SeqCst),
+            "the queue was still locked"
+        );
+        lock.release();
+        other.join().unwrap();
+        assert!(entered.load(Ordering::SeqCst));
+        // The guard gave it back.
+        drop(lock.lock());
     }
 
     #[test]

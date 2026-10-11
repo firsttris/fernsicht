@@ -62,7 +62,8 @@ struct Args {
     /// `file.h265`; AV1 is raw OBUs, `ffplay -f obu file.obu`).
     #[arg(long)]
     record: Option<std::path::PathBuf>,
-    /// Hardware decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
+    /// Hardware decoder: "auto" (Vulkan Video, else VAAPI, else NVDEC),
+    /// "vulkan", "vaapi" or "nvdec".
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     decoder: DecoderArg,
     /// Video codec: "auto" (the best this machine decodes in hardware and
@@ -249,6 +250,7 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum DecoderArg {
     Auto,
+    Vulkan,
     Vaapi,
     Nvdec,
 }
@@ -385,6 +387,7 @@ fn session_config(args: &Args, wanted: &str, host: &Peer, identity: Identity) ->
         render_node: args.render_node.clone(),
         decoder: match args.decoder {
             DecoderArg::Auto => DecoderChoice::Auto,
+            DecoderArg::Vulkan => DecoderChoice::Vulkan,
             DecoderArg::Vaapi => DecoderChoice::Vaapi,
             DecoderArg::Nvdec => DecoderChoice::Nvdec,
         },

@@ -15,9 +15,21 @@ vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc", "dep:log"]
 # runtime, so this builds without the NVIDIA driver). Screen input goes
 # through Vulkan.
 nvidia = ["dep:ffmpeg-next", "dep:libc", "dep:libloading", "dep:log", "dep:fernsicht-gpu"]
+# AV1, HEVC and H.264 with Vulkan Video via FFmpeg, on our own Vulkan
+# device (any GPU whose driver has it). Needs FFmpeg built with Vulkan.
+vulkan = [
+    "dep:ffmpeg-next",
+    "dep:ffmpeg-sys-next",
+    "dep:libc",
+    "dep:log",
+    "dep:fernsicht-gpu",
+    "dep:ash",
+]
 
 [dependencies]
+ash = { workspace = true, optional = true }
 ffmpeg-next = { workspace = true, optional = true }
+ffmpeg-sys-next = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 fernsicht-capture.workspace = true
 fernsicht-gpu = { workspace = true, optional = true }

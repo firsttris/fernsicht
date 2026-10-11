@@ -284,7 +284,8 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let for_presenter = window.clone();
         // Vulkan on the VAAPI decoder's GPU: its pictures import
-        // without a copy (NVDEC pictures come through the CPU anyway).
+        // without a copy; the Vulkan decoder runs on the window's GPU
+        // (NVDEC pictures come through the CPU anyway).
         let prefer = match cfg.decoder {
             fernsicht_client::DecoderChoice::Nvdec => Prefer::Best,
             _ => Prefer::render_node(&cfg.render_node),

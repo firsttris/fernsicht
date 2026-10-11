@@ -12,6 +12,8 @@ publish.workspace = true
 vaapi = ["fernsicht-host-agent/vaapi", "fernsicht-client/vaapi"]
 # The same on the NVIDIA runner, with NVENC/NVDEC.
 nvidia = ["fernsicht-host-agent/nvidia", "fernsicht-client/nvidia"]
+# The client decodes with Vulkan Video (tests/gpu.rs, with one of the above).
+vulkan = ["fernsicht-client/vulkan"]
 
 [dependencies]
 fernsicht-client.workspace = true

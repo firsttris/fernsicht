@@ -161,9 +161,13 @@ pub fn offered_codecs(choice: CodecChoice, decodes: impl Fn(Codec) -> bool) -> C
 /// Hardware decoder for H.264 and HEVC streams.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DecoderChoice {
-    /// VAAPI if it works (AMD, Intel), else NVDEC (NVIDIA).
+    /// Vulkan Video if it works, else VAAPI (AMD, Intel), else NVDEC
+    /// (NVIDIA).
     #[default]
     Auto,
+    /// Vulkan Video on the window's GPU: its pictures are drawn where
+    /// they were decoded.
+    Vulkan,
     Vaapi,
     /// NVIDIA, CUDA device 0.
     Nvdec,

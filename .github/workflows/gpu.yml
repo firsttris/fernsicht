@@ -69,7 +69,7 @@ jobs:
           FERNSICHT_REQUIRE_VULKAN: "1"
         run: >
           cargo test -p fernsicht-render
-          --features "vulkan${{ matrix.gpu == 'amd' && ',vaapi' || ',nvidia' }}"
+          --features "vulkan,vulkan-video${{ matrix.gpu == 'amd' && ',vaapi' || ',nvidia' }}"
           --test vulkan -- --test-threads=1 --nocapture
       - name: Screen to NV12 in Vulkan (DMA-BUF import, BT.709, scaling)
         if: ${{ !cancelled() }}
@@ -89,7 +89,7 @@ jobs:
         timeout-minutes: 10
         env:
           FERNSICHT_GPU: amd
-        run: cargo test -p fernsicht-e2e --features vaapi --no-fail-fast --test gpu --test web_gpu -- --nocapture
+        run: cargo test -p fernsicht-e2e --features vaapi,vulkan --no-fail-fast --test gpu --test web_gpu -- --nocapture
       - name: NVENC/NVDEC on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         timeout-minutes: 10
@@ -101,4 +101,4 @@ jobs:
         timeout-minutes: 10
         env:
           FERNSICHT_GPU: nvidia
-        run: cargo test -p fernsicht-e2e --features nvidia --no-fail-fast --test gpu --test web_gpu -- --nocapture
+        run: cargo test -p fernsicht-e2e --features nvidia,vulkan --no-fail-fast --test gpu --test web_gpu -- --nocapture

@@ -900,6 +900,19 @@ still costs an IDR frame (FFmpeg resets NVENC with `forceIDR` for it), so the ra
 burst of loss brings one keyframe back; avoiding it needs `NvEncReconfigureEncoder` called without
 FFmpeg, or D1.
 
+D1, first part (decided 2026-10-11: FFmpeg's Vulkan codecs first, our own encoder with reference
+frame invalidation later): the client decodes with Vulkan Video. FFmpeg's Vulkan decoder runs on the
+window's own device (`fernsicht-gpu` creates it with the video queues, timeline semaphores and
+synchronization2; FFmpeg gets our instance, device and queues and takes our queue locks), and the
+renderer samples the decoded image in place, waiting for and signalling its timeline semaphore.
+"Auto" tries it first, then VAAPI and NVDEC. On the GTX 1080: 0.07 ms to convert and draw a 1080p
+picture against 0.31 ms for NVDEC's CUDA copy, the same decode time (same engine), no decode errors
+through a 300 ms blackout with and without intra refresh. Tests: the renderer draws Vulkan-decoded
+H.264 and HEVC like the CPU path, and end to end NVENC → Vulkan Video at 1080p60. It needs FFmpeg
+7.1 at runtime; the AppImage still carries Ubuntu 24.04's FFmpeg 6.1, so there "auto" stays with
+VAAPI/NVDEC until the release build gets a newer FFmpeg. Left: encoding with Vulkan Video on the
+host.
+
 ## E. Clean code and consistency
 
 | ID | Finding | Where | Status |

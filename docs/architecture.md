@@ -16,7 +16,7 @@ flowchart LR
     PKT -->|UDP| NET{{"LAN / VPN"}}
     NET -->|UDP| RX
     subgraph Client["Client (fernsicht-client)"]
-        RX["Receive · open<br/>reassemble · FEC"] --> DEC["Hardware decoder<br/>VAAPI · NVDEC"]
+        RX["Receive · open<br/>reassemble · FEC"] --> DEC["Hardware decoder<br/>Vulkan Video · VAAPI · NVDEC"]
         DEC -->|DMA-BUF / NV12| VK["Vulkan window<br/>NV12 → RGB, pointer"]
     end
     Client -. "input · feedback · clock pings" .-> Host

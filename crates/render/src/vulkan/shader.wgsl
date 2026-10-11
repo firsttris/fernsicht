@@ -5,6 +5,9 @@ struct Push {
     // Size of the quad in normalized device coordinates (1 = full width).
     scale: vec2<f32>,
     offset: vec2<f32>,
+    // The part of the picture's image shown (a decoder's images may be
+    // larger than the picture: 1088 rows for 1080).
+    crop: vec2<f32>,
 };
 
 var<immediate> pc: Push;
@@ -23,7 +26,7 @@ struct VertexOut {
 fn vs(@builtin(vertex_index) i: u32) -> VertexOut {
     let t = vec2<f32>(f32(i & 1u), f32(i >> 1u));
     var out: VertexOut;
-    out.uv = t;
+    out.uv = t * pc.crop;
     // Vulkan clip space: y = -1 is the top, like texture row 0.
     out.pos = vec4<f32>((t * 2.0 - 1.0) * pc.scale + pc.offset, 0.0, 1.0);
     return out;
