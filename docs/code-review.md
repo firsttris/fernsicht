@@ -502,7 +502,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   initiator; any datagram resets the timeout.
 - **Fix:** Reject only before the session; keep the initiator until a reply verifies; reset the
   timeout only on authenticated packets.
-- **Status:** open
+- **Status:** fixed. `Initiator::read_reply` takes `&mut self` (snow restores its state when a
+  message does not verify), so a forged answer is ignored; Reject counts only before the session;
+  in a secure session only sealed packets that open and the verified answer reset the timeout.
+  The e2e link can forge packets with the host's address now (`forge_to_client`). Tests:
+  `forged_packets_neither_stop_nor_end_a_secure_session`, `garbage_does_not_keep_a_silent_host_alive`
+  (both fail without the fix).
 
 ### B8 · Handshakes are processed without a rate limit
 

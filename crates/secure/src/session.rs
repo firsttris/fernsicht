@@ -69,13 +69,26 @@ impl Initiator {
     /// Takes message 2; returns the transport and the host's payload.
     /// Fails if the answer is not from the expected host.
     pub fn finish(mut self, msg2: &[u8]) -> Result<(Transport, Vec<u8>), SessionError> {
+        let payload = self.read_reply(msg2)?;
+        Ok((self.into_transport()?, payload))
+    }
+
+    /// Reads message 2; its payload. A message that does not verify (a
+    /// forged reply) leaves the initiator as it was (snow restores its
+    /// state), so the host's real answer can still be read.
+    pub fn read_reply(&mut self, msg2: &[u8]) -> Result<Vec<u8>, SessionError> {
         let mut payload = vec![0u8; MAX_HANDSHAKE];
         let n = self
             .hs
             .read_message(msg2, &mut payload)
             .map_err(err("message 2"))?;
         payload.truncate(n);
-        Ok((Transport::new(self.hs)?, payload))
+        Ok(payload)
+    }
+
+    /// The session's keys, once [`Self::read_reply`] succeeded.
+    pub fn into_transport(self) -> Result<Transport, SessionError> {
+        Transport::new(self.hs)
     }
 }
 

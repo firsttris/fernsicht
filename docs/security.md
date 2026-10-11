@@ -48,6 +48,10 @@ pattern WireGuard uses):
 
 ## Sealed packets
 
+The client believes only what proves to come from the host: a handshake answer that does not
+verify is ignored (the real one can still come), a rejection counts only while it asks for a
+session, and only sealed packets that open keep a session alive.
+
 After the handshake every packet travels as a Sealed packet: ChaCha20-Poly1305 with an explicit 64-bit
 counter (UDP loses and reorders, so the nonce cannot be implicit). A **replay window** of 2,048 packets
 accepts each counter once, tolerates reordering within the window and rejects anything older, as

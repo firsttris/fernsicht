@@ -167,6 +167,142 @@ fn pairing_and_a_secure_session_survive_loss() {
     host.stop();
 }
 
+/// Sends forged packets "from the host" every `every` until `stop`.
+fn forging(
+    link: &Arc<ImpairedLink>,
+    every: Duration,
+    stop: &Arc<AtomicBool>,
+    packets: Vec<Vec<u8>>,
+) -> std::thread::JoinHandle<()> {
+    let (link, stop) = (link.clone(), stop.clone());
+    std::thread::spawn(move || {
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            for p in &packets {
+                link.forge_to_client(p);
+            }
+            std::thread::sleep(every);
+        }
+    })
+}
+
+#[test]
+fn forged_packets_neither_stop_nor_end_a_secure_session() {
+    use fernsicht_proto::{Bye, Handshake, RejectReason};
+    let _serial = exclusive();
+    let sec = host_security();
+    sec.open_pairing("112233");
+    let host = Host::start(HostConfig {
+        security: Some(sec.clone()),
+        ..HostConfig::default()
+    });
+    let link = Arc::new(ImpairedLink::start(
+        host.addr(),
+        Impairment::none(),
+        Impairment::none(),
+        3,
+    ));
+    let me = Identity::generate();
+    let peer = pair(&link.addr().to_string(), "112233", &me, "laptop").unwrap();
+    // From the start: forged handshake answers, rejections and goodbyes
+    // with the host's address, as someone on the LAN could send them.
+    let mut buf = [0u8; 256];
+    let packet = |n: usize, buf: &[u8; 256]| buf[..n].to_vec();
+    let n = Handshake {
+        reply: true,
+        message: &[7u8; 96],
+    }
+    .encode(&mut buf);
+    let forged_answer = packet(n, &buf);
+    let n = RejectReason::NotPaired.encode(&mut buf);
+    let reject = packet(n, &buf);
+    let n = Bye { session_id: 0 }.encode(&mut buf);
+    let bye = packet(n, &buf);
+    let stop = Arc::new(AtomicBool::new(false));
+    // The link learns the client's address from its first packet.
+    let forger = {
+        let link = link.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                link.forge_to_client(&forged_answer);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    let rejecter = forging(&link, Duration::from_millis(50), &stop, vec![reject, bye]);
+    let s = run(
+        client_cfg(
+            link.addr().to_string(),
+            Some(Arc::new(ClientSecurity {
+                identity: me,
+                host: peer.key,
+            })),
+            2.5,
+        ),
+        Arc::new(AtomicBool::new(false)),
+    );
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    forger.join().unwrap();
+    rejecter.join().unwrap();
+    let s = s.expect("the forged packets ended the session");
+    assert!(s.frames_presented > 100, "{s:?}");
+    drop(link);
+    host.stop();
+}
+
+#[test]
+fn garbage_does_not_keep_a_silent_host_alive() {
+    let _serial = exclusive();
+    let sec = host_security();
+    sec.open_pairing("445566");
+    let host = Host::start(HostConfig {
+        security: Some(sec.clone()),
+        ..HostConfig::default()
+    });
+    // The host's packets stop after a second; garbage keeps coming.
+    let down = Impairment {
+        blackout: Some((Duration::from_secs(1), Duration::from_secs(30))),
+        ..Impairment::none()
+    };
+    let link = Arc::new(ImpairedLink::start(
+        host.addr(),
+        down,
+        Impairment::none(),
+        5,
+    ));
+    let me = Identity::generate();
+    let peer = {
+        // Pairing straight to the host (the blackout would stop it).
+        pair(&host.addr().to_string(), "445566", &me, "laptop").unwrap()
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let noise = forging(
+        &link,
+        Duration::from_millis(50),
+        &stop,
+        vec![vec![0xf5, 1, 99, 0, 1, 2, 3]],
+    );
+    let started = std::time::Instant::now();
+    let r = run(
+        client_cfg(
+            link.addr().to_string(),
+            Some(Arc::new(ClientSecurity {
+                identity: me,
+                host: peer.key,
+            })),
+            10.0,
+        ),
+        Arc::new(AtomicBool::new(false)),
+    );
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    noise.join().unwrap();
+    let e = r.expect_err("garbage kept the session alive");
+    assert!(e.to_string().contains("no packets from"), "{e:#}");
+    assert!(started.elapsed() < Duration::from_secs(6));
+    drop(link);
+    host.stop();
+}
+
 #[test]
 fn hosts_are_found_and_tell_about_themselves() {
     use fernsicht_client::discover::discover;

@@ -7,7 +7,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -116,6 +116,9 @@ pub struct ImpairedLink {
     stats: Arc<LinkStats>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
+    /// For forging packets "from the host" (see [`Self::forge_to_client`]).
+    client_side: Arc<UdpSocket>,
+    client_addr: Arc<Mutex<Option<SocketAddr>>>,
 }
 
 impl ImpairedLink {
@@ -259,11 +262,22 @@ impl ImpairedLink {
             stats,
             stop,
             threads,
+            client_side,
+            client_addr,
         }
     }
 
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Sends `data` to the client as if from the host: an attacker who can
+    /// forge the host's address. False before the client sent anything.
+    pub fn forge_to_client(&self, data: &[u8]) -> bool {
+        let Some(to) = *self.client_addr.lock().unwrap() else {
+            return false;
+        };
+        self.client_side.send_to(data, to).is_ok()
     }
 
     pub fn stats(&self) -> &LinkStats {

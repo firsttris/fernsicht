@@ -993,10 +993,15 @@ fn network_loop(
             Err(e) => return Err(e).context("recv"),
         };
         let now = now_us();
-        last_packet = Instant::now();
         let Ok(outer) = Packet::decode(&buf[..len]) else {
             continue;
         };
+        // Only what proves to come from the host keeps the session alive:
+        // in a secure session the sealed packets and the handshake answer
+        // (marked below), else any packet.
+        if cfg.security.is_none() {
+            last_packet = Instant::now();
+        }
         // A secure session: only sealed packets count (opened here), plus
         // the handshake's answer and rejections.
         let packet = match (outer, cfg.security.is_some()) {
@@ -1013,23 +1018,38 @@ fn network_loop(
                 let Ok(inner) = Packet::decode(&opened[..n]) else {
                     continue;
                 };
+                last_packet = Instant::now();
                 inner
             }
             (Packet::Handshake(h), true) if h.reply => {
-                let Some((initiator, _)) = handshake.take() else {
+                let Some((initiator, _)) = handshake.as_mut() else {
                     continue;
                 };
-                let (transport, payload) = match initiator.finish(h.message) {
-                    Ok(r) => r,
-                    Err(e) => anyhow::bail!("handshake with {} failed: {e}", cfg.host),
+                // A reply that does not verify is someone else's: wait for
+                // the host's.
+                let payload = match initiator.read_reply(h.message) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::debug!("{}: ignoring a handshake answer: {e}", cfg.host);
+                        continue;
+                    }
                 };
+                let (initiator, _) = handshake.take().expect("checked above");
+                let transport = initiator
+                    .into_transport()
+                    .map_err(|e| anyhow::anyhow!("handshake with {} failed: {e}", cfg.host))?;
+                last_packet = Instant::now();
                 let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
                     anyhow::bail!("handshake with {}: no session in the answer", cfg.host);
                 };
                 crypto = Some(Arc::new(transport));
                 Packet::HelloAck(ack)
             }
-            (Packet::Reject(r), true) => anyhow::bail!("{}: {}", cfg.host, reject_text(r)),
+            // Not authenticated: believed only while asking for a session,
+            // never during one (anyone could end it with five bytes).
+            (Packet::Reject(r), true) if session.is_none() => {
+                anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+            }
             (_, true) => continue,
             (p, false) => p,
         };
