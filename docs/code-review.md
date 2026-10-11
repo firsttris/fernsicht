@@ -331,7 +331,10 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** pads drive the host while the window is unfocused (and the local desktop sees the
   same presses), but focus loss releases held pad buttons. Steam's virtual pad doubles input.
 - **Fix:** one policy (pads follow focus); skip known virtual pads.
-- **Status:** open
+- **Status:** fixed (focus). Pads follow the focus: `pad_events_while_focused` drops their events
+  while another window has it, and focus loss still releases them. Skipping Steam's virtual pad is
+  left for D9 (SDL knows those devices; guessing their names here would be memory, not a source).
+  The 2 s rescan for hotplug stays (inotify is a nicety). Test: `gamepads_follow_the_focus`.
 
 ### A26 · A panic in the client thread leaves the window open
 

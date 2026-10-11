@@ -502,6 +502,8 @@ mod window {
         /// Fractions of pixels of relative motion, carried over.
         motion_rest: (f64, f64),
         focused: bool,
+        /// The same for the gamepad thread: pads follow the focus.
+        pads_focused: Arc<AtomicBool>,
         /// The host's monitors; Ctrl+Alt+Shift+←/→ switches.
         monitors: Arc<fernsicht_client::MonitorControl>,
     }
@@ -693,11 +695,13 @@ mod window {
                         input.release_all();
                     }
                     self.focused = false;
+                    self.pads_focused.store(false, Ordering::Release);
                     self.capture(false);
                     self.update_shortcuts();
                 }
                 WindowEvent::Focused(true) => {
                     self.focused = true;
+                    self.pads_focused.store(true, Ordering::Release);
                     self.update_shortcuts();
                 }
                 // Entering or leaving fullscreen shows as a new size.
@@ -821,15 +825,15 @@ mod window {
                 }
             }
         });
+        let pads_focused = Arc::new(AtomicBool::new(false));
         let _gamepads = match (&input, options.gamepads) {
-            (Some(input), true) => {
-                let input = input.clone();
-                fernsicht_input::gamepad::Gamepads::start("/dev/input".into(), true, move |e| {
-                    input.push(e)
-                })
-                .map_err(|e| log::warn!("no gamepads: {e}"))
-                .ok()
-            }
+            (Some(input), true) => fernsicht_input::gamepad::Gamepads::start(
+                "/dev/input".into(),
+                true,
+                fernsicht_client::pad_events_while_focused(input.clone(), pads_focused.clone()),
+            )
+            .map_err(|e| log::warn!("no gamepads: {e}"))
+            .ok(),
             _ => None,
         };
         let mut app = App {
@@ -846,6 +850,7 @@ mod window {
             captured: false,
             motion_rest: (0.0, 0.0),
             focused: false,
+            pads_focused,
             shortcuts: None,
             monitors,
         };

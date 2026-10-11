@@ -345,6 +345,21 @@ impl InputHandle {
     }
 }
 
+/// Gamepad events for the host while `focused` says the window has the
+/// focus, dropped otherwise: pads follow the focus like keyboard and
+/// mouse (losing it releases everything; a pad must not play on the host
+/// while the user does something else here).
+pub fn pad_events_while_focused(
+    input: Arc<InputHandle>,
+    focused: Arc<AtomicBool>,
+) -> impl FnMut(InputEvent) + Send + 'static {
+    move |e| {
+        if focused.load(Ordering::Acquire) {
+            input.push(e);
+        }
+    }
+}
+
 /// Where a window position falls on the stream (shown letterboxed in the
 /// window), as 0..=65535 each way; `None` on the black bars.
 pub fn window_to_stream(
@@ -1569,6 +1584,25 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gamepads_follow_the_focus() {
+        let input = Arc::new(InputHandle::default());
+        input.set_stream((100, 100));
+        let focused = Arc::new(AtomicBool::new(false));
+        let mut send = pad_events_while_focused(input.clone(), focused.clone());
+        let a = |pressed| InputEvent::PadButton {
+            pad: 0,
+            code: 0x130,
+            pressed,
+        };
+        send(a(true));
+        assert!(input.queue.lock().unwrap().due(Instant::now()).is_none());
+        focused.store(true, Ordering::Release);
+        send(a(true));
+        let sent = input.queue.lock().unwrap().due(Instant::now()).unwrap();
+        assert_eq!(sent, vec![(1, a(true))]);
+    }
 
     #[test]
     fn monitor_requests_are_resolved_against_the_list() {

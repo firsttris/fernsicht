@@ -105,6 +105,8 @@ the desktop refuses, the “Tasten senden” menu still works.
 
 Up to four controllers on the client become virtual Xbox 360 controllers on the host (“Fernsicht
 X-Box 360 pad 1” …), which Steam and games use without setup. `--no-gamepad` leaves them out.
+Like keyboard and mouse they follow the focus: while another window has it, the pads do nothing on
+the host (buttons are let go, sticks centred).
 
 ## Settings
 
