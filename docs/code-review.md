@@ -686,7 +686,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   (estimate).
 - **Fix:** CUDA → Vulkan interop (the existing convert path in reverse); interim: download straight
   into the mapped staging buffer.
-- **Status:** open
+- **Status:** fixed. NVDEC copies each picture on the GPU into memory allocated with CUDA's virtual
+  memory API and exported as a file descriptor (`cuMemCreate`, `cuMemExportToShareableHandle`, as
+  NVIDIA's `simpleVulkanMMAP` sample); the renderer imports it once as an `OPAQUE_FD` buffer and
+  copies the planes into its images, with queue-family handover from and back to
+  `QUEUE_FAMILY_EXTERNAL`. No second Vulkan device in the decoder; the CPU path stays as the
+  fallback (no export, another GPU). GTX 1080, 1080p: 0.30 ms to copy, convert and draw instead of
+  1.12 ms through the CPU. `PictureKind::DmaBuf` is now `PictureKind::Gpu`.
 
 ### C7 · The NVENC input path waits on the CPU twice
 

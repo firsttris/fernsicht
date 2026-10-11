@@ -4,7 +4,8 @@
 //! (llvmpipe). Without a device the tests skip, unless
 //! `FERNSICHT_REQUIRE_VULKAN=1` (set in CI so they cannot skip silently).
 //! With feature `vaapi` and `FERNSICHT_GPU=amd|intel`, pictures also come
-//! from the VAAPI decoder, by DMA-BUF without a copy.
+//! from the VAAPI decoder, by DMA-BUF without a copy; with feature `nvidia`
+//! and `FERNSICHT_GPU=nvidia`, from NVDEC through memory CUDA exported.
 #![cfg(feature = "vulkan")]
 
 use std::sync::{Arc, OnceLock};
@@ -386,7 +387,7 @@ mod vaapi {
             dec.decode(&out.data, &mut d).unwrap();
 
             let t = Instant::now();
-            let pic = dec.picture(PictureKind::DmaBuf).unwrap().unwrap();
+            let pic = dec.picture(PictureKind::Gpu).unwrap().unwrap();
             assert!(matches!(pic, Picture::DmaBuf { .. }));
             r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
             zero_copy_ms.push(t.elapsed().as_secs_f64() * 1e3);
@@ -433,6 +434,113 @@ mod vaapi {
         assert!(
             median(zero_copy_ms) < median(download_ms),
             "zero copy should beat the download"
+        );
+    }
+}
+
+#[cfg(feature = "nvidia")]
+mod nvidia {
+    use std::time::Instant;
+
+    use fernsicht_capture::{Frame, PixelFormat};
+    use fernsicht_codec::nvidia::{NvdecDecoder, NvencConfig, NvencEncoder};
+    use fernsicht_codec::{DecodedFrame, Decoder, EncodedFrame, Encoder, PictureKind};
+
+    use super::*;
+
+    fn nvidia() -> bool {
+        let on = std::env::var("FERNSICHT_GPU").as_deref() == Ok("nvidia");
+        if !on {
+            eprintln!("skipped: set FERNSICHT_GPU=nvidia");
+        }
+        on
+    }
+
+    fn median(mut v: Vec<f64>) -> f64 {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    }
+
+    #[test]
+    fn nvdec_pictures_stay_on_the_gpu() {
+        if !nvidia() {
+            return;
+        }
+        let Some(mut r) = renderer() else { return };
+        let (w, h) = (1920u32, 1080u32);
+        let mut enc = NvencEncoder::new(&NvencConfig {
+            gpu: 0,
+            codec: fernsicht_proto::Codec::H264,
+            width: w,
+            height: h,
+            fps: 60,
+            bitrate_kbps: 20_000,
+        })
+        .unwrap();
+        let mut dec = NvdecDecoder::new(0).unwrap();
+        let mut frame = Frame::new(w, h, PixelFormat::Nv12);
+        frame.data = stripes_nv12(w as usize, h as usize);
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        let (mut gpu_ms, mut download_ms) = (Vec::new(), Vec::new());
+        // A small target measures copy + conversion + draw without reading
+        // 8 MB back for the comparison.
+        let (mut via_gpu, mut via_cpu) = (Vec::new(), Vec::new());
+        for i in 0..60u64 {
+            frame.seq = i;
+            enc.encode(&frame, &mut out).unwrap();
+            dec.decode(&out.data, &mut d).unwrap();
+
+            let t = Instant::now();
+            let pic = dec.picture(PictureKind::Gpu).unwrap().unwrap();
+            assert!(
+                matches!(pic, Picture::Exported { .. }),
+                "NVDEC handed out {pic:?}"
+            );
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
+            gpu_ms.push(t.elapsed().as_secs_f64() * 1e3);
+            if i == 59 {
+                via_gpu = r.render_to_rgba(Some(&pic), None, w, h).unwrap();
+            }
+
+            let t = Instant::now();
+            let pic = dec.picture(PictureKind::Nv12).unwrap().unwrap();
+            r.render_to_rgba(Some(&pic), None, 16, 16).unwrap();
+            download_ms.push(t.elapsed().as_secs_f64() * 1e3);
+            if i == 59 {
+                via_cpu = r.render_to_rgba(Some(&pic), None, w, h).unwrap();
+            }
+        }
+        // Both ways show the stripes, and the same picture.
+        assert_stripes(&via_gpu, w as usize, h as usize, 6);
+        assert_stripes(&via_cpu, w as usize, h as usize, 6);
+        let differ = via_gpu
+            .iter()
+            .zip(&via_cpu)
+            .filter(|(a, b)| (i32::from(**a) - i32::from(**b)).abs() > 2)
+            .count();
+        assert!(
+            differ < via_cpu.len() / 1000,
+            "{differ} bytes differ between the two paths"
+        );
+
+        let summary = format!(
+            "### Vulkan-Anzeige des NVDEC-Decoders, 1080p ({})\n\
+             | Weg | Median: Bild holen, umrechnen, zeichnen |\n|---|---|\n\
+             | CUDA-Speicher, auf der GPU kopiert | {:.2} ms |\n\
+             | Download über die CPU | {:.2} ms |\n",
+            r.gpu().name(),
+            median(gpu_ms.clone()),
+            median(download_ms.clone()),
+        );
+        println!("{summary}");
+        if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(f, "{summary}").unwrap();
+        }
+        assert!(
+            median(gpu_ms) < median(download_ms),
+            "the GPU path should beat the download"
         );
     }
 }

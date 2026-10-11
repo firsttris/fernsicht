@@ -104,8 +104,9 @@ window, and the host's pointer over it:
 
 - VAAPI surfaces are exported as DMA-BUFs and imported into Vulkan without a copy (0.15 ms to convert
   and draw at 1080p).
-- NVDEC pictures are copied to the CPU and uploaded for now (about 0.8 ms at 1080p); importing them
-  directly is on the [roadmap](next-steps.md).
+- NVDEC pictures are copied on the GPU into memory CUDA exports as a file descriptor, which Vulkan
+  imports (CUDA's virtual memory API; `Picture::Exported`): 0.3 ms to copy, convert and draw at
+  1080p on the GTX 1080, against 1.1 ms through the CPU before.
 
 The window presents in mailbox mode: no tearing, and a new frame replaces one that has not been shown
 yet. Presenting immediately (with tearing, for games) is a possible next step

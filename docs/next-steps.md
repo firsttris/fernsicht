@@ -41,7 +41,6 @@ From the [performance](performance.md) page, in its recommended order:
 | **Bitrate adaptation in the web viewer** (WebRTC's TWCC estimate) | browsers get no more than the network carries | medium |
 | **Slices**: send parts of a frame before it is encoded (the header already has the fields) | several ms per frame | large |
 | **4:4:4 colour** for the desktop | crisp text; NVENC only | medium |
-| **NVDEC pictures straight into Vulkan** | saves the 0.8 ms copy on NVIDIA clients | medium |
 
 ## 4. Features
 

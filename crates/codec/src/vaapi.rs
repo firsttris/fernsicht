@@ -1174,7 +1174,7 @@ impl Decoder for VaapiDecoder {
             prefer
         };
         match prefer {
-            PictureKind::DmaBuf => {
+            PictureKind::Gpu => {
                 // SAFETY: frames is the frame's pool reference (or null);
                 // pool is ours (or null).
                 let same_pool = unsafe {

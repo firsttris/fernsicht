@@ -1,11 +1,13 @@
-//! The few CUDA driver calls the NVENC encoder needs to take frames from
-//! Vulkan: import Vulkan memory, copy on the GPU, check which GPU it is.
+//! The few CUDA driver calls NVENC and NVDEC need to trade pictures with
+//! Vulkan: import Vulkan memory (NVENC's input), export CUDA memory
+//! (NVDEC's pictures, for the renderer), copy on the GPU, check which GPU
+//! it is.
 //!
 //! `libcuda.so.1` is loaded at runtime (as FFmpeg does), so builds and
 //! machines without the NVIDIA driver are unaffected.
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
-use std::os::fd::{IntoRawFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::OnceLock;
 
 use crate::CodecError;
@@ -18,6 +20,40 @@ type CuExternalMemory = *mut c_void;
 
 const CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD: c_int = 1;
 const CU_MEMORYTYPE_DEVICE: c_uint = 2;
+// Virtual memory management, values from cuda.h.
+const CU_DEVICE_ATTRIBUTE_VIRTUAL_ADDRESS_MANAGEMENT_SUPPORTED: c_int = 102;
+const CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR_SUPPORTED: c_int = 103;
+const CU_MEM_ALLOCATION_TYPE_PINNED: c_int = 1;
+const CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR: c_int = 1;
+const CU_MEM_LOCATION_TYPE_DEVICE: c_int = 1;
+const CU_MEM_ACCESS_FLAGS_PROT_READWRITE: c_int = 3;
+const CU_MEM_ALLOC_GRANULARITY_RECOMMENDED: c_int = 1;
+
+/// `CUmemLocation`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MemLocation {
+    kind: c_int,
+    id: c_int,
+}
+
+/// `CUmemAllocationProp`.
+#[repr(C)]
+struct MemAllocationProp {
+    kind: c_int,
+    requested_handle_types: c_int,
+    location: MemLocation,
+    win32_handle_metadata: *mut c_void,
+    /// compressionType, gpuDirectRDMACapable, usage (u16), reserved[4].
+    alloc_flags: [u8; 8],
+}
+
+/// `CUmemAccessDesc`.
+#[repr(C)]
+struct MemAccessDesc {
+    location: MemLocation,
+    flags: c_int,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -83,6 +119,19 @@ struct Api {
     cuMemFree: unsafe extern "C" fn(CuDevicePtr) -> CuResult,
     cuMemcpy2DAsync: unsafe extern "C" fn(*const Memcpy2D, *mut c_void) -> CuResult,
     cuStreamSynchronize: unsafe extern "C" fn(*mut c_void) -> CuResult,
+    cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, c_int, CuDevice) -> CuResult,
+    cuMemGetAllocationGranularity:
+        unsafe extern "C" fn(*mut usize, *const MemAllocationProp, c_int) -> CuResult,
+    cuMemCreate: unsafe extern "C" fn(*mut u64, usize, *const MemAllocationProp, u64) -> CuResult,
+    cuMemExportToShareableHandle: unsafe extern "C" fn(*mut c_void, u64, c_int, u64) -> CuResult,
+    cuMemAddressReserve:
+        unsafe extern "C" fn(*mut CuDevicePtr, usize, usize, CuDevicePtr, u64) -> CuResult,
+    cuMemMap: unsafe extern "C" fn(CuDevicePtr, usize, usize, u64, u64) -> CuResult,
+    cuMemSetAccess:
+        unsafe extern "C" fn(CuDevicePtr, usize, *const MemAccessDesc, usize) -> CuResult,
+    cuMemUnmap: unsafe extern "C" fn(CuDevicePtr, usize) -> CuResult,
+    cuMemRelease: unsafe extern "C" fn(u64) -> CuResult,
+    cuMemAddressFree: unsafe extern "C" fn(CuDevicePtr, usize) -> CuResult,
 }
 
 fn api() -> Result<&'static Api, CodecError> {
@@ -112,6 +161,16 @@ fn api() -> Result<&'static Api, CodecError> {
                 cuMemFree: sym!("cuMemFree_v2"),
                 cuMemcpy2DAsync: sym!("cuMemcpy2DAsync_v2"),
                 cuStreamSynchronize: sym!("cuStreamSynchronize"),
+                cuDeviceGetAttribute: sym!("cuDeviceGetAttribute"),
+                cuMemGetAllocationGranularity: sym!("cuMemGetAllocationGranularity"),
+                cuMemCreate: sym!("cuMemCreate"),
+                cuMemExportToShareableHandle: sym!("cuMemExportToShareableHandle"),
+                cuMemAddressReserve: sym!("cuMemAddressReserve"),
+                cuMemMap: sym!("cuMemMap"),
+                cuMemSetAccess: sym!("cuMemSetAccess"),
+                cuMemUnmap: sym!("cuMemUnmap"),
+                cuMemRelease: sym!("cuMemRelease"),
+                cuMemAddressFree: sym!("cuMemAddressFree"),
                 _lib: lib,
             })
         }
@@ -210,7 +269,7 @@ impl ImportedBuffer {
         let r = unsafe { (api.cuImportExternalMemory)(&mut memory, &desc) };
         if r != 0 {
             // SAFETY: not consumed on failure.
-            drop(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) });
+            drop(unsafe { OwnedFd::from_raw_fd(raw) });
             check(api, "import Vulkan memory", r)?;
         }
         let mut buf = ImportedBuffer {
@@ -244,6 +303,148 @@ impl Drop for ImportedBuffer {
                 (self.api.cuMemFree)(self.ptr);
             }
             (self.api.cuDestroyExternalMemory)(self.memory);
+        }
+    }
+}
+
+/// GPU memory CUDA allocated and exported as a file descriptor, for Vulkan
+/// to import (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`): NVDEC's
+/// pictures reach the renderer without leaving the GPU.
+pub struct ExportedBuffer {
+    api: &'static Api,
+    ctx: CuContext,
+    pub ptr: CuDevicePtr,
+    /// The allocation's size (a multiple of CUDA's granularity).
+    pub size: usize,
+    fd: OwnedFd,
+}
+
+impl ExportedBuffer {
+    /// At least `len` bytes on the GPU of `ctx`.
+    pub fn new(ctx: CuContext, len: usize) -> Result<Self, CodecError> {
+        let api = api()?;
+        let _current = Current::push(ctx)?;
+        let mut dev = 0;
+        // SAFETY: valid out-pointer; a context is current.
+        check(api, "get device", unsafe { (api.cuCtxGetDevice)(&mut dev) })?;
+        for (attribute, what) in [
+            (
+                CU_DEVICE_ATTRIBUTE_VIRTUAL_ADDRESS_MANAGEMENT_SUPPORTED,
+                "virtual memory management",
+            ),
+            (
+                CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR_SUPPORTED,
+                "memory exported as file descriptors",
+            ),
+        ] {
+            let mut on = 0;
+            // SAFETY: valid out-pointer and device.
+            check(api, "query device", unsafe {
+                (api.cuDeviceGetAttribute)(&mut on, attribute, dev)
+            })?;
+            if on == 0 {
+                return Err(CodecError::Backend(format!("this GPU has no {what}")));
+            }
+        }
+        let location = MemLocation {
+            kind: CU_MEM_LOCATION_TYPE_DEVICE,
+            id: dev,
+        };
+        let prop = MemAllocationProp {
+            kind: CU_MEM_ALLOCATION_TYPE_PINNED,
+            requested_handle_types: CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+            location,
+            win32_handle_metadata: std::ptr::null_mut(),
+            alloc_flags: [0; 8],
+        };
+        let mut granularity = 0;
+        // SAFETY: valid pointers.
+        check(api, "query allocation granularity", unsafe {
+            (api.cuMemGetAllocationGranularity)(
+                &mut granularity,
+                &prop,
+                CU_MEM_ALLOC_GRANULARITY_RECOMMENDED,
+            )
+        })?;
+        let size = len.next_multiple_of(granularity.max(1));
+        let mut handle = 0u64;
+        // SAFETY: valid pointers; the handle is released below either way.
+        check(api, "allocate", unsafe {
+            (api.cuMemCreate)(&mut handle, size, &prop, 0)
+        })?;
+        let mut raw: c_int = -1;
+        // SAFETY: a POSIX handle is written as an int.
+        let exported = check(api, "export memory", unsafe {
+            (api.cuMemExportToShareableHandle)(
+                (&raw mut raw).cast(),
+                handle,
+                prop.requested_handle_types,
+                0,
+            )
+        });
+        let mapped = exported.and_then(|()| {
+            let mut ptr = 0;
+            // SAFETY: reserve, map and allow access to the allocation; each
+            // step undone below when a later one fails.
+            unsafe {
+                check(
+                    api,
+                    "reserve addresses",
+                    (api.cuMemAddressReserve)(&mut ptr, size, granularity, 0, 0),
+                )?;
+                let desc = MemAccessDesc {
+                    location,
+                    flags: CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+                };
+                let r = check(api, "map memory", (api.cuMemMap)(ptr, size, 0, handle, 0)).and_then(
+                    |()| {
+                        check(
+                            api,
+                            "allow access",
+                            (api.cuMemSetAccess)(ptr, size, &desc, 1),
+                        )
+                        .inspect_err(|_| {
+                            (api.cuMemUnmap)(ptr, size);
+                        })
+                    },
+                );
+                if r.is_err() {
+                    (api.cuMemAddressFree)(ptr, size);
+                }
+                r.map(|()| ptr)
+            }
+        });
+        // The mapping and the exported descriptor keep the memory; the
+        // handle is not needed any more.
+        // SAFETY: created above.
+        unsafe { (api.cuMemRelease)(handle) };
+        // SAFETY: on success the export wrote a descriptor we now own.
+        let fd = (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw) });
+        let ptr = mapped?;
+        Ok(Self {
+            api,
+            ctx,
+            ptr,
+            size,
+            fd: fd.ok_or_else(|| CodecError::Backend("CUDA exported no descriptor".into()))?,
+        })
+    }
+
+    /// The memory's descriptor; an importer takes a duplicate.
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl Drop for ExportedBuffer {
+    fn drop(&mut self) {
+        let Ok(_current) = Current::push(self.ctx) else {
+            return;
+        };
+        // SAFETY: mapped and reserved in new() under this context.
+        unsafe {
+            (self.api.cuMemUnmap)(self.ptr, self.size);
+            (self.api.cuMemAddressFree)(self.ptr, self.size);
         }
     }
 }
@@ -302,6 +503,12 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Memcpy2D, src_host), 24);
         assert_eq!(std::mem::offset_of!(Memcpy2D, dst_memory_type), 72);
         assert_eq!(std::mem::size_of::<DecodeCaps>(), 88);
+        assert_eq!(std::mem::size_of::<MemAllocationProp>(), 32);
+        assert_eq!(
+            std::mem::offset_of!(MemAllocationProp, win32_handle_metadata),
+            16
+        );
+        assert_eq!(std::mem::size_of::<MemAccessDesc>(), 12);
         assert_eq!(std::mem::offset_of!(DecodeCaps, supported), 24);
         assert_eq!(std::mem::offset_of!(DecodeCaps, max_width), 28);
     }

@@ -1,7 +1,7 @@
-//! Vulkan images and buffers: plain ones, and DMA-BUF planes imported
-//! without a copy.
+//! Vulkan images and buffers: plain ones, DMA-BUF planes imported without
+//! a copy, and buffers on memory another API (CUDA) exported.
 
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 
 use ash::vk;
 use fernsicht_capture::DmaBuf;
@@ -162,6 +162,75 @@ pub fn host_buffer(
                 Err(format!("map buffer: {e}"))
             }
         }
+    }
+}
+
+/// A buffer to copy from, on `size` bytes of device memory another API
+/// exported as an opaque descriptor (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`,
+/// e.g. CUDA's). Vulkan gets a duplicate of `fd`.
+pub fn opaque_buffer(
+    gpu: &Gpu,
+    fd: BorrowedFd<'_>,
+    size: u64,
+) -> Result<(vk::Buffer, vk::DeviceMemory), String> {
+    if gpu.memory_fd.is_none() {
+        return Err("this device imports no external memory".into());
+    }
+    let d = &gpu.device;
+    // SAFETY: object creation on a valid device; everything created is
+    // freed on the error paths, and the imported descriptor is a duplicate
+    // that Vulkan owns only on success.
+    unsafe {
+        let mut external = vk::ExternalMemoryBufferCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+        let buffer = d
+            .create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                    .push_next(&mut external),
+                None,
+            )
+            .map_err(err("create buffer for shared memory"))?;
+        let req = d.get_buffer_memory_requirements(buffer);
+        let ty = gpu.memory_type(req.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let fd = fd.try_clone_to_owned();
+        let (ty, fd) = match (ty, fd) {
+            (Some(ty), Ok(fd)) if req.size <= size => (ty, fd),
+            (ty, fd) => {
+                d.destroy_buffer(buffer, None);
+                return Err(match fd {
+                    Err(e) => format!("dup shared memory: {e}"),
+                    Ok(_) if ty.is_none() => "no device memory for shared memory".into(),
+                    Ok(_) => format!("shared memory of {size} bytes, {} needed", req.size),
+                });
+            }
+        };
+        let raw = fd.into_raw_fd();
+        let mut import = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD)
+            .fd(raw);
+        let memory = match d.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(size)
+                .memory_type_index(ty)
+                .push_next(&mut import),
+            None,
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                // Not consumed on failure: close it ourselves.
+                drop(OwnedFd::from_raw_fd(raw));
+                d.destroy_buffer(buffer, None);
+                return Err(format!("import shared memory: {e}"));
+            }
+        };
+        if let Err(e) = d.bind_buffer_memory(buffer, memory, 0) {
+            d.destroy_buffer(buffer, None);
+            d.free_memory(memory, None);
+            return Err(format!("bind shared memory: {e}"));
+        }
+        Ok((buffer, memory))
     }
 }
 

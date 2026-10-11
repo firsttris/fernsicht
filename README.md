@@ -149,7 +149,8 @@ the same way on KDE Plasma, GNOME, Hyprland, Sway, gamescope and X11. That needs
 <summary><b>Does it work with NVIDIA?</b></summary>
 
 Yes, with the proprietary driver: NVENC on the host (the screen goes from KMS through Vulkan into
-CUDA, without a CPU copy) and NVDEC in the client. Tested on a GTX 1080.
+CUDA, without a CPU copy) and NVDEC in the client (its pictures go from CUDA to Vulkan on the GPU).
+Tested on a GTX 1080.
 </details>
 
 <details>

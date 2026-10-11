@@ -265,7 +265,7 @@ fn a_new_stream_size_gives_new_pictures() {
             dec.decode(&out.data, &mut d).unwrap();
         }
         assert_eq!((d.width, d.height), (w, h));
-        match dec.picture(PictureKind::DmaBuf).unwrap() {
+        match dec.picture(PictureKind::Gpu).unwrap() {
             Some(Picture::DmaBuf { image, key }) => {
                 assert_eq!((image.width, image.height), (w, h));
                 shown.push(key >> 32);

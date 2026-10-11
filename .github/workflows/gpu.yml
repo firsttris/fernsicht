@@ -63,7 +63,7 @@ jobs:
           FERNSICHT_REQUIRE_VULKAN: "1"
         run: >
           cargo test -p fernsicht-render
-          --features "vulkan${{ matrix.gpu == 'amd' && ',vaapi' || '' }}"
+          --features "vulkan${{ matrix.gpu == 'amd' && ',vaapi' || ',nvidia' }}"
           --test vulkan -- --test-threads=1 --nocapture
       - name: Screen to NV12 in Vulkan (DMA-BUF import, BT.709, scaling)
         if: ${{ !cancelled() }}

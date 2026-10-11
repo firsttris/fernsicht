@@ -19,6 +19,7 @@
 use std::ffi::{CString, c_int};
 use std::ptr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fernsicht_capture::{DmaBuf, Frame, PixelFormat};
 use fernsicht_core::now_us;
@@ -204,12 +205,8 @@ impl NvencEncoder {
 
     /// FFmpeg's CUDA context and stream for this encoder.
     fn cuda(&self) -> (cuda::CuContext, *mut std::ffi::c_void) {
-        // SAFETY: a CUDA device context's hwctx is an AVCUDADeviceContext.
-        unsafe {
-            let dc = (*self.device).data as *mut ffi::AVHWDeviceContext;
-            let cu = &*((*dc).hwctx as *const ffi::AVCUDADeviceContext);
-            (cu.cuda_ctx.cast(), cu.stream.cast())
-        }
+        // SAFETY: device is the encoder's CUDA device context.
+        unsafe { cuda_of(self.device) }
     }
 
     fn setup_gpu_input(&self) -> Result<GpuInput, CodecError> {
@@ -484,6 +481,64 @@ unsafe extern "C" fn pick_cuda(
     ffi::AVPixelFormat::AV_PIX_FMT_NONE
 }
 
+/// FFmpeg's CUDA context and stream of a CUDA device context.
+///
+/// # Safety
+/// `device` is a CUDA `AVHWDeviceContext` reference.
+unsafe fn cuda_of(device: *mut ffi::AVBufferRef) -> (cuda::CuContext, *mut std::ffi::c_void) {
+    // SAFETY: a CUDA device context's hwctx is an AVCUDADeviceContext.
+    unsafe {
+        let dc = (*device).data as *mut ffi::AVHWDeviceContext;
+        let cu = &*((*dc).hwctx as *const ffi::AVCUDADeviceContext);
+        (cu.cuda_ctx.cast(), cu.stream.cast())
+    }
+}
+
+/// Where NVDEC's pictures go for the renderer: CUDA memory exported as a
+/// file descriptor, each picture copied into it on the GPU.
+struct Export {
+    buffer: cuda::ExportedBuffer,
+    device_uuid: [u8; 16],
+    /// Unique in the process: a renderer's import of another id is stale.
+    id: u64,
+    width: u32,
+    height: u32,
+    /// Row pitch of both planes, bytes.
+    pitch: u32,
+}
+
+impl Export {
+    fn new(ctx: cuda::CuContext, width: u32, height: u32) -> Result<Self, CodecError> {
+        static IDS: AtomicU64 = AtomicU64::new(1);
+        // Rows start on 256 bytes, as copies into images like them.
+        let pitch = width.next_multiple_of(256);
+        let len = pitch as usize * height as usize * 3 / 2;
+        let buffer = cuda::ExportedBuffer::new(ctx, len)?;
+        let device_uuid = cuda::Current::push(ctx)?.device_uuid()?;
+        Ok(Self {
+            buffer,
+            device_uuid,
+            id: IDS.fetch_add(1, Ordering::Relaxed),
+            width,
+            height,
+            pitch,
+        })
+    }
+
+    fn picture(&self) -> Picture<'_> {
+        let rows = u64::from(self.pitch) * u64::from(self.height);
+        Picture::Exported {
+            memory: self.buffer.fd(),
+            size: self.buffer.size as u64,
+            id: self.id,
+            device_uuid: self.device_uuid,
+            width: self.width,
+            height: self.height,
+            planes: [(0, self.pitch), (rows, self.pitch)],
+        }
+    }
+}
+
 pub struct NvdecDecoder {
     device: *mut ffi::AVBufferRef,
     ctx: *mut ffi::AVCodecContext,
@@ -496,6 +551,9 @@ pub struct NvdecDecoder {
     decoded: u64,
     /// The last downloaded picture.
     nv12: Vec<u8>,
+    /// Set up on the first request for a GPU picture; an error is kept
+    /// (and pictures go through the CPU).
+    export: Option<Result<Export, String>>,
 }
 
 // SAFETY: as for NvencEncoder.
@@ -529,6 +587,7 @@ impl NvdecDecoder {
                 pkt: ffi::av_packet_alloc(),
                 decoded: 0,
                 nv12: Vec::new(),
+                export: None,
             };
             if dec.ctx.is_null()
                 || dec.frame.is_null()
@@ -570,6 +629,65 @@ impl NvdecDecoder {
     pub fn last_frame_nv12(&mut self) -> Result<Vec<u8>, CodecError> {
         self.download()?;
         Ok(self.nv12.clone())
+    }
+
+    /// Copies the last decoded `width`×`height` frame into the exported
+    /// memory, on the GPU; sets it up first (again for a new size).
+    fn export(&mut self, width: u32, height: u32) -> Result<(), CodecError> {
+        // SAFETY: device is the decoder's CUDA device context.
+        let (ctx, stream) = unsafe { cuda_of(self.device) };
+        if self.export.as_ref().is_none_or(|e| {
+            e.as_ref()
+                .is_ok_and(|e| (e.width, e.height) != (width, height))
+        }) {
+            self.export = None;
+            let e = Export::new(ctx, width, height).map_err(|e| e.to_string());
+            if let Err(e) = &e {
+                log::info!("NVDEC pictures go through the CPU: {e}");
+            }
+            self.export = Some(e);
+        }
+        let e = match &self.export {
+            Some(Ok(e)) => e,
+            Some(Err(e)) => return Err(CodecError::Backend(e.clone())),
+            None => unreachable!("set above"),
+        };
+        // SAFETY: frame holds a decoded CUDA NV12 frame of width×height
+        // (checked by the caller): two planes of device memory.
+        let (y, y_pitch, uv, uv_pitch) = unsafe {
+            let f = &*self.frame;
+            (
+                f.data[0] as cuda::CuDevicePtr,
+                f.linesize[0] as usize,
+                f.data[1] as cuda::CuDevicePtr,
+                f.linesize[1] as usize,
+            )
+        };
+        let (w, h, pitch) = (width as usize, height as usize, e.pitch as usize);
+        let current = cuda::Current::push(ctx)?;
+        // On FFmpeg's stream: after NVDEC's own copy into the frame.
+        cuda::copy_2d(
+            &current,
+            stream,
+            &[
+                cuda::Copy2D {
+                    src: y,
+                    src_pitch: y_pitch,
+                    dst: e.buffer.ptr,
+                    dst_pitch: pitch,
+                    width_bytes: w,
+                    rows: h,
+                },
+                cuda::Copy2D {
+                    src: uv,
+                    src_pitch: uv_pitch,
+                    dst: e.buffer.ptr + (pitch * h) as u64,
+                    dst_pitch: pitch,
+                    width_bytes: w,
+                    rows: h / 2,
+                },
+            ],
+        )
     }
 
     fn download(&mut self) -> Result<(), CodecError> {
@@ -635,8 +753,9 @@ impl Decoder for NvdecDecoder {
         Ok(())
     }
 
-    /// Always NV12 in CPU memory for now, whatever is preferred.
-    fn picture(&mut self, _prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
+    /// A GPU picture copied on the GPU into exported CUDA memory where the
+    /// presenter wants one and CUDA can export, else NV12 in CPU memory.
+    fn picture(&mut self, prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
         // SAFETY: frame is a valid AVFrame.
         let (format, width, height) = unsafe {
             let f = &*self.frame;
@@ -644,6 +763,11 @@ impl Decoder for NvdecDecoder {
         };
         if format != ffi::AVPixelFormat::AV_PIX_FMT_CUDA as c_int {
             return Ok(None);
+        }
+        let exportable = !matches!(self.export, Some(Err(_)));
+        if prefer == PictureKind::Gpu && exportable && self.export(width, height).is_ok() {
+            let e = self.export.as_ref().and_then(|e| e.as_ref().ok());
+            return Ok(e.map(Export::picture));
         }
         self.download()?;
         Ok(Some(Picture::Nv12 {
@@ -656,6 +780,9 @@ impl Decoder for NvdecDecoder {
 
 impl Drop for NvdecDecoder {
     fn drop(&mut self) {
+        // The exported memory first, while the CUDA context lives (fields
+        // drop only after this).
+        self.export = None;
         // SAFETY: each pointer is either null or owned by us.
         unsafe {
             ffi::avcodec_free_context(&mut self.ctx);

@@ -85,13 +85,28 @@ struct Planes {
     set: vk::DescriptorSet,
 }
 
+/// The plane images pictures are copied into: CPU pictures (through the
+/// staging buffer) and memory another API exported.
 struct CpuPlanes {
     planes: Planes,
-    staging: vk::Buffer,
-    staging_memory: vk::DeviceMemory,
-    mapped: *mut u8,
     width: u32,
     height: u32,
+    staging: Option<Staging>,
+}
+
+/// A mapped buffer CPU pictures are written into.
+struct Staging {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    mapped: *mut u8,
+}
+
+/// Memory another API exported (NVDEC's pictures through CUDA), imported
+/// as a buffer to copy from. The decoder keeps one at a time.
+struct Shared {
+    id: u64,
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
 }
 
 struct Offscreen {
@@ -138,7 +153,10 @@ pub fn cursor_rect(
 
 enum Source {
     None,
+    /// Tightly packed in the staging buffer.
     Cpu,
+    /// In the shared buffer: byte offset and row pitch of each plane.
+    Shared([(u64, u32); 2]),
     Foreign(u64),
 }
 
@@ -169,6 +187,7 @@ pub struct Renderer {
     cmd: vk::CommandBuffer,
     fence: vk::Fence,
     cpu: Option<CpuPlanes>,
+    shared: Option<Shared>,
     imported: HashMap<u64, Planes>,
     offscreen: Option<Offscreen>,
 }
@@ -197,6 +216,7 @@ impl Renderer {
                 cmd: vk::CommandBuffer::null(),
                 fence: vk::Fence::null(),
                 cpu: None,
+                shared: None,
                 imported: HashMap::new(),
                 offscreen: None,
                 gpu: gpu.clone(),
@@ -430,17 +450,13 @@ impl Renderer {
         }
     }
 
-    /// Copies a CPU NV12 picture into the staging buffer, (re)creating the
-    /// plane images when the size changes.
-    fn stage_cpu(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), RenderError> {
+    /// The plane images for a `width`×`height` picture, (re)created when
+    /// the size changes.
+    fn copy_planes(&mut self, width: u32, height: u32) -> Result<&mut CpuPlanes, RenderError> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(RenderError::Other(format!(
                 "NV12 needs even sizes, got {width}×{height}"
             )));
-        }
-        let len = width as usize * height as usize * 3 / 2;
-        if data.len() < len {
-            return Err(RenderError::Other("NV12 picture too short".into()));
         }
         if self
             .cpu
@@ -448,13 +464,7 @@ impl Renderer {
             .is_none_or(|c| (c.width, c.height) != (width, height))
         {
             if let Some(old) = self.cpu.take() {
-                // SAFETY: idle (fence waited), owned by us.
-                unsafe {
-                    let d = &self.gpu.device;
-                    d.unmap_memory(old.staging_memory);
-                    d.destroy_buffer(old.staging, None);
-                    d.free_memory(old.staging_memory, None);
-                }
+                self.destroy_staging(old.staging);
                 self.destroy_planes(old.planes);
             }
             let usage = vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED;
@@ -474,9 +484,6 @@ impl Renderer {
                 import::view(&self.gpu, uv, vk::Format::R8G8_UNORM).map_err(RenderError::Other)?,
             ];
             let set = self.descriptor_set(views)?;
-            let (staging, staging_memory, mapped) =
-                import::host_buffer(&self.gpu, len as u64, vk::BufferUsageFlags::TRANSFER_SRC)
-                    .map_err(RenderError::Other)?;
             self.cpu = Some(CpuPlanes {
                 planes: Planes {
                     images: [y, uv],
@@ -484,17 +491,83 @@ impl Renderer {
                     views,
                     set,
                 },
-                staging,
-                staging_memory,
-                mapped,
                 width,
                 height,
+                staging: None,
             });
         }
-        let cpu = self.cpu.as_ref().expect("just created");
-        // SAFETY: the mapping is len bytes, the GPU is idle on it.
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), cpu.mapped, len) };
+        Ok(self.cpu.as_mut().expect("just created"))
+    }
+
+    /// Copies a CPU NV12 picture into the staging buffer.
+    fn stage_cpu(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), RenderError> {
+        let len = width as usize * height as usize * 3 / 2;
+        if data.len() < len {
+            return Err(RenderError::Other("NV12 picture too short".into()));
+        }
+        let gpu = self.gpu.clone();
+        let planes = self.copy_planes(width, height)?;
+        if planes.staging.is_none() {
+            let (buffer, memory, mapped) =
+                import::host_buffer(&gpu, len as u64, vk::BufferUsageFlags::TRANSFER_SRC)
+                    .map_err(RenderError::Other)?;
+            planes.staging = Some(Staging {
+                buffer,
+                memory,
+                mapped,
+            });
+        }
+        let staging = planes.staging.as_ref().expect("just created");
+        // SAFETY: the mapping is len bytes (made for this size), the GPU is
+        // idle on it.
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), staging.mapped, len) };
         Ok(())
+    }
+
+    /// Imports memory another API exported (see `Picture::Exported`),
+    /// unless it is the memory imported last.
+    fn import_shared(
+        &mut self,
+        memory: std::os::fd::BorrowedFd<'_>,
+        size: u64,
+        id: u64,
+        device_uuid: [u8; 16],
+    ) -> Result<(), RenderError> {
+        if self.shared.as_ref().is_some_and(|s| s.id == id) {
+            return Ok(());
+        }
+        if device_uuid != self.gpu.device_uuid() {
+            return Err(RenderError::Import(format!(
+                "the picture is on another GPU than {}",
+                self.gpu.name()
+            )));
+        }
+        self.forget_shared();
+        let (buffer, memory) =
+            import::opaque_buffer(&self.gpu, memory, size).map_err(RenderError::Import)?;
+        self.shared = Some(Shared { id, buffer, memory });
+        Ok(())
+    }
+
+    fn destroy_staging(&self, staging: Option<Staging>) {
+        let Some(s) = staging else { return };
+        // SAFETY: idle (every frame waits its fence), owned by us.
+        unsafe {
+            let d = &self.gpu.device;
+            d.unmap_memory(s.memory);
+            d.destroy_buffer(s.buffer, None);
+            d.free_memory(s.memory, None);
+        }
+    }
+
+    fn forget_shared(&mut self) {
+        if let Some(s) = self.shared.take() {
+            // SAFETY: idle (every frame waits its fence), owned by us.
+            unsafe {
+                self.gpu.device.destroy_buffer(s.buffer, None);
+                self.gpu.device.free_memory(s.memory, None);
+            }
+        }
     }
 
     fn import(&mut self, image: &fernsicht_capture::DmaBuf, key: u64) -> Result<(), RenderError> {
@@ -569,11 +642,24 @@ impl Renderer {
                 self.import(image, *key)?;
                 (Source::Foreign(*key), (image.width, image.height))
             }
+            Some(Picture::Exported {
+                memory,
+                size,
+                id,
+                device_uuid,
+                width,
+                height,
+                planes,
+            }) => {
+                self.import_shared(*memory, *size, *id, *device_uuid)?;
+                self.copy_planes(*width, *height)?;
+                (Source::Shared(*planes), (*width, *height))
+            }
         };
         let pipeline = self.pipeline(format, false)?;
         // The pointer only makes sense on a picture.
         let pointer = match (cursor, &source) {
-            (Some(c), Source::Cpu | Source::Foreign(_)) => {
+            (Some(c), Source::Cpu | Source::Shared(_) | Source::Foreign(_)) => {
                 let upload = self.stage_cursor(c)?;
                 let pipeline = self.pipeline(format, true)?;
                 Some((c, upload, pipeline))
@@ -606,8 +692,19 @@ impl Renderer {
         } = frame;
         let planes = match source {
             Source::None => None,
-            Source::Cpu => self.cpu.as_ref().map(|c| &c.planes),
+            Source::Cpu | Source::Shared(_) => self.cpu.as_ref().map(|c| &c.planes),
             Source::Foreign(key) => self.imported.get(&key),
+        };
+        // Where a copied picture comes from: the buffer, each plane's
+        // offset and row pitch, and whether another API hands it over.
+        let copy_from = match source {
+            Source::Cpu => self.cpu.as_ref().and_then(|c| {
+                let w = c.width;
+                let packed = [(0, w), (u64::from(w) * u64::from(c.height), w)];
+                c.staging.as_ref().map(|s| (s.buffer, packed, false))
+            }),
+            Source::Shared(layout) => self.shared.as_ref().map(|s| (s.buffer, layout, true)),
+            Source::None | Source::Foreign(_) => None,
         };
         let d = &self.gpu.device;
         let cmd = self.cmd;
@@ -639,9 +736,28 @@ impl Renderer {
             )
             .map_err(other("begin command buffer"))?;
 
-            match (&source, planes) {
-                (Source::Cpu, Some(p)) => {
-                    let cpu = self.cpu.as_ref().expect("staged");
+            match (&source, planes, copy_from) {
+                (_, Some(p), Some((from, layout, external))) => {
+                    let (w, h) = size;
+                    // Memory another API wrote: taken over before the copy,
+                    // handed back after.
+                    let handover = |src, dst, src_access, dst_access| {
+                        vk::BufferMemoryBarrier::default()
+                            .buffer(from)
+                            .size(vk::WHOLE_SIZE)
+                            .src_access_mask(src_access)
+                            .dst_access_mask(dst_access)
+                            .src_queue_family_index(src)
+                            .dst_queue_family_index(dst)
+                    };
+                    let acquire = external.then(|| {
+                        handover(
+                            vk::QUEUE_FAMILY_EXTERNAL,
+                            family,
+                            vk::AccessFlags::empty(),
+                            vk::AccessFlags::TRANSFER_READ,
+                        )
+                    });
                     let to_dst = p.images.map(|i| {
                         barrier(
                             i,
@@ -657,14 +773,17 @@ impl Renderer {
                         vk::PipelineStageFlags::TRANSFER,
                         vk::DependencyFlags::empty(),
                         &[],
-                        &[],
+                        acquire.as_slice(),
                         &to_dst,
                     );
-                    let (w, h) = (cpu.width, cpu.height);
                     let layer = vk::ImageSubresourceLayers::default()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
                         .layer_count(1);
+                    // Row lengths count texels: one byte for Y, two for UV.
+                    let [(y_offset, y_pitch), (uv_offset, uv_pitch)] = layout;
                     let y = vk::BufferImageCopy::default()
+                        .buffer_offset(y_offset)
+                        .buffer_row_length(y_pitch)
                         .image_subresource(layer)
                         .image_extent(vk::Extent3D {
                             width: w,
@@ -672,7 +791,8 @@ impl Renderer {
                             depth: 1,
                         });
                     let uv = vk::BufferImageCopy::default()
-                        .buffer_offset(u64::from(w) * u64::from(h))
+                        .buffer_offset(uv_offset)
+                        .buffer_row_length(uv_pitch / 2)
                         .image_subresource(layer)
                         .image_extent(vk::Extent3D {
                             width: w / 2,
@@ -680,8 +800,16 @@ impl Renderer {
                             depth: 1,
                         });
                     let dst = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-                    d.cmd_copy_buffer_to_image(cmd, cpu.staging, p.images[0], dst, &[y]);
-                    d.cmd_copy_buffer_to_image(cmd, cpu.staging, p.images[1], dst, &[uv]);
+                    d.cmd_copy_buffer_to_image(cmd, from, p.images[0], dst, &[y]);
+                    d.cmd_copy_buffer_to_image(cmd, from, p.images[1], dst, &[uv]);
+                    let release = external.then(|| {
+                        handover(
+                            family,
+                            vk::QUEUE_FAMILY_EXTERNAL,
+                            vk::AccessFlags::TRANSFER_READ,
+                            vk::AccessFlags::empty(),
+                        )
+                    });
                     let to_read = p.images.map(|i| {
                         barrier(
                             i,
@@ -697,11 +825,11 @@ impl Renderer {
                         vk::PipelineStageFlags::FRAGMENT_SHADER,
                         vk::DependencyFlags::empty(),
                         &[],
-                        &[],
+                        release.as_slice(),
                         &to_read,
                     );
                 }
-                (Source::Foreign(_), Some(p)) => {
+                (Source::Foreign(_), Some(p), _) => {
                     // Take the decoder's images over from the "foreign"
                     // (VAAPI) side; GENERAL keeps their contents.
                     let acquire = p.images.map(|i| {
@@ -1126,11 +1254,13 @@ impl Renderer {
         }
     }
 
-    /// Forgets imported decoder surfaces (the decoder was replaced).
+    /// Forgets imported decoder surfaces and shared memory (the decoder
+    /// was replaced).
     pub fn forget_imports(&mut self) {
         for (_, p) in std::mem::take(&mut self.imported) {
             self.destroy_planes(p);
         }
+        self.forget_shared();
     }
 }
 
@@ -1142,13 +1272,7 @@ impl Drop for Renderer {
         self.drop_offscreen();
         self.drop_cursor();
         if let Some(c) = self.cpu.take() {
-            // SAFETY: idle, owned by us.
-            unsafe {
-                let d = &self.gpu.device;
-                d.unmap_memory(c.staging_memory);
-                d.destroy_buffer(c.staging, None);
-                d.free_memory(c.staging_memory, None);
-            }
+            self.destroy_staging(c.staging);
             self.destroy_planes(c.planes);
         }
         let d = &self.gpu.device;

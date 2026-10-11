@@ -40,7 +40,7 @@ flowchart BT
 | `net` | Reed-Solomon FEC (`reed-solomon-simd`), one group per frame up to 512 shards, balanced and interleaved beyond; recovery shards per group sized binomially from the measured loss (group failure ≤ 10⁻⁵); reassembly with keyframe requests and hard size limits; the pacer; NTP-style clock sync; UDP sockets with 4 MiB buffers; bitrate adaptation; loss simulation |
 | `capture` | The `FrameSource` trait, the test pattern (NV12, a moving bar, a circling pointer), the DMA-BUF description, KMS capture at vblank with the cursor plane and monitor switching (feature `kms`, pure Rust) |
 | `gpu` | The Vulkan device and DMA-BUF import without a copy (for the renderer and the encoder); RGB DMA-BUF → NV12 by a compute shader, exported to CUDA for NVENC; test images exported as DMA-BUFs |
-| `codec` | The `Encoder`/`Decoder` traits, the synthetic codec, VAAPI encode and decode of H.264, HEVC and AV1 through FFmpeg (feature `vaapi`, DMA-BUF import, RGB → NV12 and scaling by `scale_vaapi`), NVENC/NVDEC (feature `nvidia`, screen through Vulkan → CUDA), hardware capability queries |
+| `codec` | The `Encoder`/`Decoder` traits, the synthetic codec, VAAPI encode and decode of H.264, HEVC and AV1 through FFmpeg (feature `vaapi`, DMA-BUF import, RGB → NV12 and scaling by `scale_vaapi`), NVENC/NVDEC (feature `nvidia`, screen through Vulkan → CUDA, decoded pictures exported from CUDA to Vulkan), hardware capability queries |
 | `render` | The `Presenter` trait, overlay formatting, the Vulkan renderer (NV12 from the CPU or a DMA-BUF → RGB, letterboxing, the pointer) and the window presenter (feature `window`) |
 | `input` | Input events, the duplicate filter, `uinput` devices on the host (mouse, keyboard, Xbox 360 pads), evdev gamepads on the client |
 | `audio` | Capture and playback through PipeWire's PulseAudio interface, Opus (48 kHz stereo, 5 ms frames, low delay), the client's jitter buffer, a test tone; libopus and libpulse are loaded at runtime |
@@ -67,8 +67,8 @@ flowchart BT
 
 | Feature | Crates | |
 |---|---|---|
-| `vaapi` | codec, host-agent, client, e2e | hardware video on AMD/Intel; needs FFmpeg and libva headers |
-| `nvidia` | codec, host-agent, client, e2e | NVENC/NVDEC; CUDA is loaded at runtime, builds without the driver |
+| `vaapi` | codec, host-agent, client, render (GPU tests), e2e | hardware video on AMD/Intel; needs FFmpeg and libva headers |
+| `nvidia` | codec, host-agent, client, render (GPU tests), e2e | NVENC/NVDEC; CUDA is loaded at runtime, builds without the driver |
 | `kms` | capture, host-agent | screen capture over KMS |
 | `window` | render, client | the Vulkan window (winit) |
 | `vulkan` | render | the renderer without a window (tests) |

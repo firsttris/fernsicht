@@ -118,10 +118,10 @@ fn roundtrip_1080p60_quality_latency_and_framing() {
         assert_eq!(decoded.seq, i as u64, "one frame per packet, in order");
 
         let t = Instant::now();
-        let pic = dec.picture(PictureKind::DmaBuf).unwrap().unwrap();
+        let pic = dec.picture(PictureKind::Nv12).unwrap().unwrap();
         dl_ms.push(t.elapsed().as_secs_f64() * 1e3);
         let Picture::Nv12 { data, .. } = pic else {
-            panic!("NVDEC hands out CPU pictures for now")
+            panic!("asked for a CPU picture")
         };
         if i % 10 == 0 {
             psnrs.push(psnr_y(&f.data, data, (w * h) as usize));

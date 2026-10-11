@@ -7,8 +7,9 @@
 //! - [`vaapi`] (feature `vaapi`): H.264 low-latency encode and decode in
 //!   hardware via FFmpeg (radeonsi on the RX 7800 XT, iHD on Intel).
 //!   Takes KMS DMA-BUFs without a copy.
-//! - [`nvidia`] (feature `nvidia`): H.264 with NVENC and NVDEC via FFmpeg
-//!   (GTX 1080 and newer). CPU NV12 in and out for now.
+//! - [`nvidia`] (feature `nvidia`): H.264, HEVC and AV1 with NVENC and
+//!   NVDEC via FFmpeg (GTX 1080 and newer); pictures stay on the GPU (screen
+//!   input through Vulkan, decoded pictures exported from CUDA).
 
 #[cfg(feature = "nvidia")]
 mod cuda;
@@ -19,6 +20,8 @@ pub mod nvidia;
 pub mod synthetic;
 #[cfg(feature = "vaapi")]
 pub mod vaapi;
+
+use std::os::fd::BorrowedFd;
 
 use fernsicht_capture::{DmaBuf, Frame};
 use fernsicht_proto::Codec;
@@ -92,6 +95,22 @@ pub enum Picture<'a> {
     /// replaced (a new decoder, a new stream size), and imports of older
     /// pools are stale.
     DmaBuf { image: &'a DmaBuf, key: u64 },
+    /// NV12 in GPU memory CUDA exported (NVDEC's pictures): import `memory`
+    /// as Vulkan memory (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`,
+    /// `size` bytes, on the GPU with `device_uuid`) and copy the planes
+    /// out. CUDA has finished writing; the memory holds this picture until
+    /// the next [`Decoder::picture`]. `id` changes when the memory does:
+    /// an import of another id is stale.
+    Exported {
+        memory: BorrowedFd<'a>,
+        size: u64,
+        id: u64,
+        device_uuid: [u8; 16],
+        width: u32,
+        height: u32,
+        /// Byte offset and row pitch of the Y and the interleaved UV plane.
+        planes: [(u64, u32); 2],
+    },
 }
 
 pub trait Decoder: Send {
@@ -107,8 +126,9 @@ pub trait Decoder: Send {
 /// Which form of [`Picture`] the presenter would like.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PictureKind {
-    /// GPU memory, no copy (falls back to CPU where impossible).
-    DmaBuf,
+    /// GPU memory, no trip through the CPU (falls back to it where
+    /// impossible): [`Picture::DmaBuf`] or [`Picture::Exported`].
+    Gpu,
     /// CPU memory (a download from the GPU).
     Nv12,
 }

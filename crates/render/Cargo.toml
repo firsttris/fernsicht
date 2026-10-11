@@ -15,6 +15,8 @@ vulkan = ["dep:ash", "dep:naga", "dep:log", "dep:fernsicht-gpu"]
 window = ["vulkan", "dep:ash-window", "dep:raw-window-handle", "dep:winit"]
 # GPU tests that feed the renderer from the VAAPI decoder.
 vaapi = ["fernsicht-codec/vaapi"]
+# GPU tests that feed the renderer from NVDEC (memory exported by CUDA).
+nvidia = ["fernsicht-codec/nvidia"]
 
 [dependencies]
 ash = { workspace = true, optional = true }

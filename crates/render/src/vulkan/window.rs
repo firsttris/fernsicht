@@ -112,14 +112,14 @@ impl WindowPresenter {
             "window on {}{}",
             gpu.name(),
             if gpu.can_import_dmabuf() {
-                ", decoded pictures shown without a copy"
+                ", decoded pictures stay on the GPU"
             } else {
                 ", no DMA-BUF import: pictures go through the CPU"
             }
         );
         Ok(Self {
             wants: if gpu.can_import_dmabuf() {
-                PictureKind::DmaBuf
+                PictureKind::Gpu
             } else {
                 PictureKind::Nv12
             },
@@ -378,9 +378,9 @@ impl Presenter for WindowPresenter {
                 self.presented += 1;
                 Ok(())
             }
-            Err(RenderError::Import(e)) if self.wants == PictureKind::DmaBuf => {
+            Err(RenderError::Import(e)) if self.wants == PictureKind::Gpu => {
                 // Not this buffer layout; from now on through the CPU.
-                log::warn!("showing decoded pictures without a copy failed ({e}); using the CPU");
+                log::warn!("keeping decoded pictures on the GPU failed ({e}); using the CPU");
                 self.wants = PictureKind::Nv12;
                 self.renderer.forget_imports();
                 Ok(())
