@@ -149,6 +149,9 @@ pub struct Reassembler {
     session_id: Option<u32>,
     interval: ReceiverStats,
     total: ReceiverStats,
+    /// Packets of the last completed frame: the estimate for frames that
+    /// never arrived at all.
+    typical_packets: u32,
 }
 
 impl Default for Reassembler {
@@ -167,6 +170,7 @@ impl Reassembler {
             session_id: None,
             interval: ReceiverStats::default(),
             total: ReceiverStats::default(),
+            typical_packets: 0,
         }
     }
 
@@ -209,8 +213,8 @@ impl Reassembler {
             _ => {}
         }
         self.count(|s| s.packets_received = s.packets_received.saturating_add(1));
-        if self.interval.packets_received == 1
-            || frame_newer(h.frame_id, self.total.highest_frame_id)
+        // Only forward: a late packet does not move it back.
+        if self.total.packets_received == 1 || frame_newer(h.frame_id, self.total.highest_frame_id)
         {
             self.total.highest_frame_id = h.frame_id;
         }
@@ -376,12 +380,22 @@ impl Reassembler {
         self.last_completed = Some(frame_id);
 
         // Latest frame wins: anything older can no longer be shown.
+        let mut retired = 0u32;
         for i in 0..self.slots.len() {
             let s = &self.slots[i];
             if i != idx && s.active && !s.complete && !frame_newer(s.header.frame_id, frame_id) {
                 self.retire(i);
+                retired += 1;
             }
         }
+        // Frames of the gap that never arrived at all lost their packets
+        // too (the retired ones booked theirs): counted like the last
+        // complete frame, a few frames' worth at most, so a blackout does
+        // not read as heavy random loss for FEC.
+        let unseen = gap.saturating_sub(retired).min(MAX_IN_FLIGHT as u32);
+        let lost = unseen.saturating_mul(self.typical_packets);
+        self.count(|s| s.packets_lost = s.packets_lost.saturating_add(lost));
+        self.typical_packets = self.slots[idx].expected_packets() as u32;
 
         let slot = &mut self.slots[idx];
         slot.complete = true;
@@ -599,6 +613,31 @@ mod tests {
         assert_eq!(s.frames_completed, 2);
         assert_eq!(s.frames_dropped, 1);
         assert_eq!(s.packets_lost, 2);
+    }
+
+    #[test]
+    fn frames_that_never_arrived_count_their_packets_as_lost() {
+        let mut r = Reassembler::new();
+        let complete = |r: &mut Reassembler, id: u32| {
+            let f = frame(1_000, id as u8);
+            let pkts = packets(id, &f, cfg(0.1), id == 0);
+            for p in &pkts {
+                feed(r, p);
+            }
+            pkts.len() as u32
+        };
+        let per_frame = complete(&mut r, 0);
+        r.take_interval();
+        // Frames 1 and 2 never come; 3 does.
+        complete(&mut r, 3);
+        let s = r.take_interval();
+        assert_eq!(s.frames_dropped, 2);
+        assert_eq!(s.packets_lost, 2 * per_frame);
+        assert_eq!(s.highest_frame_id, 3);
+        // A late packet of an old frame does not move the highest id back.
+        let old = packets(1, &frame(1_000, 1), cfg(0.1), false);
+        feed(&mut r, &old[0]);
+        assert_eq!(r.take_interval().highest_frame_id, 3);
     }
 
     #[test]

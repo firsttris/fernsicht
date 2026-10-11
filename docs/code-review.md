@@ -366,7 +366,12 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** `highest_frame_id` can go backwards; lost packets are counted ~8 frames late while
   received ones count at once; frames lost completely never count.
 - **Fix:** count on eviction consistently; monotonic highest ID.
-- **Status:** open
+- **Status:** fixed. The highest frame ID only moves forward. Frames of a gap that never arrived
+  count their packets as lost (like the last complete frame, at most `MAX_IN_FLIGHT` frames, so a
+  blackout does not read as heavy random loss); partly received frames book theirs when retired,
+  which happens when the next frame completes, so the skew is small. The duplicate bookkeeping
+  (`needs_keyframe` vs `RefChain`, two loss filters) is clean-up for E1. Test:
+  `frames_that_never_arrived_count_their_packets_as_lost`.
 
 ### A30 · The app polls processes and can freeze the UI
 
