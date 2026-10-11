@@ -48,9 +48,11 @@ fn transfer(frames: u32, loss: f64, redundancy: f32) -> (u32, fernsicht_net::Rec
             };
             let pkts = p.packetize(&meta, &frame(id, len_for(id))).unwrap();
             pacer
-                .pace(pkts, Duration::from_millis(4), |pkt| {
-                    if !l.drop_packet() {
-                        tx.send(pkt)?;
+                .pace(pkts, Duration::from_millis(4), |chunk| {
+                    for pkt in chunk {
+                        if !l.drop_packet() {
+                            tx.send(pkt)?;
+                        }
                     }
                     Ok::<_, std::io::Error>(())
                 })

@@ -736,7 +736,14 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   `send_to` on an unconnected socket; full-frame copies on both sides.
 - **Fix:** connected socket, UDP GSO (`UDP_SEGMENT`) or `SO_TXTIME`; `recvmmsg` on the client; seal
   in place; swap buffers instead of copying.
-- **Status:** open
+- **Status:** fixed, without the connected socket (the host's one socket also listens). The pacer
+  hands out chunks (packets due within 200 µs, at most one GSO call: 64 datagrams, 60 kB); the
+  host seals them straight into one buffer and sends it with `UDP_SEGMENT`, falling back to one
+  datagram per call where GSO fails and single sends work. Hot threads sleep with a 1 µs timer
+  slack, so the pacer spins only the last 20 µs. The client enables UDP GRO and walks the run it
+  receives; completed frames go to the decoder by swapping buffers. Send thread CPU per frame on
+  the e2e scenarios: 1080p 170–230 → 93 µs, 4K at 80 Mbit/s 2.3 → 0.31 ms (14 % of a core → 2 %);
+  network stage unchanged (1080p 280 µs; 4K 2.19 → 2.12 ms, which is the 400 Mbit/s pacing).
 
 ### C11 · No DSCP/WMM or ECN marking
 

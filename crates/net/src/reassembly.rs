@@ -179,6 +179,24 @@ impl Reassembler {
         self.needs_keyframe
     }
 
+    /// Hands over the bytes of completed frame `frame_id` by swapping
+    /// buffers with `out` (the slot reuses the old one) instead of copying
+    /// them. `false` if no slot holds that frame complete.
+    pub fn take_completed(&mut self, frame_id: u32, out: &mut Vec<u8>) -> bool {
+        let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|s| s.active && s.complete && s.header.frame_id == frame_id)
+        else {
+            return false;
+        };
+        // A complete slot is never written again; reset() sizes the buffer
+        // for its next frame.
+        std::mem::swap(&mut slot.buf, out);
+        out.truncate(slot.header.frame_len as usize);
+        true
+    }
+
     /// The last frame completed, `None` before the first.
     pub fn last_completed(&self) -> Option<u32> {
         self.last_completed
@@ -567,6 +585,27 @@ mod tests {
         let s = r.take_interval();
         assert_eq!(s.frames_completed, 1);
         assert_eq!(s.packets_recovered, 0);
+    }
+
+    #[test]
+    fn a_completed_frame_is_handed_over_without_a_copy() {
+        let mut r = Reassembler::new();
+        let mut out = Vec::with_capacity(64);
+        for (id, len) in [(0u32, 5_000), (1, 300), (2, 9_000)] {
+            let f = frame(len, id as u8);
+            let pkts = packets(id, &f, cfg(0.2), id == 0);
+            for p in &pkts {
+                let Packet::Video(h, payload) = Packet::decode(p).unwrap() else {
+                    panic!()
+                };
+                if r.push(&h, payload, 0).is_some() {
+                    assert!(r.take_completed(id, &mut out));
+                }
+            }
+            // The frame's bytes, the slot's buffer now; padding cut off.
+            assert_eq!(out, f, "frame {id}");
+        }
+        assert!(!r.take_completed(7, &mut out), "no such frame");
     }
 
     #[test]

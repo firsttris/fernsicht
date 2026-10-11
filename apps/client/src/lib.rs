@@ -768,6 +768,10 @@ pub fn run_with(
     let socket = fernsicht_net::socket::connect_udp(&cfg.host)
         .with_context(|| format!("connect {}", cfg.host))?;
     socket.set_read_timeout(Some(Duration::from_millis(2)))?;
+    // Bursts of video datagrams come in one receive.
+    if !fernsicht_net::socket::enable_gro(&socket) {
+        log::debug!("no UDP GRO: one datagram per receive");
+    }
 
     let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
     let need_keyframe = Arc::new(AtomicBool::new(true));
@@ -923,7 +927,8 @@ fn network_loop(
         bitrate_kbps: cfg.bitrate_kbps,
         codecs,
     };
-    let mut buf = [0u8; 2048];
+    // A run of datagrams the kernel coalesced (GRO), or one.
+    let mut rx = vec![0u8; 65_536];
     let mut out = [0u8; MAX_DATAGRAM];
     let mut reassembler = Reassembler::new();
     let mut clock = ClockSync::new();
@@ -958,7 +963,7 @@ fn network_loop(
     };
     let mut crypto: Option<Arc<Transport>> = None;
 
-    loop {
+    'session: loop {
         // Acquire: what the window queued before it set `stop` (the keys it
         // released on closing) is seen below.
         if stop.load(Ordering::Acquire) || deadline.is_some_and(|d| Instant::now() >= d) {
@@ -1073,7 +1078,7 @@ fn network_loop(
             last_feedback = Instant::now();
         }
 
-        let len = match socket.recv(&mut buf) {
+        let (len, size) = match fernsicht_net::socket::recv_segments(socket, &mut rx) {
             Ok(n) => n,
             Err(e)
                 if matches!(
@@ -1088,190 +1093,197 @@ fn network_loop(
             Err(e) => return Err(e).context("recv"),
         };
         let now = now_us();
-        let Ok(outer) = Packet::decode(&buf[..len]) else {
-            continue;
-        };
-        // Only what proves to come from the host keeps the session alive:
-        // in a secure session the sealed packets and the handshake answer
-        // (marked below), else any packet.
-        if cfg.security.is_none() {
-            last_packet = Instant::now();
-        }
-        // A secure session: only sealed packets count (opened here), plus
-        // the handshake's answer and rejections.
-        let packet = match (outer, cfg.security.is_some()) {
-            (Packet::Sealed(h, sealed), true) => {
-                let (Some(t), Some((id, _))) = (crypto.as_deref(), session) else {
-                    continue;
-                };
-                if h.session_id != id {
-                    continue;
-                }
-                let Ok(n) = t.open(h.counter, sealed, &mut opened) else {
-                    continue;
-                };
-                let Ok(inner) = Packet::decode(&opened[..n]) else {
-                    continue;
-                };
+        // With GRO a run of datagrams comes at once.
+        for datagram in rx[..len].chunks(size) {
+            let Ok(outer) = Packet::decode(datagram) else {
+                continue;
+            };
+            // Only what proves to come from the host keeps the session alive:
+            // in a secure session the sealed packets and the handshake answer
+            // (marked below), else any packet.
+            if cfg.security.is_none() {
                 last_packet = Instant::now();
-                inner
             }
-            (Packet::Handshake(h), true) if h.reply => {
-                let Some((initiator, _)) = handshake.as_mut() else {
-                    continue;
-                };
-                // A reply that does not verify is someone else's: wait for
-                // the host's.
-                let payload = match initiator.read_reply(h.message) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::debug!("{}: ignoring a handshake answer: {e}", cfg.host);
-                        continue;
-                    }
-                };
-                let (initiator, _) = handshake.take().expect("checked above");
-                let transport = initiator
-                    .into_transport()
-                    .map_err(|e| anyhow::anyhow!("handshake with {} failed: {e}", cfg.host))?;
-                last_packet = Instant::now();
-                let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
-                    anyhow::bail!("handshake with {}: no session in the answer", cfg.host);
-                };
-                crypto = Some(Arc::new(transport));
-                Packet::HelloAck(ack)
-            }
-            // Not authenticated: believed only while asking for a session,
-            // never during one (anyone could end it with five bytes).
-            (Packet::Reject(r), true) if session.is_none() => {
-                anyhow::bail!("{}: {}", cfg.host, reject_text(r))
-            }
-            (_, true) => continue,
-            (p, false) => p,
-        };
-        match packet {
-            // Plain mode (tests): the host could not start the session.
-            Packet::Reject(r) if session.is_none() => {
-                anyhow::bail!("{}: {}", cfg.host, reject_text(r))
-            }
-            Packet::HelloAck(ack) => {
-                if session.is_none() {
-                    acked_at = Some(Instant::now());
-                    log::info!(
-                        "session {:08x}: {}x{}@{} {}",
-                        ack.session_id,
-                        ack.width,
-                        ack.height,
-                        ack.fps,
-                        overlay::codec_label(ack.codec)
-                    );
-                }
-                if let Some(input) = &cfg.input {
-                    input.set_stream((u32::from(ack.width), u32::from(ack.height)));
-                    if session.is_none() {
-                        // From now on input goes out the moment it comes.
-                        input.connect(socket.try_clone().ok().map(|s| InputLink {
-                            socket: Arc::new(s),
-                            session_id: ack.session_id,
-                            crypto: crypto.clone(),
-                        }));
-                    }
-                }
-                session = Some((ack.session_id, ack.codec));
-                frame_interval = Duration::from_secs(1) / u32::from(ack.fps.max(1));
-            }
-            Packet::ClockPong(pong) => {
-                clock.on_pong(&pong, now);
-                // Lost input goes again after a few round trips.
-                if let (Some(input), Some(rtt)) = (&cfg.input, clock.rtt_us())
-                    && let Ok(mut q) = input.queue.lock()
-                {
-                    q.set_resend_after(fernsicht_input::resend_wait(Some(Duration::from_micros(
-                        rtt,
-                    ))));
-                }
-            }
-            Packet::InputAck(a) => {
-                if session.is_some_and(|(id, _)| id == a.session_id)
-                    && let Some(input) = &cfg.input
-                    && let Ok(mut q) = input.queue.lock()
-                {
-                    q.ack(a.seq);
-                }
-            }
-            Packet::Audio(h, frame, previous) => {
-                if session.is_some_and(|(id, _)| id == h.session_id)
-                    && let Some(tx) = pipe.audio_tx
-                {
-                    // Full only if playback stalls; then dropping is right.
-                    let _ = tx.try_send(AudioPacket {
-                        seq: h.seq,
-                        frame: frame.to_vec(),
-                        previous: previous.to_vec(),
-                        captured_local: h.capture_us as i64 - clock.offset_us(),
-                    });
-                }
-            }
-            Packet::Monitors(m) => {
-                if session.is_some_and(|(id, _)| id == m.session_id) {
-                    cfg.monitors.set_list(MonitorList {
-                        current: m.current,
-                        list: m
-                            .iter()
-                            .map(|e| (e.name.to_string(), e.width, e.height))
-                            .collect(),
-                    });
-                }
-            }
-            Packet::Cursor(c) => {
-                if session.is_some_and(|(id, _)| id == c.session_id)
-                    && let Ok(mut t) = pipe.cursor.lock()
-                {
-                    t.on_position(c);
-                }
-            }
-            Packet::CursorShape(s, data) => {
-                if session.is_some_and(|(id, _)| id == s.session_id)
-                    && let Ok(mut t) = pipe.cursor.lock()
-                {
-                    t.on_shape(&s, data);
-                }
-            }
-            Packet::Video(h, payload) => {
-                if session.is_none_or(|(id, _)| id != h.session_id) {
-                    continue;
-                }
-                video_seen = true;
-                if loss.drop_packet() {
-                    continue;
-                }
-                rates.bytes += len as u64;
-                if let Some(done) = reassembler.push(&h, payload, now) {
-                    rates.frames += 1;
-                    // The decoder fell behind by a whole queue: drop the
-                    // frame; the gap makes it ask for a keyframe.
-                    let Ok(mut rf) = pipe.free_rx.try_recv() else {
-                        overflowed += 1;
+            // A secure session: only sealed packets count (opened here), plus
+            // the handshake's answer and rejections.
+            let packet = match (outer, cfg.security.is_some()) {
+                (Packet::Sealed(h, sealed), true) => {
+                    let (Some(t), Some((id, _))) = (crypto.as_deref(), session) else {
                         continue;
                     };
-                    rf.header = done.header;
-                    rf.codec = session.map_or(Codec::Synthetic, |(_, codec)| codec);
-                    rf.data.clear();
-                    rf.data.extend_from_slice(done.data);
-                    rf.completed_us = done.completed_us;
-                    rf.offset_us = clock.offset_us();
-                    if let Err(TrySendError::Full(rf) | TrySendError::Disconnected(rf)) =
-                        pipe.decode_tx.try_send(rf)
+                    if h.session_id != id {
+                        continue;
+                    }
+                    let Ok(n) = t.open(h.counter, sealed, &mut opened) else {
+                        continue;
+                    };
+                    let Ok(inner) = Packet::decode(&opened[..n]) else {
+                        continue;
+                    };
+                    last_packet = Instant::now();
+                    inner
+                }
+                (Packet::Handshake(h), true) if h.reply => {
+                    let Some((initiator, _)) = handshake.as_mut() else {
+                        continue;
+                    };
+                    // A reply that does not verify is someone else's: wait for
+                    // the host's.
+                    let payload = match initiator.read_reply(h.message) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            log::debug!("{}: ignoring a handshake answer: {e}", cfg.host);
+                            continue;
+                        }
+                    };
+                    let (initiator, _) = handshake.take().expect("checked above");
+                    let transport = initiator
+                        .into_transport()
+                        .map_err(|e| anyhow::anyhow!("handshake with {} failed: {e}", cfg.host))?;
+                    last_packet = Instant::now();
+                    let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
+                        anyhow::bail!("handshake with {}: no session in the answer", cfg.host);
+                    };
+                    crypto = Some(Arc::new(transport));
+                    Packet::HelloAck(ack)
+                }
+                // Not authenticated: believed only while asking for a session,
+                // never during one (anyone could end it with five bytes).
+                (Packet::Reject(r), true) if session.is_none() => {
+                    anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+                }
+                (_, true) => continue,
+                (p, false) => p,
+            };
+            match packet {
+                // Plain mode (tests): the host could not start the session.
+                Packet::Reject(r) if session.is_none() => {
+                    anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+                }
+                Packet::HelloAck(ack) => {
+                    if session.is_none() {
+                        acked_at = Some(Instant::now());
+                        log::info!(
+                            "session {:08x}: {}x{}@{} {}",
+                            ack.session_id,
+                            ack.width,
+                            ack.height,
+                            ack.fps,
+                            overlay::codec_label(ack.codec)
+                        );
+                    }
+                    if let Some(input) = &cfg.input {
+                        input.set_stream((u32::from(ack.width), u32::from(ack.height)));
+                        if session.is_none() {
+                            // From now on input goes out the moment it comes.
+                            input.connect(socket.try_clone().ok().map(|s| InputLink {
+                                socket: Arc::new(s),
+                                session_id: ack.session_id,
+                                crypto: crypto.clone(),
+                            }));
+                        }
+                    }
+                    session = Some((ack.session_id, ack.codec));
+                    frame_interval = Duration::from_secs(1) / u32::from(ack.fps.max(1));
+                }
+                Packet::ClockPong(pong) => {
+                    clock.on_pong(&pong, now);
+                    // Lost input goes again after a few round trips.
+                    if let (Some(input), Some(rtt)) = (&cfg.input, clock.rtt_us())
+                        && let Ok(mut q) = input.queue.lock()
                     {
-                        overflowed += 1;
-                        let _ = pipe.free_tx.send(rf);
+                        q.set_resend_after(fernsicht_input::resend_wait(Some(
+                            Duration::from_micros(rtt),
+                        )));
                     }
                 }
+                Packet::InputAck(a) => {
+                    if session.is_some_and(|(id, _)| id == a.session_id)
+                        && let Some(input) = &cfg.input
+                        && let Ok(mut q) = input.queue.lock()
+                    {
+                        q.ack(a.seq);
+                    }
+                }
+                Packet::Audio(h, frame, previous) => {
+                    if session.is_some_and(|(id, _)| id == h.session_id)
+                        && let Some(tx) = pipe.audio_tx
+                    {
+                        // Full only if playback stalls; then dropping is right.
+                        let _ = tx.try_send(AudioPacket {
+                            seq: h.seq,
+                            frame: frame.to_vec(),
+                            previous: previous.to_vec(),
+                            captured_local: h.capture_us as i64 - clock.offset_us(),
+                        });
+                    }
+                }
+                Packet::Monitors(m) => {
+                    if session.is_some_and(|(id, _)| id == m.session_id) {
+                        cfg.monitors.set_list(MonitorList {
+                            current: m.current,
+                            list: m
+                                .iter()
+                                .map(|e| (e.name.to_string(), e.width, e.height))
+                                .collect(),
+                        });
+                    }
+                }
+                Packet::Cursor(c) => {
+                    if session.is_some_and(|(id, _)| id == c.session_id)
+                        && let Ok(mut t) = pipe.cursor.lock()
+                    {
+                        t.on_position(c);
+                    }
+                }
+                Packet::CursorShape(s, data) => {
+                    if session.is_some_and(|(id, _)| id == s.session_id)
+                        && let Ok(mut t) = pipe.cursor.lock()
+                    {
+                        t.on_shape(&s, data);
+                    }
+                }
+                Packet::Video(h, payload) => {
+                    if session.is_none_or(|(id, _)| id != h.session_id) {
+                        continue;
+                    }
+                    video_seen = true;
+                    if loss.drop_packet() {
+                        continue;
+                    }
+                    rates.bytes += datagram.len() as u64;
+                    if let Some(done) = reassembler.push(&h, payload, now) {
+                        let (header, completed_us) = (done.header, done.completed_us);
+                        rates.frames += 1;
+                        // The decoder fell behind by a whole queue: drop the
+                        // frame; the gap makes it ask for a keyframe.
+                        let Ok(mut rf) = pipe.free_rx.try_recv() else {
+                            overflowed += 1;
+                            continue;
+                        };
+                        rf.header = header;
+                        rf.codec = session.map_or(Codec::Synthetic, |(_, codec)| codec);
+                        // The bytes change hands, no copy.
+                        if !reassembler.take_completed(header.frame_id, &mut rf.data) {
+                            let _ = pipe.free_tx.send(rf);
+                            continue;
+                        }
+                        rf.completed_us = completed_us;
+                        rf.offset_us = clock.offset_us();
+                        if let Err(TrySendError::Full(rf) | TrySendError::Disconnected(rf)) =
+                            pipe.decode_tx.try_send(rf)
+                        {
+                            overflowed += 1;
+                            let _ = pipe.free_tx.send(rf);
+                        }
+                    }
+                }
+                Packet::Bye(_) => {
+                    log::info!("host closed the session");
+                    break 'session;
+                }
+                _ => {}
             }
-            Packet::Bye(_) => {
-                log::info!("host closed the session");
-                break;
-            }
-            _ => {}
         }
     }
 

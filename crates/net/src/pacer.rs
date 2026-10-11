@@ -5,10 +5,20 @@
 //! (a P-frame usually fits whole, and goes at line rate), the rest at the
 //! pacing rate. The bucket refills between frames. A frame that would not
 //! leave within its budget at that rate goes faster, so that the sender
-//! never falls a frame behind. Before a packet that must wait, the thread
-//! sleeps (coarse) and then spins (fine).
+//! never falls a frame behind.
+//!
+//! Packets leave in chunks: those due within [`QUANTUM`] of each other, as
+//! many as one UDP GSO call carries. One system call and one wake-up per
+//! chunk, not per packet; between chunks the thread sleeps, and spins only
+//! for the last stretch.
 
 use std::time::{Duration, Instant};
+
+use crate::socket::{MAX_SEGMENTS, MAX_SEGMENTS_BYTES};
+
+/// Packets due this soon after a chunk's first go with it (at most this
+/// early): at 400 Mbit/s, 10 kB.
+pub const QUANTUM: Duration = Duration::from_micros(200);
 
 /// What the buffers on the way absorb at once, by default: about 45
 /// datagrams.
@@ -42,30 +52,60 @@ impl Pacer {
         }
     }
 
-    /// Sends `packets` through `send`: what the bucket holds at once, the
-    /// rest paced so that the frame leaves within `budget`.
+    /// Sends `packets` through `send` in chunks: what the bucket holds at
+    /// once, the rest paced so that the frame leaves within `budget`.
     pub fn pace<P, F, E>(&mut self, packets: &[P], budget: Duration, mut send: F) -> Result<(), E>
     where
         P: AsRef<[u8]>,
-        F: FnMut(&[u8]) -> Result<(), E>,
+        F: FnMut(&[P]) -> Result<(), E>,
     {
         let bytes = packets.iter().map(|p| p.as_ref().len()).sum();
         let rate = rate_for(self.rate_bytes_per_sec, self.burst_bytes, bytes, budget);
-        for pkt in packets {
-            let pkt = pkt.as_ref();
-            let (at, debt) = admit(
+        let mut rest = packets;
+        while !rest.is_empty() {
+            let lens = rest.iter().map(|p| p.as_ref().len());
+            let (n, at, debt) = next_chunk(
                 self.debt_until,
                 Instant::now(),
-                pkt.len(),
+                lens,
                 rate,
                 self.burst_bytes,
             );
             wait_until(at);
             self.debt_until = Some(debt);
-            send(pkt)?;
+            let (chunk, tail) = rest.split_at(n);
+            send(chunk)?;
+            rest = tail;
         }
         Ok(())
     }
+}
+
+/// The next chunk of packets (by length): how many, when it may go, and
+/// the debt after it. It holds those due within [`QUANTUM`] of the first,
+/// at most one GSO call's worth.
+pub fn next_chunk(
+    debt: Option<Instant>,
+    now: Instant,
+    lens: impl IntoIterator<Item = usize>,
+    rate: f64,
+    burst: usize,
+) -> (usize, Instant, Instant) {
+    let mut lens = lens.into_iter();
+    let first = lens.next().unwrap_or(0);
+    let (at, mut debt) = admit(debt, now, first, rate, burst);
+    let (mut n, mut bytes) = (1, first);
+    for len in lens {
+        if n == MAX_SEGMENTS || bytes + len > MAX_SEGMENTS_BYTES {
+            break;
+        }
+        let (next_at, next_debt) = admit(Some(debt), at, len, rate, burst);
+        if next_at > at + QUANTUM {
+            break;
+        }
+        (n, bytes, debt) = (n + 1, bytes + len, next_debt);
+    }
+    (n, at, debt)
 }
 
 /// The rate for a frame of `bytes`, bytes per second: `rate`, or faster
@@ -92,10 +132,11 @@ pub fn admit(
     (at, due + Duration::from_secs_f64(len as f64 / rate))
 }
 
-/// Sleeps for most of the wait, then spins for the last stretch (the
-/// kernel's sleep granularity is ~50–100 µs at best).
+/// Sleeps for most of the wait, then spins for the last stretch. Hot
+/// threads sleep with a timer slack of a microsecond
+/// (`fernsicht_core::thread`), so the stretch can be short.
 pub fn wait_until(deadline: Instant) {
-    const SPIN: Duration = Duration::from_micros(200);
+    const SPIN: Duration = Duration::from_micros(20);
     loop {
         let now = Instant::now();
         if now >= deadline {
@@ -177,17 +218,44 @@ mod tests {
         let mut p = Pacer::new(10_000_000, 4_000);
         let packets = vec![vec![0u8; 1_000]; 24];
         let start = Instant::now();
-        let mut sent = 0;
-        p.pace(&packets, Duration::from_millis(16), |_| {
-            sent += 1;
+        let (mut sent, mut chunks) = (0, 0);
+        p.pace(&packets, Duration::from_millis(16), |chunk| {
+            sent += chunk.len();
+            chunks += 1;
             Ok::<_, ()>(())
         })
         .unwrap();
         let took = start.elapsed();
         assert_eq!(sent, 24);
-        // 20 kB past the burst at 10 MB/s = 2 ms; allow scheduler slack.
-        assert!(took >= Duration::from_micros(1_700), "{took:?}");
+        // The burst and what is due within the quantum at once (7), then
+        // a chunk per 200 µs (3 packets each).
+        assert_eq!(chunks, 7);
+        // 20 kB past the burst at 10 MB/s = 2 ms, the last chunk up to a
+        // quantum early; allow scheduler slack.
+        assert!(took >= Duration::from_micros(1_500), "{took:?}");
         assert!(took < Duration::from_millis(50), "{took:?}");
+    }
+
+    #[test]
+    fn the_burst_goes_in_one_call_and_the_rest_by_the_quantum() {
+        let t = Instant::now();
+        let mtu = 1_400;
+        // 30 packets fit the 64 KiB burst: one chunk.
+        assert_eq!(next_chunk(None, t, [mtu; 30], 50e6, BURST_BYTES).0, 30);
+        // A GSO call carries 64 datagrams at most, and 60 kB.
+        assert_eq!(
+            next_chunk(None, t, [100; 80], 50e6, 1 << 20).0,
+            MAX_SEGMENTS
+        );
+        assert_eq!(
+            next_chunk(None, t, [mtu; 80], 50e6, 1 << 20).0,
+            MAX_SEGMENTS_BYTES / mtu
+        );
+        // Paced at 50 MB/s, a packet every 28 µs: 8 go within the quantum.
+        let (_, debt) = admit(None, t, BURST_BYTES + mtu, 50e6, BURST_BYTES);
+        let (n, at, _) = next_chunk(Some(debt), t, [mtu; 40], 50e6, BURST_BYTES);
+        assert!(at > t);
+        assert!((7..=9).contains(&n), "{n} packets per quantum");
     }
 
     #[test]
@@ -205,7 +273,8 @@ mod tests {
     fn send_errors_stop_pacing() {
         let packets = vec![vec![0u8; 10]; 5];
         let mut n = 0;
-        let r = Pacer::default().pace(&packets, Duration::from_millis(1), |_| {
+        let mut p = Pacer::new(1_000, 0);
+        let r = p.pace(&packets, Duration::from_secs(1), |_| {
             n += 1;
             if n == 3 { Err("boom") } else { Ok(()) }
         });

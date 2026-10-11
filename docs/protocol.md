@@ -49,6 +49,11 @@ by property tests and a fuzz target ([testing](testing.md)).
   goes at line rate), the rest at the pacing rate (`--pace-mbit`, 400 Mbit/s), so that switch and
   Wi-Fi buffers do not overflow on keyframes. The bucket refills between frames. A frame too large
   to leave within one frame interval at that rate goes faster, so the sender never falls behind.
+- Datagrams leave in **chunks**: those due within 200 µs of each other, sealed one after the other
+  into one buffer and handed to the kernel in one call that it cuts into datagrams (UDP GSO; one by
+  one where a route cannot). The send thread sleeps between chunks with a timer slack of 1 µs
+  instead of spinning. The client receives a run of datagrams in one call too (UDP GRO), and a
+  completed frame goes to the decoder by swapping buffers, not by copying.
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one.

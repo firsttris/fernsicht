@@ -41,13 +41,13 @@ use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
 use fernsicht_net::keyframe::{self, Sent};
 use fernsicht_net::{
-    FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer, RateController, pacer,
+    FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer, RateController, pacer, socket,
 };
 use fernsicht_proto::{Announce, Discover, MAX_ANNOUNCE_INFO, MAX_ANNOUNCE_NAME, clip};
 use fernsicht_proto::{
     AudioHeader, Bye, CURSOR_CHUNK, ClockPong, Codec, CodecSet, Cursor, CursorShape, Feedback,
     Handshake, Hello, HelloAck, InputAck, InputHeader, MAX_AUDIO_FRAME, MAX_CURSOR_SIZE,
-    MAX_DATAGRAM, Packet, Pair, RejectReason, SealedHeader,
+    MAX_DATAGRAM, Packet, Pair, RejectReason, SEALED_OVERHEAD, SealedHeader,
 };
 use fernsicht_secure::pairing::HostPairing;
 use fernsicht_secure::session::{Responder, Transport};
@@ -471,6 +471,19 @@ impl Link {
         }
     }
 
+    /// Sends a chunk of video datagrams: on UDP in as few system calls as
+    /// the kernel allows (see [`UdpLink::send_chunk`]).
+    fn send_chunk<'p>(
+        &self,
+        packets: impl Iterator<Item = &'p [u8]>,
+        scratch: &mut Vec<u8>,
+    ) -> std::io::Result<()> {
+        match self {
+            Link::Udp(l) => l.send_chunk(packets, scratch),
+            Link::Web(_) => packets.into_iter().try_for_each(|p| self.send(p)),
+        }
+    }
+
     fn encrypted(&self) -> bool {
         match self {
             Link::Udp(l) => l.crypto.is_some(),
@@ -492,6 +505,8 @@ struct UdpLink {
     /// a forged address would otherwise turn one small packet into seconds
     /// of video at someone else.
     confirmed: Arc<AtomicBool>,
+    /// UDP GSO works on the way to the client (until a send says not).
+    gso: Arc<AtomicBool>,
 }
 
 impl UdpLink {
@@ -514,6 +529,79 @@ impl UdpLink {
         self.socket
             .send_to(&buf[..SealedHeader::LEN + n], self.peer)
             .map(|_| ())
+    }
+
+    /// Sends datagrams in one go: sealed (or copied) one after the other
+    /// into `scratch`, then cut by the kernel (UDP GSO). Video packets of a
+    /// frame have one length; a packet of another length starts a new run.
+    fn send_chunk<'p>(
+        &self,
+        packets: impl Iterator<Item = &'p [u8]>,
+        scratch: &mut Vec<u8>,
+    ) -> std::io::Result<()> {
+        if !self.confirmed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let overhead = if self.crypto.is_some() {
+            SEALED_OVERHEAD
+        } else {
+            0
+        };
+        scratch.clear();
+        let mut segment = 0;
+        for p in packets {
+            let len = p.len() + overhead;
+            if segment != 0 && len != segment {
+                self.send_run(scratch, segment)?;
+                scratch.clear();
+            }
+            segment = len;
+            let at = scratch.len();
+            scratch.resize(at + len, 0);
+            let Some(crypto) = &self.crypto else {
+                scratch[at..].copy_from_slice(p);
+                continue;
+            };
+            let (counter, _) = crypto
+                .seal(p, &mut scratch[at + SealedHeader::LEN..])
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            SealedHeader {
+                session_id: self.session_id,
+                counter,
+            }
+            .write(&mut scratch[at..]);
+        }
+        if scratch.is_empty() {
+            return Ok(());
+        }
+        self.send_run(scratch, segment)
+    }
+
+    /// Sends `data`, datagrams of `segment` bytes: in one call each GSO
+    /// allows, else one by one.
+    fn send_run(&self, data: &[u8], segment: usize) -> std::io::Result<()> {
+        let one_by_one = |d: &[u8]| {
+            d.chunks(segment)
+                .try_for_each(|g| self.socket.send_to(g, self.peer).map(|_| ()))
+        };
+        let per_call = (socket::MAX_SEGMENTS_BYTES / segment.max(1)).clamp(1, socket::MAX_SEGMENTS);
+        for run in data.chunks(segment * per_call) {
+            if run.len() <= segment || !self.gso.load(Ordering::Relaxed) {
+                one_by_one(run)?;
+                continue;
+            }
+            let bufs = [std::io::IoSlice::new(run)];
+            if let Err(e) = socket::send_segments(&self.socket, self.peer, &bufs, segment as u16) {
+                // One by one tells whether the network or GSO fails.
+                one_by_one(run)?;
+                log::info!(
+                    "UDP GSO does not work on the way to {} ({e}); one datagram per call",
+                    self.peer
+                );
+                self.gso.store(false, Ordering::Relaxed);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -807,8 +895,7 @@ struct WebServer {
 
 impl HostAgent {
     pub fn bind(cfg: HostConfig) -> anyhow::Result<Self> {
-        let socket = fernsicht_net::socket::bind_udp(&cfg.bind)
-            .with_context(|| format!("bind {}", cfg.bind))?;
+        let socket = socket::bind_udp(&cfg.bind).with_context(|| format!("bind {}", cfg.bind))?;
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
         // Clocks a crashed earlier run left raised go back first.
         if let Some(record) = &cfg.power_record {
@@ -1551,6 +1638,7 @@ impl HostAgent {
                 session_id: params.session_id,
                 // A plain session (tests) has no keys to prove.
                 confirmed: Arc::new(AtomicBool::new(crypto.is_none())),
+                gso: Arc::new(AtomicBool::new(true)),
                 crypto,
             }),
         };
@@ -2504,6 +2592,8 @@ fn send_loop(
     mut loss: LossSim,
 ) -> anyhow::Result<()> {
     let mut packetizer = Packetizer::new(FecConfig::default())?;
+    // Chunks of sealed datagrams, handed to the kernel at once.
+    let mut scratch = Vec::with_capacity(socket::MAX_SEGMENTS_BYTES + MAX_DATAGRAM);
     // A frame leaves before the next one is encoded.
     let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)));
     let mut window_start = Instant::now();
@@ -2525,13 +2615,14 @@ fn send_loop(
         };
         let pkts = packetizer.packetize(&meta, &enc.data)?;
         let _ = free_enc.send(enc);
-        pacer.pace(pkts, budget, |p| {
-            packets += 1;
-            bytes += p.len() as u64;
-            if loss.drop_packet() {
-                return Ok(());
-            }
-            match link.send(p) {
+        pacer.pace(pkts, budget, |chunk| {
+            packets += chunk.len() as u64;
+            bytes += chunk.iter().map(|p| p.len() as u64).sum::<u64>();
+            let kept = chunk
+                .iter()
+                .map(Vec::as_slice)
+                .filter(|_| !loss.drop_packet());
+            match link.send_chunk(kept, &mut scratch) {
                 Ok(_) => Ok(()),
                 // The network gone for a moment is packet loss, not a
                 // reason to stop.
@@ -2650,6 +2741,7 @@ mod tests {
             session_id: 1,
             crypto: None,
             confirmed: Arc::new(AtomicBool::new(true)),
+            gso: Arc::new(AtomicBool::new(true)),
         });
         let mut cursor = CursorSender::new(link, 1, (2560, 1440));
 
