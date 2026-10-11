@@ -86,8 +86,9 @@ Added after that:
      compensated on both sides.
    - Bitrate: `crates/net/src/rate.rs`. Down on frames that are lost
      despite FEC, on an overloaded sender, or on more than 20 % loss. Up
-     after 5 s of clean network. VAAPI/NVENC get a new encoder for this
-     (one keyframe). Tested with VAAPI and 10 % artificial loss.
+     after 5 s of clean network. The running encoder takes the new rate
+     (NVENC in place, VAAPI with a new codec context on the same GPU
+     objects; one keyframe). Tested with VAAPI and 10 % artificial loss.
    - App: page “Einstellungen” (settings) (resolution, frame rate,
      bitrate), “Gerät vergessen” (forget device); sound and mode during
      the session go to the client over stdin (`mute`, `unmute`, `gaming`,

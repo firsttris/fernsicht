@@ -263,17 +263,9 @@ impl VaapiEncoder {
         // Drop; the struct is built incrementally so Drop sees nulls for
         // anything not yet created.
         unsafe {
-            let names = ff::names(cfg.codec, ff::Backend::Vaapi)?;
-            let codec = ffi::avcodec_find_encoder_by_name(names.encoder.as_ptr());
-            if codec.is_null() {
-                return Err(CodecError::Backend(format!(
-                    "FFmpeg has no {} encoder",
-                    names.encoder.to_string_lossy()
-                )));
-            }
             let mut enc = Self {
                 _device: device,
-                ctx: ffi::avcodec_alloc_context3(codec),
+                ctx: ptr::null_mut(),
                 frames: ptr::null_mut(),
                 sw: ffi::av_frame_alloc(),
                 hw: ffi::av_frame_alloc(),
@@ -286,7 +278,7 @@ impl VaapiEncoder {
                 force_keyframe: true,
                 next_pts: 0,
             };
-            if enc.ctx.is_null() || enc.sw.is_null() || enc.hw.is_null() || enc.pkt.is_null() {
+            if enc.sw.is_null() || enc.hw.is_null() || enc.pkt.is_null() {
                 return Err(CodecError::Backend("out of memory".into()));
             }
 
@@ -305,43 +297,54 @@ impl VaapiEncoder {
                 "init VAAPI frame pool",
                 ffi::av_hwframe_ctx_init(enc.frames),
             )?;
-
-            let c = enc.ctx;
-            let fps = cfg.fps as c_int;
-            let bitrate = i64::from(cfg.bitrate_kbps) * 1000;
-            (*c).width = cfg.width as c_int;
-            (*c).height = cfg.height as c_int;
-            (*c).time_base = ffi::AVRational { num: 1, den: fps };
-            (*c).framerate = ffi::AVRational { num: fps, den: 1 };
-            (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
-            (*c).hw_frames_ctx = ffi::av_buffer_ref(enc.frames);
-            (*c).max_b_frames = 0;
-            (*c).gop_size = c_int::MAX;
-            (*c).keyint_min = c_int::MAX;
-            (*c).bit_rate = bitrate;
-            (*c).rc_max_rate = bitrate;
-            (*c).rc_buffer_size = (bitrate / i64::from(fps)) as c_int;
-            (*c).flags |= (ffi::AV_CODEC_FLAG_LOW_DELAY | ffi::AV_CODEC_FLAG_CLOSED_GOP) as c_int;
-            (*c).thread_count = 1;
-            // The way scale_vaapi converts to YCbCr, written into the stream.
-            signal_bt709_limited(c);
-
-            let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
-            for (k, v) in [(c"rc_mode", c"CBR"), (c"async_depth", c"1")] {
-                ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
-            }
-            if let Some(profile) = names.profile {
-                ffi::av_dict_set(&mut opts, c"profile".as_ptr(), profile.as_ptr(), 0);
-            }
-            let r = ffi::avcodec_open2(c, codec, &mut opts);
-            ffi::av_dict_free(&mut opts);
-            check(&format!("open {}", names.encoder.to_string_lossy()), r)?;
+            enc.ctx = enc.open_codec(cfg.bitrate_kbps)?;
 
             (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
             (*enc.sw).width = cfg.width as c_int;
             (*enc.sw).height = cfg.height as c_int;
             check("allocate upload frame", ffi::av_frame_get_buffer(enc.sw, 0))?;
             Ok(enc)
+        }
+    }
+
+    /// The codec context: CBR at `kbps`, on this encoder's frame pool.
+    ///
+    /// # Safety
+    /// `self.frames` is an initialised VAAPI frame pool.
+    unsafe fn open_codec(&self, kbps: u32) -> Result<*mut ffi::AVCodecContext, CodecError> {
+        let names = ff::names(self.codec, ff::Backend::Vaapi)?;
+        let mut opts = vec![(c"rc_mode", c"CBR"), (c"async_depth", c"1")];
+        if let Some(profile) = names.profile {
+            opts.push((c"profile", profile));
+        }
+        let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        // SAFETY: open_encoder hands over a fresh context; frames is valid
+        // per the contract.
+        unsafe {
+            ff::open_encoder(names.encoder, &opts, |c| {
+                (*c).width = width as c_int;
+                (*c).height = height as c_int;
+                (*c).time_base = ffi::AVRational {
+                    num: 1,
+                    den: fps as c_int,
+                };
+                (*c).framerate = ffi::AVRational {
+                    num: fps as c_int,
+                    den: 1,
+                };
+                (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
+                (*c).hw_frames_ctx = ffi::av_buffer_ref(frames);
+                (*c).max_b_frames = 0;
+                (*c).gop_size = c_int::MAX;
+                (*c).keyint_min = c_int::MAX;
+                ff::set_cbr(c, kbps, fps);
+                (*c).flags |=
+                    (ffi::AV_CODEC_FLAG_LOW_DELAY | ffi::AV_CODEC_FLAG_CLOSED_GOP) as c_int;
+                (*c).thread_count = 1;
+                // The way scale_vaapi converts to YCbCr, written into the
+                // stream.
+                signal_bt709_limited(c);
+            })
         }
     }
 
@@ -464,9 +467,19 @@ impl Encoder for VaapiEncoder {
         self.force_keyframe = true;
     }
 
-    fn set_bitrate(&mut self, _kbps: u32) {
-        // Changing the rate control of an open VAAPI encoder needs a
-        // re-init; adaptive bitrate comes with congestion control (phase 3).
+    fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError> {
+        // FFmpeg sets VAAPI's rate control when the codec opens: a new codec
+        // context on the same display, frame pool and filter graph. It
+        // starts with a keyframe.
+        // SAFETY: frames is initialised (new() succeeded); no frame is in
+        // flight between encode() calls, so the old context can go.
+        unsafe {
+            let ctx = self.open_codec(kbps)?;
+            ffi::avcodec_free_context(&mut self.ctx);
+            self.ctx = ctx;
+        }
+        self.force_keyframe = true;
+        Ok(())
     }
 }
 

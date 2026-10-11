@@ -59,9 +59,13 @@ pub struct NvencEncoder {
     codec: Codec,
     width: u32,
     height: u32,
+    fps: u32,
     /// Vulkan conversion of DMA-BUF input, set up on the first such frame.
     gpu_input: Option<Result<GpuInput, String>>,
     force_keyframe: bool,
+    /// A new bitrate set on the open context: FFmpeg reconfigures NVENC
+    /// with the next frame, which is then an IDR frame.
+    rate_change: Option<u32>,
     next_pts: i64,
 }
 
@@ -88,29 +92,23 @@ impl NvencEncoder {
         // SAFETY: every pointer is checked before use and released in Drop,
         // which also handles a partly built value.
         unsafe {
-            let names = ff::names(cfg.codec, ff::Backend::Nvenc)?;
-            let codec = ffi::avcodec_find_encoder_by_name(names.encoder.as_ptr());
-            if codec.is_null() {
-                return Err(CodecError::Backend(format!(
-                    "FFmpeg has no {} encoder",
-                    names.encoder.to_string_lossy()
-                )));
-            }
             let mut enc = Self {
                 device: ptr::null_mut(),
                 frames: ptr::null_mut(),
-                ctx: ffi::avcodec_alloc_context3(codec),
+                ctx: ptr::null_mut(),
                 sw: ffi::av_frame_alloc(),
                 hw: ffi::av_frame_alloc(),
                 pkt: ffi::av_packet_alloc(),
                 codec: cfg.codec,
                 width: cfg.width,
                 height: cfg.height,
+                fps: cfg.fps,
                 gpu_input: None,
                 force_keyframe: true,
+                rate_change: None,
                 next_pts: 0,
             };
-            if enc.ctx.is_null() || enc.sw.is_null() || enc.hw.is_null() || enc.pkt.is_null() {
+            if enc.sw.is_null() || enc.hw.is_null() || enc.pkt.is_null() {
                 return Err(CodecError::Backend("out of memory".into()));
             }
             let gpu = CString::new(cfg.gpu.to_string()).expect("digits");
@@ -135,43 +133,7 @@ impl NvencEncoder {
             (*fc).height = cfg.height as c_int;
             (*fc).initial_pool_size = 4;
             check("init CUDA frame pool", ffi::av_hwframe_ctx_init(enc.frames))?;
-
-            let c = enc.ctx;
-            let fps = cfg.fps as c_int;
-            let bitrate = i64::from(cfg.bitrate_kbps) * 1000;
-            (*c).width = cfg.width as c_int;
-            (*c).height = cfg.height as c_int;
-            (*c).time_base = ffi::AVRational { num: 1, den: fps };
-            (*c).framerate = ffi::AVRational { num: fps, den: 1 };
-            (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_CUDA;
-            (*c).sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
-            (*c).hw_frames_ctx = ffi::av_buffer_ref(enc.frames);
-            (*c).max_b_frames = 0;
-            (*c).gop_size = c_int::MAX;
-            (*c).bit_rate = bitrate;
-            (*c).rc_max_rate = bitrate;
-            (*c).rc_buffer_size = (bitrate / i64::from(fps)) as c_int;
-            (*c).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as c_int;
-            signal_bt709_limited(c);
-
-            let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
-            for (k, v) in [
-                (c"preset", c"p1"),
-                (c"tune", c"ull"),
-                (c"rc", c"cbr"),
-                (c"zerolatency", c"1"),
-                (c"delay", c"0"),
-                (c"rc-lookahead", c"0"),
-                (c"forced-idr", c"1"),
-            ] {
-                ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
-            }
-            if let Some(profile) = names.profile {
-                ffi::av_dict_set(&mut opts, c"profile".as_ptr(), profile.as_ptr(), 0);
-            }
-            let r = ffi::avcodec_open2(c, codec, &mut opts);
-            ffi::av_dict_free(&mut opts);
-            check(&format!("open {}", names.encoder.to_string_lossy()), r)?;
+            enc.ctx = enc.open_codec(cfg.bitrate_kbps)?;
 
             (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
             (*enc.sw).width = cfg.width as c_int;
@@ -179,6 +141,65 @@ impl NvencEncoder {
             check("allocate upload frame", ffi::av_frame_get_buffer(enc.sw, 0))?;
             Ok(enc)
         }
+    }
+
+    /// The codec context: CBR at `kbps`, on this encoder's CUDA frame pool.
+    ///
+    /// # Safety
+    /// `self.frames` is an initialised CUDA frame pool.
+    unsafe fn open_codec(&self, kbps: u32) -> Result<*mut ffi::AVCodecContext, CodecError> {
+        let names = ff::names(self.codec, ff::Backend::Nvenc)?;
+        let mut opts = vec![
+            (c"preset", c"p1"),
+            (c"tune", c"ull"),
+            (c"rc", c"cbr"),
+            (c"zerolatency", c"1"),
+            (c"delay", c"0"),
+            (c"rc-lookahead", c"0"),
+            (c"forced-idr", c"1"),
+        ];
+        if let Some(profile) = names.profile {
+            opts.push((c"profile", profile));
+        }
+        let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        // SAFETY: open_encoder hands over a fresh context; frames is valid
+        // per the contract.
+        unsafe {
+            ff::open_encoder(names.encoder, &opts, |c| {
+                (*c).width = width as c_int;
+                (*c).height = height as c_int;
+                (*c).time_base = ffi::AVRational {
+                    num: 1,
+                    den: fps as c_int,
+                };
+                (*c).framerate = ffi::AVRational {
+                    num: fps as c_int,
+                    den: 1,
+                };
+                (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_CUDA;
+                (*c).sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+                (*c).hw_frames_ctx = ffi::av_buffer_ref(frames);
+                (*c).max_b_frames = 0;
+                (*c).gop_size = c_int::MAX;
+                ff::set_cbr(c, kbps, fps);
+                (*c).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as c_int;
+                signal_bt709_limited(c);
+            })
+        }
+    }
+
+    /// A new codec context at `kbps` on the same CUDA context, frame pool
+    /// and screen input; it starts with a keyframe.
+    fn reopen(&mut self, kbps: u32) -> Result<(), CodecError> {
+        // SAFETY: frames is initialised (new() succeeded); no frame is in
+        // flight between encode() calls, so the old context can go.
+        unsafe {
+            let ctx = self.open_codec(kbps)?;
+            ffi::avcodec_free_context(&mut self.ctx);
+            self.ctx = ctx;
+        }
+        self.force_keyframe = true;
+        Ok(())
     }
 
     /// FFmpeg's CUDA context and stream for this encoder.
@@ -325,14 +346,20 @@ impl Encoder for NvencEncoder {
             let f = &mut *self.hw;
             f.pts = self.next_pts;
             self.next_pts += 1;
-            f.pict_type = if self.force_keyframe {
+            // Right after a bitrate change, a keyframe can only be the IDR
+            // frame of FFmpeg's reconfiguration: none is forced then (the
+            // reconfiguration brings one, or the reopened encoder does).
+            let force = self.force_keyframe && self.rate_change.is_none();
+            f.pict_type = if force {
                 // With forced-idr this is an IDR frame.
                 ffi::AVPictureType::AV_PICTURE_TYPE_I
             } else {
                 ffi::AVPictureType::AV_PICTURE_TYPE_NONE
             };
             check("send frame", ffi::avcodec_send_frame(self.ctx, self.hw))?;
-            self.force_keyframe = false;
+            if force {
+                self.force_keyframe = false;
+            }
             loop {
                 let r = ffi::avcodec_receive_packet(self.ctx, self.pkt);
                 if eagain(r) {
@@ -353,6 +380,19 @@ impl Encoder for NvencEncoder {
                 "encoder returned no packet for the frame".into(),
             ));
         }
+        if out.keyframe {
+            // Whatever made it, a keyframe answers a pending request.
+            self.force_keyframe = false;
+        }
+        if let Some(kbps) = self.rate_change.take()
+            && !out.keyframe
+        {
+            // No IDR frame: FFmpeg did not reconfigure (this GPU cannot
+            // change the rate of a running session). A new codec context
+            // can, on the same GPU objects.
+            log::info!("NVENC changes the bitrate by reopening the encoder on this GPU");
+            self.reopen(kbps)?;
+        }
         out.seq = frame.seq;
         out.capture_us = frame.capture_us;
         out.capture_ready_us = frame.ready_us;
@@ -364,8 +404,14 @@ impl Encoder for NvencEncoder {
         self.force_keyframe = true;
     }
 
-    fn set_bitrate(&mut self, _kbps: u32) {
-        // Adaptive bitrate comes with congestion control (phase 3).
+    fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError> {
+        // FFmpeg reconfigures the running NVENC session with the next frame
+        // (NvEncReconfigureEncoder; it forces an IDR frame). encode() checks
+        // that it did.
+        // SAFETY: ctx is the open context.
+        unsafe { ff::set_cbr(self.ctx, kbps, self.fps) };
+        self.rate_change = Some(kbps);
+        Ok(())
     }
 }
 

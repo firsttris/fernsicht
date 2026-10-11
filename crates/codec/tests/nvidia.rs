@@ -197,6 +197,61 @@ fn keyframe_on_request_and_decoder_recovers() {
 }
 
 #[test]
+fn the_bitrate_changes_on_the_running_encoder() {
+    if !nvidia() {
+        return;
+    }
+    let (w, h, fps) = (1920, 1080, 60);
+    let mut enc = NvencEncoder::new(&config(w, h, fps, 20_000)).unwrap();
+    let mut dec = NvdecDecoder::new(0).unwrap();
+    let input = frames(w, h, 120);
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let (mut sizes, mut keyframes, mut change_ms) = (Vec::new(), Vec::new(), 0.0);
+    for (i, f) in input.iter().enumerate() {
+        let t = Instant::now();
+        if i == 60 {
+            enc.set_bitrate(5_000).unwrap();
+        }
+        enc.encode(f, &mut out).unwrap();
+        if i == 60 {
+            change_ms = t.elapsed().as_secs_f64() * 1e3;
+        }
+        if out.keyframe {
+            keyframes.push(i);
+        }
+        sizes.push(out.data.len());
+        // One decoder throughout: the stream goes on.
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    let avg =
+        |r: std::ops::Range<usize>| sizes[r.clone()].iter().sum::<usize>() as f64 / r.len() as f64;
+    let (before, after) = (avg(30..60), avg(70..120));
+    let in_place = keyframes == [0, 60];
+    summary("### NVENC: Bitrate im laufenden Encoder (1080p60, 20 → 5 Mbit/s)");
+    summary(&format!(
+        "| {} | Wechsel + Frame {change_ms:.1} ms | Ø Delta-Frame {before:.0} → {after:.0} Bytes |\n",
+        if in_place {
+            "in place (NvEncReconfigureEncoder)"
+        } else {
+            "neu geöffnet"
+        }
+    ));
+    // FFmpeg's reconfiguration brings an IDR frame; a reopened encoder one
+    // frame later.
+    assert!(
+        keyframes == [0, 60] || keyframes == [0, 61],
+        "keyframes {keyframes:?}"
+    );
+    assert!(
+        after < before * 0.5,
+        "{before:.0} → {after:.0} bytes per frame"
+    );
+    let last = dec.last_frame_nv12().unwrap();
+    let psnr = psnr_y(&input[119].data, &last, (w * h) as usize);
+    assert!(psnr > 28.0, "{psnr:.1} dB at 5 Mbit/s");
+}
+
+#[test]
 fn rejects_wrong_input_and_garbage() {
     if !nvidia() {
         return;

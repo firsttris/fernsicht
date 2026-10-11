@@ -70,13 +70,10 @@ pub trait Encoder: Send {
     /// The next frame will be a keyframe (or start an intra refresh).
     fn request_keyframe(&mut self);
 
-    fn set_bitrate(&mut self, kbps: u32);
-
-    /// Whether [`Self::set_bitrate`] takes effect on the running encoder.
-    /// If not, a new encoder with the new rate replaces it (a keyframe).
-    fn adjusts_bitrate(&self) -> bool {
-        false
-    }
+    /// Changes the bitrate of the running encoder. It keeps its GPU objects
+    /// (device, frame pool, screen input); the hardware encoders restart
+    /// their rate control with a keyframe. On an error the old rate stays.
+    fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError>;
 }
 
 /// The picture of the last decoded frame, for the presenter.

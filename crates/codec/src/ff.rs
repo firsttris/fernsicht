@@ -87,6 +87,59 @@ pub(crate) unsafe fn signal_bt709_limited(ctx: *mut ffi::AVCodecContext) {
     }
 }
 
+/// Constant bitrate at `kbps` with a buffer of one frame: the rate control
+/// with the least delay.
+///
+/// # Safety
+/// `ctx` is a valid encoder context.
+pub(crate) unsafe fn set_cbr(ctx: *mut ffi::AVCodecContext, kbps: u32, fps: u32) {
+    let bitrate = i64::from(kbps) * 1000;
+    // SAFETY: per the contract.
+    unsafe {
+        (*ctx).bit_rate = bitrate;
+        (*ctx).rc_max_rate = bitrate;
+        (*ctx).rc_buffer_size = (bitrate / i64::from(fps.max(1))) as c_int;
+    }
+}
+
+/// Opens FFmpeg's encoder `name`: a new context that `configure` fills,
+/// opened with `opts`. Nothing is left behind when it fails.
+///
+/// # Safety
+/// `configure` gets a valid, not yet opened context.
+pub(crate) unsafe fn open_encoder(
+    name: &CStr,
+    opts: &[(&CStr, &CStr)],
+    configure: impl FnOnce(*mut ffi::AVCodecContext),
+) -> Result<*mut ffi::AVCodecContext, CodecError> {
+    // SAFETY: the context is checked before use and freed on every error.
+    unsafe {
+        let codec = ffi::avcodec_find_encoder_by_name(name.as_ptr());
+        if codec.is_null() {
+            return Err(CodecError::Backend(format!(
+                "FFmpeg has no {} encoder",
+                name.to_string_lossy()
+            )));
+        }
+        let mut ctx = ffi::avcodec_alloc_context3(codec);
+        if ctx.is_null() {
+            return Err(CodecError::Backend("out of memory".into()));
+        }
+        configure(ctx);
+        let mut dict: *mut ffi::AVDictionary = ptr::null_mut();
+        for (k, v) in opts {
+            ffi::av_dict_set(&mut dict, k.as_ptr(), v.as_ptr(), 0);
+        }
+        let r = ffi::avcodec_open2(ctx, codec, &mut dict);
+        ffi::av_dict_free(&mut dict);
+        if let Err(e) = check(&format!("open {}", name.to_string_lossy()), r) {
+            ffi::avcodec_free_context(&mut ctx);
+            return Err(e);
+        }
+        Ok(ctx)
+    }
+}
+
 /// Whether a decoded frame says BT.709 limited range.
 ///
 /// # Safety

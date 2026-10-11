@@ -205,6 +205,49 @@ fn keyframe_on_request_and_decoder_recovers() {
 }
 
 #[test]
+fn the_bitrate_changes_on_the_running_encoder() {
+    let Some(node) = render_node() else { return };
+    let (w, h, fps) = (1920, 1080, 60);
+    let mut enc = VaapiEncoder::new(&config(&node, w, h, fps, 20_000)).unwrap();
+    let mut dec = VaapiDecoder::new(&node).unwrap();
+    let input = frames(w, h, 120);
+    let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+    let (mut sizes, mut keyframes, mut change_ms) = (Vec::new(), Vec::new(), 0.0);
+    for (i, f) in input.iter().enumerate() {
+        let t = Instant::now();
+        if i == 60 {
+            enc.set_bitrate(5_000).unwrap();
+        }
+        enc.encode(f, &mut out).unwrap();
+        if i == 60 {
+            change_ms = t.elapsed().as_secs_f64() * 1e3;
+        }
+        if out.keyframe {
+            keyframes.push(i);
+        }
+        sizes.push(out.data.len());
+        // One decoder throughout: the stream goes on.
+        dec.decode(&out.data, &mut d).unwrap();
+    }
+    let avg =
+        |r: std::ops::Range<usize>| sizes[r.clone()].iter().sum::<usize>() as f64 / r.len() as f64;
+    let (before, after) = (avg(30..60), avg(70..120));
+    summary("### VAAPI: Bitrate im laufenden Encoder (1080p60, 20 → 5 Mbit/s)");
+    summary(&format!(
+        "| Codec-Kontext neu, Gerät und Pool bleiben | Wechsel + Frame {change_ms:.1} ms | Ø Delta-Frame {before:.0} → {after:.0} Bytes |\n"
+    ));
+    // The new codec context starts with a keyframe.
+    assert_eq!(keyframes, [0, 60]);
+    assert!(
+        after < before * 0.5,
+        "{before:.0} → {after:.0} bytes per frame"
+    );
+    let last = dec.last_frame_nv12().unwrap();
+    let psnr = psnr_y(&input[119].data, &last, (w * h) as usize);
+    assert!(psnr > 28.0, "{psnr:.1} dB at 5 Mbit/s");
+}
+
+#[test]
 fn a_new_stream_size_gives_new_pictures() {
     // The host switched to a monitor of another shape: a new encoder, and
     // the client's decoder gets a keyframe of another size. FFmpeg makes a

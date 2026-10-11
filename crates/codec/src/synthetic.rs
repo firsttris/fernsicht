@@ -83,12 +83,9 @@ impl Encoder for SyntheticEncoder {
         self.force_keyframe = true;
     }
 
-    fn set_bitrate(&mut self, kbps: u32) {
+    fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError> {
         self.bitrate_kbps = kbps.max(100);
-    }
-
-    fn adjusts_bitrate(&self) -> bool {
-        true
+        Ok(())
     }
 }
 

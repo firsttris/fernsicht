@@ -668,7 +668,15 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   once a second, exactly when the network is congested.
 - **Fix:** NVENC: change `bit_rate`/`rc_max_rate`/`rc_buffer_size` on the open context (FFmpeg
   reconfigures); at least keep the GPU objects across a rebuild.
-- **Status:** open
+- **Status:** fixed. `Encoder::set_bitrate` now works on the running encoder for both. NVENC sets
+  the rate on the open context; FFmpeg (8.1, `reconfig_encoder`) passes it to
+  `NvEncReconfigureEncoder` with the next frame, with `resetEncoder` and `forceIDR`, so a keyframe
+  stays. Where the GPU cannot change the rate on the fly, that frame is no IDR: the encoder then
+  opens a new codec context on the same CUDA context and screen input. VAAPI's rate control is set
+  when FFmpeg opens the codec, so it gets a new codec context on the same display, frame pool and
+  filter graph. The host rebuilds an encoder only for a new stream size. GPU tests: 20 → 5 Mbit/s
+  mid-stream, one keyframe, one decoder throughout. GTX 1080: in place, the change and its frame
+  take 3.4 ms; P-frames go from 41.7 to ~12.5 kB.
 
 ### C6 · NVDEC pictures go through the CPU
 

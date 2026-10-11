@@ -63,7 +63,9 @@ by property tests and a fuzz target ([testing](testing.md)).
   own sender falls behind or loss is heavy (over 20 %), gently (×0.85, at most every 2 s) when frames
   are lost despite FEC or loss is over 15 %, and raises it carefully (×1.15 after 5 s without either);
   never above what the client asked for. Random Wi-Fi loss that FEC repairs is not congestion: it
-  neither costs sharpness nor keeps the bitrate from coming back.
+  neither costs sharpness nor keeps the bitrate from coming back. The running encoder takes the new
+  rate: NVENC reconfigures its session in place, VAAPI opens a new codec context on the same device,
+  frame pool and converter. Either way the next frame is a keyframe; there is no gap in the picture.
 
 The video header also carries a slice index and count, reserved for sending parts of a frame before it
 is encoded completely ([next steps](next-steps.md)).
