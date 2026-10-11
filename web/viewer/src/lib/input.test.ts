@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { WheelAccumulator, contentRect, linuxButton, lockPointer, toAbsolute } from "./input";
+import {
+  NO_WHEEL_REST,
+  wheelStep,
+  contentRect,
+  linuxButton,
+  lockPointer,
+  toAbsolute,
+} from "./input";
 
 describe("pointer for games", () => {
   it("asks for raw movement, else the plain lock, and swallows a refusal", async () => {
@@ -57,15 +64,20 @@ describe("mouse", () => {
   });
 
   it("turns wheel events into notches of 120, up positive", () => {
-    const w = new WheelAccumulator();
+    let rest = NO_WHEEL_REST;
+    const add = (e: { deltaX: number; deltaY: number; deltaMode: number }) => {
+      const r = wheelStep(rest, e);
+      rest = r.rest;
+      return { dx: r.dx, dy: r.dy };
+    };
     // A mouse notch in pixels (about 100 px): one notch down.
-    expect(w.add({ deltaX: 0, deltaY: 100, deltaMode: 0 })).toEqual({ dx: 0, dy: -120 });
+    expect(add({ deltaX: 0, deltaY: 100, deltaMode: 0 })).toEqual({ dx: 0, dy: -120 });
     // Lines: 3 per notch.
-    expect(w.add({ deltaX: 0, deltaY: -3, deltaMode: 1 })).toEqual({ dx: 0, dy: 120 });
+    expect(add({ deltaX: 0, deltaY: -3, deltaMode: 1 })).toEqual({ dx: 0, dy: 120 });
     // Pages.
-    expect(w.add({ deltaX: 1, deltaY: 0, deltaMode: 2 })).toEqual({ dx: 360, dy: 0 });
+    expect(add({ deltaX: 1, deltaY: 0, deltaMode: 2 })).toEqual({ dx: 360, dy: 0 });
     // Touchpad fractions carry over.
-    expect(w.add({ deltaX: 0.5, deltaY: 0, deltaMode: 0 })).toEqual({ dx: 0, dy: 0 });
-    expect(w.add({ deltaX: 0.5, deltaY: 0, deltaMode: 0 })).toEqual({ dx: 1, dy: 0 });
+    expect(add({ deltaX: 0.5, deltaY: 0, deltaMode: 0 })).toEqual({ dx: 0, dy: 0 });
+    expect(add({ deltaX: 0.5, deltaY: 0, deltaMode: 0 })).toEqual({ dx: 1, dy: 0 });
   });
 });

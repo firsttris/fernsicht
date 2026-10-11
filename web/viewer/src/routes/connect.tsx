@@ -19,7 +19,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Lock } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
-import { ConnectError, type HostInfo, connect, connectErrorText, fetchHostInfo } from "../lib/host";
+import { type HostInfo, connect, connectErrorText, fetchHostInfo } from "../lib/host";
 
 /** The host serving this page, if any (otherwise the demo). */
 export const hostInfoQuery = {
@@ -105,15 +105,19 @@ function HostForm({ host }: { host: HostInfo }) {
         if (!valid || busy) return;
         setBusy(true);
         setError(null);
-        connect(pin, host.name)
-          .then(() =>
-            navigate({ to: "/session/$deviceId", params: { deviceId: "host" }, search: { mode } }),
-          )
-          .catch((err: unknown) => {
-            setError(connectErrorText(err instanceof ConnectError ? err.code : "failed"));
-            setPin("");
-            setBusy(false);
-          });
+        void connect(pin, host.name).then((r) => {
+          if ("session" in r) {
+            void navigate({
+              to: "/session/$deviceId",
+              params: { deviceId: "host" },
+              search: { mode },
+            });
+            return;
+          }
+          setError(connectErrorText(r.error));
+          setPin("");
+          setBusy(false);
+        });
       }}
     >
       <div className="flex flex-col gap-1.5">

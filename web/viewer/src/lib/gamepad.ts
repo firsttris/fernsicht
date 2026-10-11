@@ -71,33 +71,35 @@ function state(p: PadSnapshot): Map<string, PadMessage> {
 
 const atRest = (msg: PadMessage) => (msg.t === "pb" ? !msg.p : msg.v === 0);
 
-/** Turns successive pad snapshots into the messages for what changed. */
-export class PadTracker {
-  private last = new Map<number, Map<string, PadMessage>>();
+/** Each pad's last state, by pad index. */
+export type Pads = ReadonlyMap<number, ReadonlyMap<string, PadMessage>>;
 
-  update(pads: readonly (PadSnapshot | null)[]): PadMessage[] {
-    const out: PadMessage[] = [];
-    const seen = new Set<number>();
-    for (const p of pads) {
-      if (!p || p.index >= MAX_PADS || p.mapping !== "standard") continue;
-      seen.add(p.index);
-      const before = this.last.get(p.index);
-      const now = state(p);
-      for (const [key, msg] of now) {
-        const old = before?.get(key);
-        const changed = old ? JSON.stringify(old) !== JSON.stringify(msg) : !atRest(msg);
-        if (changed) out.push(msg);
-      }
-      this.last.set(p.index, now);
+export const NO_PADS: Pads = new Map();
+
+/** The messages for what changed since `last`, and the pads' state now. */
+export function padStep(
+  last: Pads,
+  pads: readonly (PadSnapshot | null)[],
+): { pads: Pads; messages: PadMessage[] } {
+  const messages: PadMessage[] = [];
+  const next = new Map<number, ReadonlyMap<string, PadMessage>>();
+  for (const p of pads) {
+    if (!p || p.index >= MAX_PADS || p.mapping !== "standard") continue;
+    const before = last.get(p.index);
+    const now = state(p);
+    for (const [key, msg] of now) {
+      const old = before?.get(key);
+      const changed = old ? JSON.stringify(old) !== JSON.stringify(msg) : !atRest(msg);
+      if (changed) messages.push(msg);
     }
-    // A pad that went away: everything released.
-    for (const [n, before] of this.last) {
-      if (seen.has(n)) continue;
-      for (const msg of before.values()) {
-        if (!atRest(msg)) out.push(msg.t === "pb" ? { ...msg, p: false } : { ...msg, v: 0 });
-      }
-      this.last.delete(n);
-    }
-    return out;
+    next.set(p.index, now);
   }
+  // A pad that went away: everything released.
+  for (const [n, before] of last) {
+    if (next.has(n)) continue;
+    for (const msg of before.values()) {
+      if (!atRest(msg)) messages.push(msg.t === "pb" ? { ...msg, p: false } : { ...msg, v: 0 });
+    }
+  }
+  return { pads: next, messages };
 }

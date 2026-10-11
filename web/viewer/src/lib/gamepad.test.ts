@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type PadSnapshot, PadTracker } from "./gamepad";
+import { type PadSnapshot, NO_PADS, padStep } from "./gamepad";
 
 function pad(
   over: Partial<PadSnapshot> = {},
@@ -15,9 +15,21 @@ function pad(
   return { index: 0, mapping: "standard", buttons, axes, ...over };
 }
 
+/** padStep with its state kept, as the session page keeps it. */
+function tracker() {
+  let pads = NO_PADS;
+  return {
+    update: (snapshots: Parameters<typeof padStep>[1]) => {
+      const r = padStep(pads, snapshots);
+      pads = r.pads;
+      return r.messages;
+    },
+  };
+}
+
 describe("gamepads in the browser", () => {
   it("sends only what changed, by position", () => {
-    const t = new PadTracker();
+    const t = tracker();
     expect(t.update([pad()])).toEqual([]);
     // A (bottom) and X (left = BTN_WEST) pressed, left stick fully left.
     expect(t.update([pad({}, [0, 2], [-1, 0, 0, 0])])).toEqual([
@@ -41,7 +53,7 @@ describe("gamepads in the browser", () => {
   });
 
   it("releases a pad that goes away and ignores odd ones", () => {
-    const t = new PadTracker();
+    const t = tracker();
     t.update([pad({ index: 1 }, [9], [0.5, 0, 0, 0])]);
     expect(t.update([null])).toEqual([
       { t: "pb", n: 1, c: 0x13b, p: false },

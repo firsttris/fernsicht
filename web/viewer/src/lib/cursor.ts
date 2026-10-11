@@ -111,34 +111,29 @@ export function placement(
   };
 }
 
-/** Puts a shape's pieces together; a piece of a newer shape starts over. */
-export class CursorAssembler {
-  private serial = 0;
-  private bytes = new Uint8Array(0);
-  private have = new Set<number>();
-  private width = 0;
-  private height = 0;
-
-  /** Returns the image once its last missing piece arrived. */
-  add(p: CursorPiece): CursorImage | null {
-    if (p.serial !== this.serial || p.width !== this.width || p.height !== this.height) {
-      this.serial = p.serial;
-      this.width = p.width;
-      this.height = p.height;
-      this.bytes = new Uint8Array(p.width * p.height * 4);
-      this.have.clear();
+/**
+ * Puts a shape's pieces together; a piece of a newer shape starts over.
+ * The returned function takes a piece and gives the image once its last
+ * missing piece arrived.
+ */
+export function createCursorAssembler(): (p: CursorPiece) => CursorImage | null {
+  let serial = 0;
+  let width = 0;
+  let height = 0;
+  let bytes = new Uint8Array(0);
+  const have = new Set<number>();
+  return (p) => {
+    if (p.serial !== serial || p.width !== width || p.height !== height) {
+      ({ serial, width, height } = p);
+      bytes = new Uint8Array(p.width * p.height * 4);
+      have.clear();
     }
-    this.bytes.set(p.data, p.offset);
-    this.have.add(p.offset);
-    if (this.have.size * CURSOR_CHUNK < this.bytes.length) return null;
-    this.have.clear();
-    return {
-      serial: this.serial,
-      width: this.width,
-      height: this.height,
-      rgba: bgraPremultipliedToRgba(this.bytes),
-    };
-  }
+    bytes.set(p.data, p.offset);
+    have.add(p.offset);
+    if (have.size * CURSOR_CHUNK < bytes.length) return null;
+    have.clear();
+    return { serial, width, height, rgba: bgraPremultipliedToRgba(bytes) };
+  };
 }
 
 /** DRM ARGB8888 (B, G, R, A in memory, premultiplied) to straight RGBA. */

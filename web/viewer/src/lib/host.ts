@@ -54,11 +54,8 @@ const CONNECT_ERROR_TEXT: Record<ConnectErrorCode, string> = {
 const isConnectErrorCode = (v: unknown): v is ConnectErrorCode =>
   typeof v === "string" && Object.hasOwn(CONNECT_ERROR_TEXT, v);
 
-export class ConnectError extends Error {
-  constructor(readonly code: ConnectErrorCode) {
-    super(code);
-  }
-}
+/** A connect attempt: the session, or why there is none. */
+export type ConnectResult = { session: LiveSession } | { error: ConnectErrorCode };
 
 export function connectErrorText(code: ConnectErrorCode): string {
   return CONNECT_ERROR_TEXT[code];
@@ -171,7 +168,7 @@ export function holdSession(session: LiveSession): () => void {
 }
 
 /** Starts a session with the host serving this page. */
-export async function connect(pin: string, hostName: string): Promise<LiveSession> {
+export async function connect(pin: string, hostName: string): Promise<ConnectResult> {
   const pc = new RTCPeerConnection();
   const stream = new MediaStream();
   pc.addTransceiver("video", { direction: "recvonly" });
@@ -198,13 +195,15 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
         body: JSON.stringify({ pin, offer: { type: offer.type, sdp: offer.sdp } }),
       });
     } catch {
-      throw new ConnectError("unreachable");
+      pc.close();
+      return { error: "unreachable" };
     }
     const body: unknown = await r.json().catch(() => null);
     const answer = r.ok ? connected(body) : null;
     if (!answer) {
+      pc.close();
       const code = isObject(body) ? body.error : undefined;
-      throw new ConnectError(isConnectErrorCode(code) ? code : "failed");
+      return { error: isConnectErrorCode(code) ? code : "failed" };
     }
     await pc.setRemoteDescription(answer.answer);
     // Positions carry a number from one counter on both channels: the host
@@ -242,10 +241,11 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
       },
     };
     live = session;
-    return session;
-  } catch (e) {
+    return { session };
+  } catch {
+    // WebRTC refused the offer or the answer.
     pc.close();
-    throw e instanceof ConnectError ? e : new ConnectError("failed");
+    return { error: "failed" };
   }
 }
 

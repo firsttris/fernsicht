@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { LONG_PRESS_MS, TouchController, type TouchMode, type Zoom } from "./touch";
+import { LONG_PRESS_MS, type TouchMode, type Zoom, createTouchController } from "./touch";
 
 /** A controller over a 1000×500 box whose picture fills it exactly. */
 function setup(mode: TouchMode = "direct") {
   const sent: Record<string, unknown>[] = [];
   const zooms: Zoom[] = [];
   let current: TouchMode = mode;
-  const c = new TouchController(
+  const c = createTouchController(
     () => current,
     (x, y) => ({ x: Math.round((x / 1000) * 65535), y: Math.round((y / 500) * 65535) }),
     (a) => (a.kind === "send" ? sent.push(a.msg) : zooms.push(a.zoom)),
@@ -28,7 +28,7 @@ const click = (c: number) => [
   { t: "b", c, p: false },
 ];
 
-describe("TouchController, direct", () => {
+describe("touch controller, direct", () => {
   it("a tap clicks where the finger is", () => {
     const { c, sent } = setup();
     c.down(1, 500, 250, 0);
@@ -72,7 +72,7 @@ describe("TouchController, direct", () => {
   });
 });
 
-describe("TouchController, trackpad", () => {
+describe("touch controller, trackpad", () => {
   it("moving moves the pointer relatively, a tap clicks in place", () => {
     const { c, sent } = setup("trackpad");
     c.down(1, 100, 100, 0);
@@ -107,7 +107,7 @@ describe("TouchController, trackpad", () => {
   });
 });
 
-describe("TouchController, two fingers", () => {
+describe("touch controller, two fingers", () => {
   it("a short tap with both is a right click", () => {
     const { c, sent } = setup();
     c.down(1, 100, 100, 0);

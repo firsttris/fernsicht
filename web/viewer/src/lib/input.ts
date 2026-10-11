@@ -59,22 +59,27 @@ export function toAbsolute(
   return { x: f(clientX, picture.left, picture.width), y: f(clientY, picture.top, picture.height) };
 }
 
-/**
- * Wheel events to Linux hi-res wheel units (120 per notch, positive = up
- * and right), carrying fractions over.
- */
-export class WheelAccumulator {
-  private rest = { x: 0, y: 0 };
+/** Fractions of wheel units not sent yet. */
+export interface WheelRest {
+  x: number;
+  y: number;
+}
 
-  add(e: { deltaX: number; deltaY: number; deltaMode: number }): { dx: number; dy: number } {
-    // Pixels: a notch is about 100 px in browsers. Lines: 3 per notch.
-    const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 120 * 3 : 1.2;
-    this.rest.x += e.deltaX * scale;
-    this.rest.y -= e.deltaY * scale;
-    const dx = Math.trunc(this.rest.x);
-    const dy = Math.trunc(this.rest.y);
-    this.rest.x -= dx;
-    this.rest.y -= dy;
-    return { dx, dy };
-  }
+export const NO_WHEEL_REST: WheelRest = { x: 0, y: 0 };
+
+/**
+ * A wheel event in Linux hi-res wheel units (120 per notch, positive = up
+ * and right), with the fractions carried over in `rest`.
+ */
+export function wheelStep(
+  rest: WheelRest,
+  e: { deltaX: number; deltaY: number; deltaMode: number },
+): { rest: WheelRest; dx: number; dy: number } {
+  // Pixels: a notch is about 100 px in browsers. Lines: 3 per notch.
+  const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 120 * 3 : 1.2;
+  const x = rest.x + e.deltaX * scale;
+  const y = rest.y - e.deltaY * scale;
+  const dx = Math.trunc(x);
+  const dy = Math.trunc(y);
+  return { rest: { x: x - dx, y: y - dy }, dx, dy };
 }

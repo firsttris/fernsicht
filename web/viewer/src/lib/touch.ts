@@ -59,159 +59,170 @@ interface Point {
   y: number;
 }
 
-/** Feeds on touch pointer events; `toHost` maps a screen point to 0..65535. */
-export class TouchController {
-  private fingers = new Map<number, Finger>();
-  private started = 0;
-  private moved = false;
-  private longPressed = false;
-  private dragging = false;
-  private two: { dist: number; mid: Point; zooming: boolean; startZoom: Zoom } | null = null;
-  private hadTwo = false;
-  private scrollRest = { x: 0, y: 0 };
-  private moveRest = { x: 0, y: 0 };
-  zoom: Zoom = NO_ZOOM;
+/** What the touch controller is told: touch pointer events, a clock tick,
+ * and the zoom the page shows now. */
+export interface TouchController {
+  down(id: number, x: number, y: number, now: number): void;
+  move(id: number, x: number, y: number, now: number): void;
+  up(id: number, x: number, y: number, now: number): void;
+  cancel(id: number): void;
+  /** Call regularly (or on events): turns a held finger into a long press. */
+  tick(now: number): void;
+  syncZoom(zoom: Zoom): void;
+}
 
-  constructor(
-    private mode: () => TouchMode,
-    private toHost: (x: number, y: number) => { x: number; y: number },
-    private act: (a: TouchAction) => void,
-    /** The box the picture zooms in (screen px): limits panning. */
-    private box: () => { width: number; height: number },
-  ) {}
+/** Feeds on touch pointer events; `toHost` maps a screen point to 0..65535,
+ * `box` is the box the picture zooms in (screen px), which limits panning. */
+export function createTouchController(
+  mode: () => TouchMode,
+  toHost: (x: number, y: number) => { x: number; y: number },
+  act: (a: TouchAction) => void,
+  box: () => { width: number; height: number },
+): TouchController {
+  const s = {
+    fingers: new Map<number, Finger>(),
+    started: 0,
+    moved: false,
+    longPressed: false,
+    dragging: false,
+    two: null as { dist: number; mid: Point; zooming: boolean; startZoom: Zoom } | null,
+    hadTwo: false,
+    scrollRest: { x: 0, y: 0 },
+    moveRest: { x: 0, y: 0 },
+    zoom: NO_ZOOM as Zoom,
+  };
 
-  private send(msg: FromBrowser) {
-    this.act({ kind: "send", msg });
+  function send(msg: FromBrowser) {
+    act({ kind: "send", msg });
   }
 
-  private click(button: number) {
-    this.send({ t: "b", c: button, p: true });
-    this.send({ t: "b", c: button, p: false });
+  function click(button: number) {
+    send({ t: "b", c: button, p: true });
+    send({ t: "b", c: button, p: false });
   }
 
-  private moveTo(x: number, y: number) {
-    this.send({ t: "m", ...this.toHost(x, y) });
+  function moveTo(x: number, y: number) {
+    send({ t: "m", ...toHost(x, y) });
   }
 
-  down(id: number, x: number, y: number, now: number) {
-    this.fingers.set(id, { id, x, y, startX: x, startY: y });
-    if (this.fingers.size === 1) {
-      this.started = now;
-      this.moved = false;
-      this.longPressed = false;
-      this.dragging = false;
-      this.hadTwo = false;
-      this.moveRest = { x: 0, y: 0 };
-    } else if (this.fingers.size === 2) {
+  function down(id: number, x: number, y: number, now: number) {
+    s.fingers.set(id, { id, x, y, startX: x, startY: y });
+    if (s.fingers.size === 1) {
+      s.started = now;
+      s.moved = false;
+      s.longPressed = false;
+      s.dragging = false;
+      s.hadTwo = false;
+      s.moveRest = { x: 0, y: 0 };
+    } else if (s.fingers.size === 2) {
       // A drag the first finger started ends; two fingers are a gesture.
-      if (this.dragging) {
-        this.send({ t: "b", c: LEFT, p: false });
-        this.dragging = false;
+      if (s.dragging) {
+        send({ t: "b", c: LEFT, p: false });
+        s.dragging = false;
       }
-      const [a, b] = this.pair();
-      this.two = { dist: dist(a, b), mid: mid(a, b), zooming: false, startZoom: this.zoom };
-      this.hadTwo = true;
-      this.scrollRest = { x: 0, y: 0 };
+      const [a, b] = pair();
+      s.two = { dist: dist(a, b), mid: mid(a, b), zooming: false, startZoom: s.zoom };
+      s.hadTwo = true;
+      s.scrollRest = { x: 0, y: 0 };
     }
   }
 
-  move(id: number, x: number, y: number, now: number) {
-    const f = this.fingers.get(id);
+  function move(id: number, x: number, y: number, now: number) {
+    const f = s.fingers.get(id);
     if (!f) return;
     const dx = x - f.x;
     const dy = y - f.y;
     f.x = x;
     f.y = y;
-    if (Math.hypot(x - f.startX, y - f.startY) > TAP_SLOP) this.moved = true;
+    if (Math.hypot(x - f.startX, y - f.startY) > TAP_SLOP) s.moved = true;
 
-    if (this.fingers.size >= 2 && this.two) {
-      this.twoFingers();
+    if (s.fingers.size >= 2 && s.two) {
+      twoFingers();
       return;
     }
-    if (this.fingers.size !== 1 || this.hadTwo) return;
-    this.tick(now);
-    if (this.mode() === "trackpad") {
-      const rx = this.moveRest.x + dx * TRACKPAD_SPEED;
-      const ry = this.moveRest.y + dy * TRACKPAD_SPEED;
+    if (s.fingers.size !== 1 || s.hadTwo) return;
+    tick(now);
+    if (mode() === "trackpad") {
+      const rx = s.moveRest.x + dx * TRACKPAD_SPEED;
+      const ry = s.moveRest.y + dy * TRACKPAD_SPEED;
       const ix = Math.trunc(rx);
       const iy = Math.trunc(ry);
-      this.moveRest = { x: rx - ix, y: ry - iy };
-      if (this.longPressed && !this.dragging) {
-        this.send({ t: "b", c: LEFT, p: true });
-        this.dragging = true;
+      s.moveRest = { x: rx - ix, y: ry - iy };
+      if (s.longPressed && !s.dragging) {
+        send({ t: "b", c: LEFT, p: true });
+        s.dragging = true;
       }
-      if (ix || iy) this.send({ t: "r", dx: ix, dy: iy });
-    } else if (this.moved && !this.longPressed) {
-      if (!this.dragging) {
-        this.moveTo(f.startX, f.startY);
-        this.send({ t: "b", c: LEFT, p: true });
-        this.dragging = true;
+      if (ix || iy) send({ t: "r", dx: ix, dy: iy });
+    } else if (s.moved && !s.longPressed) {
+      if (!s.dragging) {
+        moveTo(f.startX, f.startY);
+        send({ t: "b", c: LEFT, p: true });
+        s.dragging = true;
       }
-      this.moveTo(x, y);
+      moveTo(x, y);
     }
   }
 
-  up(id: number, x: number, y: number, now: number) {
-    const f = this.fingers.get(id);
+  function up(id: number, x: number, y: number, now: number) {
+    const f = s.fingers.get(id);
     if (!f) return;
     f.x = x;
     f.y = y;
-    const count = this.fingers.size;
-    this.fingers.delete(id);
+    const count = s.fingers.size;
+    s.fingers.delete(id);
     if (count === 2) {
       // Both fingers briefly, hardly moved: a right click.
-      if (this.two && !this.moved && !this.two.zooming && now - this.started < TAP_MS) {
-        this.click(RIGHT);
+      if (s.two && !s.moved && !s.two.zooming && now - s.started < TAP_MS) {
+        click(RIGHT);
       }
-      this.two = null;
+      s.two = null;
       return;
     }
-    if (count !== 1 || this.hadTwo) return;
-    this.tick(now);
-    if (this.dragging) {
-      this.send({ t: "b", c: LEFT, p: false });
-      this.dragging = false;
+    if (count !== 1 || s.hadTwo) return;
+    tick(now);
+    if (s.dragging) {
+      send({ t: "b", c: LEFT, p: false });
+      s.dragging = false;
       return;
     }
-    if (this.longPressed || this.moved) return;
-    if (this.mode() === "direct") this.moveTo(x, y);
-    this.click(LEFT);
+    if (s.longPressed || s.moved) return;
+    if (mode() === "direct") moveTo(x, y);
+    click(LEFT);
   }
 
-  cancel(id: number) {
-    this.fingers.delete(id);
-    if (this.dragging) {
-      this.send({ t: "b", c: LEFT, p: false });
-      this.dragging = false;
+  function cancel(id: number) {
+    s.fingers.delete(id);
+    if (s.dragging) {
+      send({ t: "b", c: LEFT, p: false });
+      s.dragging = false;
     }
-    if (this.fingers.size < 2) this.two = null;
+    if (s.fingers.size < 2) s.two = null;
   }
 
-  /** Call regularly (or on events): turns a held finger into a long press. */
-  tick(now: number) {
-    if (this.fingers.size !== 1 || this.hadTwo || this.moved || this.longPressed) return;
-    if (now - this.started < LONG_PRESS_MS) return;
-    this.longPressed = true;
+  function tick(now: number) {
+    if (s.fingers.size !== 1 || s.hadTwo || s.moved || s.longPressed) return;
+    if (now - s.started < LONG_PRESS_MS) return;
+    s.longPressed = true;
     // Direct mode: right click where the finger is. Trackpad mode: wait;
     // moving now drags.
-    const f = this.fingers.values().next().value;
-    if (this.mode() === "direct" && f) {
-      this.moveTo(f.x, f.y);
-      this.click(RIGHT);
+    const f = s.fingers.values().next().value;
+    if (mode() === "direct" && f) {
+      moveTo(f.x, f.y);
+      click(RIGHT);
     }
   }
 
   /** The first two fingers (call with two or more down). */
-  private pair(): [Finger, Finger] {
-    const [a, b] = [...this.fingers.values()];
+  function pair(): [Finger, Finger] {
+    const [a, b] = [...s.fingers.values()];
     if (!a || !b) throw new Error("two fingers expected");
     return [a, b];
   }
 
-  private twoFingers() {
-    const t = this.two;
+  function twoFingers() {
+    const t = s.two;
     if (!t) return;
-    const [a, b] = this.pair();
+    const [a, b] = pair();
     const d = dist(a, b);
     const m = mid(a, b);
     if (!t.zooming && Math.abs(d / t.dist - 1) > PINCH_START) t.zooming = true;
@@ -221,34 +232,45 @@ export class TouchController {
       const k = scale / t.startZoom.scale;
       const x = m.x - (t.mid.x - t.startZoom.x) * k;
       const y = m.y - (t.mid.y - t.startZoom.y) * k;
-      this.setZoom({ scale, x, y });
+      setZoom({ scale, x, y });
       return;
     }
     const dx = m.x - t.mid.x;
     const dy = m.y - t.mid.y;
     t.mid = m;
-    if (this.zoom.scale > 1) {
-      this.setZoom({ ...this.zoom, x: this.zoom.x + dx, y: this.zoom.y + dy });
+    if (s.zoom.scale > 1) {
+      setZoom({ ...s.zoom, x: s.zoom.x + dx, y: s.zoom.y + dy });
       return;
     }
     // Content follows the fingers: up is scrolling down.
-    const rx = this.scrollRest.x - dx * SCROLL_PER_PX;
-    const ry = this.scrollRest.y + dy * SCROLL_PER_PX;
+    const rx = s.scrollRest.x - dx * SCROLL_PER_PX;
+    const ry = s.scrollRest.y + dy * SCROLL_PER_PX;
     const ix = Math.trunc(rx);
     const iy = Math.trunc(ry);
-    this.scrollRest = { x: rx - ix, y: ry - iy };
-    if (ix || iy) this.send({ t: "w", dx: ix, dy: iy });
+    s.scrollRest = { x: rx - ix, y: ry - iy };
+    if (ix || iy) send({ t: "w", dx: ix, dy: iy });
   }
 
-  private setZoom(z: Zoom) {
-    const { width, height } = this.box();
+  function setZoom(z: Zoom) {
+    const { width, height } = box();
     const scale = clamp(z.scale, 1, MAX_ZOOM);
     // The picture always covers the box: no empty space when panning.
     const x = clamp(z.x, width - width * scale, 0);
     const y = clamp(z.y, height - height * scale, 0);
-    this.zoom = scale === 1 ? NO_ZOOM : { scale, x, y };
-    this.act({ kind: "zoom", zoom: this.zoom });
+    s.zoom = scale === 1 ? NO_ZOOM : { scale, x, y };
+    act({ kind: "zoom", zoom: s.zoom });
   }
+
+  return {
+    down,
+    move,
+    up,
+    cancel,
+    tick,
+    syncZoom: (zoom) => {
+      s.zoom = zoom;
+    },
+  };
 }
 
 function dist(a: Point, b: Point) {

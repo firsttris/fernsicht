@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakePeerConnection, installFakes } from "../test-rtc";
 import {
-  ConnectError,
   connect,
   connectErrorText,
   connectionPhase,
@@ -43,7 +42,9 @@ describe("host API", () => {
       status: 200,
       body: { answer, width: 2560, height: 1440, fps: 60 },
     }));
-    const s = await connect("482913", "zentrale");
+    const r = await connect("482913", "zentrale");
+    if (!("session" in r)) throw new Error(r.error);
+    const s = r.session;
     const pc = FakePeerConnection.last!;
     expect(pc.transceivers).toEqual([
       ["video", "recvonly"],
@@ -111,7 +112,9 @@ describe("host API", () => {
 
   it("closes a session no page holds any more", async () => {
     installFakes(() => ({ status: 200, body: { answer, width: 1920, height: 1080, fps: 60 } }));
-    const s = await connect("482913", "zentrale");
+    const r = await connect("482913", "zentrale");
+    if (!("session" in r)) throw new Error(r.error);
+    const s = r.session;
     const pc = FakePeerConnection.last!;
     vi.useFakeTimers();
     // StrictMode: let go and take it again at once → stays open.
@@ -142,9 +145,7 @@ describe("host API", () => {
     ["offline" as const, "unreachable"],
   ])("turns %j into %s", async (reply, code) => {
     installFakes(() => reply);
-    const err = await connect("000000", "zentrale").catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ConnectError);
-    expect((err as ConnectError).code).toBe(code);
+    expect(await connect("000000", "zentrale")).toEqual({ error: code });
     expect(FakePeerConnection.last!.closed).toBe(true);
     expect(currentSession()).toBeNull();
   });

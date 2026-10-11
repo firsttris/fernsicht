@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CURSOR_CHUNK,
-  CursorAssembler,
+  createCursorAssembler,
   bgraPremultipliedToRgba,
   decodeCursorPacket,
   placement,
@@ -104,18 +104,18 @@ describe("pointer packets", () => {
 
   it("puts a shape together from its pieces", () => {
     // 32×16 pixels = 2048 bytes = two pieces.
-    const a = new CursorAssembler();
+    const add = createCursorAssembler();
     const first = decodeCursorPacket(shape(5, 32, 16, 0, 0x80));
     const second = decodeCursorPacket(shape(5, 32, 16, 1024, 0x40));
     expect(first?.kind).toBe("shape");
-    expect(a.add(first as never)).toBeNull();
-    const img = a.add(second as never)!;
+    expect(add(first as never)).toBeNull();
+    const img = add(second as never)!;
     expect(img).toMatchObject({ serial: 5, width: 32, height: 16 });
     expect(img.rgba.length).toBe(2048);
     // A repeat of a piece does not complete a new shape.
-    expect(a.add(decodeCursorPacket(shape(6, 32, 16, 0, 1)) as never)).toBeNull();
-    expect(a.add(decodeCursorPacket(shape(6, 32, 16, 0, 1)) as never)).toBeNull();
-    expect(a.add(decodeCursorPacket(shape(6, 32, 16, 1024, 1)) as never)?.serial).toBe(6);
+    expect(add(decodeCursorPacket(shape(6, 32, 16, 0, 1)) as never)).toBeNull();
+    expect(add(decodeCursorPacket(shape(6, 32, 16, 0, 1)) as never)).toBeNull();
+    expect(add(decodeCursorPacket(shape(6, 32, 16, 1024, 1)) as never)?.serial).toBe(6);
   });
 
   it("turns premultiplied BGRA into straight RGBA", () => {

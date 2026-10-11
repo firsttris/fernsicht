@@ -15,7 +15,7 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 
 import {
   type CursorImage,
-  CursorAssembler,
+  createCursorAssembler,
   type CursorPosition,
   decodeCursorPacket,
   placement,
@@ -35,10 +35,17 @@ import {
   summarize,
 } from "../lib/host";
 import { useFullscreen } from "../lib/fullscreen";
-import { PadTracker } from "../lib/gamepad";
-import { WheelAccumulator, contentRect, linuxButton, lockPointer, toAbsolute } from "../lib/input";
+import { NO_PADS, padStep } from "../lib/gamepad";
+import {
+  NO_WHEEL_REST,
+  contentRect,
+  linuxButton,
+  lockPointer,
+  toAbsolute,
+  wheelStep,
+} from "../lib/input";
 import { BACKSPACE, ENTER, diffText, guessLayout, tapKey, typeText } from "../lib/textkeys";
-import { NO_ZOOM, TouchController, type TouchMode, type Zoom } from "../lib/touch";
+import { NO_ZOOM, type TouchMode, type Zoom, createTouchController } from "../lib/touch";
 import { keysGoToHost, linuxKeyCode } from "../lib/keys";
 
 export function LiveSessionPage({
@@ -255,7 +262,7 @@ export function RemoteScreen({
     const el = box.current;
     const v = video.current;
     if (!c || !el || !v) return;
-    const shapes = new CursorAssembler();
+    const assemble = createCursorAssembler();
     let image: CursorImage | null = null;
     let at: CursorPosition | null = null;
     // The box's size is read when it changes, not per packet.
@@ -293,7 +300,7 @@ export function RemoteScreen({
       } else if (p?.kind === "shape" && p.serial !== image?.serial) {
         // The host repeats shapes so a lost piece heals; a known one is
         // drawn already.
-        const img = shapes.add(p);
+        const img = assemble(p);
         if (img) {
           draw(img);
           place();
@@ -321,7 +328,7 @@ export function RemoteScreen({
   // Gamepads: polled once per frame (the API has no events for changes).
   // Some browsers keep them from plain-http pages; then there are none.
   useEffect(() => {
-    const tracker = new PadTracker();
+    let state = NO_PADS;
     let frame = 0;
     const poll = () => {
       let pads: (Gamepad | null)[] = [];
@@ -330,7 +337,9 @@ export function RemoteScreen({
       } catch {
         // Not allowed here.
       }
-      for (const msg of tracker.update(pads)) session.send(msg);
+      const step = padStep(state, pads);
+      state = step.pads;
+      for (const msg of step.messages) session.send(msg);
       frame = requestAnimationFrame(poll);
     };
     frame = requestAnimationFrame(poll);
@@ -341,14 +350,14 @@ export function RemoteScreen({
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const wheel = new WheelAccumulator();
+    let wheelRest = NO_WHEEL_REST;
     // The picture as it is shown now, zoom included.
     const picture = () => {
       const r = (zoomed.current ?? el).getBoundingClientRect();
       const v = video.current;
       return contentRect(r, v?.videoWidth ?? 0, v?.videoHeight ?? 0);
     };
-    const touch = new TouchController(
+    const touch = createTouchController(
       // Games want relative motion: the finger is a touchpad there.
       () => (mode === "gaming" ? "trackpad" : live.current.touchMode),
       (x, y) => {
@@ -358,7 +367,7 @@ export function RemoteScreen({
       (a) => (a.kind === "send" ? session.send(a.msg) : live.current.onZoom(a.zoom)),
       () => el.getBoundingClientRect(),
     );
-    touch.zoom = live.current.zoom;
+    touch.syncZoom(live.current.zoom);
     const isTouch = (e: PointerEvent) => e.pointerType === "touch" || e.pointerType === "pen";
     const local = (e: PointerEvent): [number, number] => {
       const r = el.getBoundingClientRect();
@@ -368,7 +377,7 @@ export function RemoteScreen({
     const locked = () => document.pointerLockElement === el;
     const onMove = (e: PointerEvent) => {
       if (isTouch(e)) {
-        touch.zoom = live.current.zoom;
+        touch.syncZoom(live.current.zoom);
         touch.move(e.pointerId, ...local(e), performance.now());
         return;
       }
@@ -381,7 +390,7 @@ export function RemoteScreen({
     const onButton = (e: PointerEvent) => {
       if (isTouch(e)) {
         e.preventDefault();
-        touch.zoom = live.current.zoom;
+        touch.syncZoom(live.current.zoom);
         if (e.type === "pointerdown") touch.down(e.pointerId, ...local(e), performance.now());
         else touch.up(e.pointerId, ...local(e), performance.now());
         return;
@@ -410,7 +419,9 @@ export function RemoteScreen({
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const { dx, dy } = wheel.add(e);
+      const step = wheelStep(wheelRest, e);
+      wheelRest = step.rest;
+      const { dx, dy } = step;
       if (dx || dy) session.send({ t: "w", dx, dy });
     };
     const onKey = (e: KeyboardEvent) => {
