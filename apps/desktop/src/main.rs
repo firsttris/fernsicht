@@ -80,8 +80,8 @@ async fn set_mode(backend: Shared<'_>, gaming: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn session(backend: Shared<'_>) -> SessionState {
-    backend.session()
+async fn session(backend: Shared<'_>) -> Result<SessionState, String> {
+    blocking(&backend, |b| Ok(b.session())).await
 }
 
 #[tauri::command]

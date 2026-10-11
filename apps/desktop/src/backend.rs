@@ -337,8 +337,14 @@ impl Backend {
             .find(|p| p.key.fingerprint() == id)
             .with_context(|| format!("not paired with {id}"))?;
         let target = peer.address.clone().unwrap_or_else(|| peer.name.clone());
-        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mut old) = session.take() {
+        // Stopped outside the lock: it may take seconds, and the UI asks
+        // for the session state meanwhile.
+        let old = self
+            .session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(mut old) = old {
             old.stop();
         }
         let mut child = Command::new(&self.client)
@@ -377,15 +383,22 @@ impl Backend {
                 log.push_back(line);
             }
         });
-        *session = Some(Running {
-            device_id: id.to_owned(),
-            device_name: peer.name.clone(),
-            stdin: child.stdin.take(),
-            child,
-            stats,
-            log,
-        });
-        drop(session);
+        let replaced = self
+            .session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(Running {
+                device_id: id.to_owned(),
+                device_name: peer.name.clone(),
+                stdin: child.stdin.take(),
+                child,
+                stats,
+                log,
+            });
+        // A connect that raced this one: its session goes.
+        if let Some(mut other) = replaced {
+            other.stop();
+        }
         Ok(self.session())
     }
 

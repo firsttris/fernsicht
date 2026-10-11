@@ -380,7 +380,9 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** every 3 s `systemctl` plus up to two `--version` processes; the synchronous `session`
   command waits on a lock held while the old client stops (up to 3 s).
 - **Fix:** cache versions; make `session` async; stop the old client outside the lock.
-- **Status:** open
+- **Status:** fixed. `version_of` runs a program again only when its file changed; `connect` stops
+  the old client outside the lock (and one that raced it after storing); `session` runs off the main
+  thread like the other commands.
 
 ### A31 · Overlay values are mislabelled or dropped
 

@@ -115,8 +115,24 @@ pub fn exec_start(unit: &str) -> Option<PathBuf> {
 }
 
 fn version_of(program: &Path) -> Option<String> {
+    // Asked every few seconds by the UI, and versions rarely change: run
+    // the program again only when its file changed.
+    type Known = std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<String>)>;
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<Known>> = std::sync::OnceLock::new();
+    let modified = std::fs::metadata(program).and_then(|m| m.modified()).ok()?;
+    let mut known = KNOWN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some((at, version)) = known.get(program)
+        && *at == modified
+    {
+        return version.clone();
+    }
     let out = Command::new(program).arg("--version").output().ok()?;
-    parse_version(&String::from_utf8_lossy(&out.stdout))
+    let version = parse_version(&String::from_utf8_lossy(&out.stdout));
+    known.insert(program.to_path_buf(), (modified, version.clone()));
+    version
 }
 
 /// The AppImage this app runs from, and the host next to the app in it.
