@@ -71,24 +71,43 @@ pub struct Mapping {
 
 impl Mapping {
     /// The mapping for a device with these axes (code → (min, max)).
+    ///
+    /// Xbox-style pads put the right stick on RX/RY and the triggers on
+    /// Z/RZ; generic (DirectInput, HID) pads without RX/RY have the right
+    /// stick on Z/RZ and their triggers, if analog, on BRAKE/GAS. Each
+    /// protocol axis takes the first device axis that has it, so two
+    /// device axes never fight over one.
     pub fn new(abs: &BTreeMap<u16, (i32, i32)>, swap_xy: bool) -> Self {
-        let mut axes = BTreeMap::new();
-        for (&code, &(min, max)) in abs {
-            let axis = match code {
-                ABS_X => PadAxis::LeftX,
-                ABS_Y => PadAxis::LeftY,
-                ABS_RX => PadAxis::RightX,
-                ABS_RY => PadAxis::RightY,
-                ABS_Z | ABS_BRAKE => PadAxis::LeftTrigger,
-                ABS_RZ | ABS_GAS => PadAxis::RightTrigger,
-                ABS_HAT0X => PadAxis::DpadX,
-                ABS_HAT0Y => PadAxis::DpadY,
-                _ => continue,
-            };
-            if max > min {
-                axes.insert(code, AxisMap { axis, min, max });
-            }
-        }
+        let has = |code| abs.get(&code).is_some_and(|&(min, max)| max > min);
+        let right_on_z = !has(ABS_RX) && !has(ABS_RY) && (has(ABS_Z) || has(ABS_RZ));
+        let (right_x, right_y): (&[u16], &[u16]) = if right_on_z {
+            (&[ABS_Z], &[ABS_RZ])
+        } else {
+            (&[ABS_RX], &[ABS_RY])
+        };
+        let (left_trigger, right_trigger): (&[u16], &[u16]) = if right_on_z {
+            (&[ABS_BRAKE], &[ABS_GAS])
+        } else {
+            (&[ABS_Z, ABS_BRAKE], &[ABS_RZ, ABS_GAS])
+        };
+        let sources: [(PadAxis, &[u16]); 8] = [
+            (PadAxis::LeftX, &[ABS_X]),
+            (PadAxis::LeftY, &[ABS_Y]),
+            (PadAxis::RightX, right_x),
+            (PadAxis::RightY, right_y),
+            (PadAxis::LeftTrigger, left_trigger),
+            (PadAxis::RightTrigger, right_trigger),
+            (PadAxis::DpadX, &[ABS_HAT0X]),
+            (PadAxis::DpadY, &[ABS_HAT0Y]),
+        ];
+        let axes: BTreeMap<u16, AxisMap> = sources
+            .iter()
+            .filter_map(|&(axis, codes)| {
+                let code = *codes.iter().find(|&&c| has(c))?;
+                let (min, max) = abs[&code];
+                Some((code, AxisMap { axis, min, max }))
+            })
+            .collect();
         let analog = |a| axes.values().any(|m: &AxisMap| m.axis == a);
         let digital_triggers = !analog(PadAxis::LeftTrigger) && !analog(PadAxis::RightTrigger);
         Self {
@@ -565,6 +584,65 @@ mod tests {
                 pressed: true
             }]
         );
+    }
+
+    #[test]
+    fn a_generic_pad_has_its_right_stick_on_z() {
+        // DirectInput layout (8BitDo in D-mode, many USB pads): no RX/RY,
+        // the right stick on Z/RZ, triggers as buttons.
+        let stick = (0, 255);
+        let m = Mapping::new(
+            &[
+                (ABS_X, stick),
+                (ABS_Y, stick),
+                (ABS_Z, stick),
+                (ABS_RZ, stick),
+            ]
+            .into_iter()
+            .collect(),
+            false,
+        );
+        assert_eq!(m.axes[&ABS_Z].axis, PadAxis::RightX);
+        assert_eq!(m.axes[&ABS_RZ].axis, PadAxis::RightY);
+        assert!(m.digital_triggers);
+        // With analog triggers on BRAKE/GAS.
+        let m = Mapping::new(
+            &[
+                (ABS_Z, stick),
+                (ABS_RZ, stick),
+                (ABS_BRAKE, stick),
+                (ABS_GAS, stick),
+            ]
+            .into_iter()
+            .collect(),
+            false,
+        );
+        assert_eq!(m.axes[&ABS_BRAKE].axis, PadAxis::LeftTrigger);
+        assert_eq!(m.axes[&ABS_GAS].axis, PadAxis::RightTrigger);
+        assert!(!m.digital_triggers);
+    }
+
+    #[test]
+    fn one_device_axis_per_protocol_axis() {
+        // An Xbox pad that also reports BRAKE/GAS: Z/RZ are the triggers,
+        // BRAKE/GAS are left out instead of fighting over them.
+        let full = (0, 1023);
+        let m = Mapping::new(
+            &[
+                (ABS_RX, (-32768, 32767)),
+                (ABS_RY, (-32768, 32767)),
+                (ABS_Z, full),
+                (ABS_RZ, full),
+                (ABS_BRAKE, full),
+                (ABS_GAS, full),
+            ]
+            .into_iter()
+            .collect(),
+            false,
+        );
+        assert_eq!(m.axes[&ABS_Z].axis, PadAxis::LeftTrigger);
+        assert_eq!(m.axes[&ABS_RZ].axis, PadAxis::RightTrigger);
+        assert!(!m.axes.contains_key(&ABS_BRAKE) && !m.axes.contains_key(&ABS_GAS));
     }
 
     #[test]

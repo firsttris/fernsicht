@@ -310,7 +310,10 @@ the limits FFmpeg puts on the next latency step.
   The X/Y swap only applies to `xpad`.
 - **Fix:** Z/RZ as right stick when RX/RY are missing; never merge two device axes; longer term SDL
   (D9).
-- **Status:** open
+- **Status:** fixed. Without RX/RY, Z/RZ are the right stick and BRAKE/GAS the triggers; each
+  protocol axis takes the first device axis that has it. The X/Y swap stays `xpad`-only: the
+  kernel's gamepad spec puts BTN_X north, and only `xpad` reports it west; there is no evidence of
+  other drivers doing so. Tests: `a_generic_pad_has_its_right_stick_on_z`, `one_device_axis_per_protocol_axis`.
 
 ### A24 · Gamepad axis coalescing reorders and drops events
 
