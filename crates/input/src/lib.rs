@@ -18,7 +18,7 @@ pub mod uinput;
 use std::sync::{Arc, Mutex};
 
 pub use fernsicht_proto::InputEvent;
-pub use queue::InputQueue;
+pub use queue::{InputQueue, resend_wait};
 
 /// Linux button codes for the mouse buttons.
 pub mod buttons {

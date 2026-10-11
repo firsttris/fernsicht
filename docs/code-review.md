@@ -610,7 +610,10 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   LAN round trip is ~0.5 ms.
 - **Fix:** send from the input path directly (socket and transport take `&self`); resend after a
   multiple of the measured RTT.
-- **Status:** open
+- **Status:** fixed. `InputHandle::push` sends what is due right away through the session's link
+  (a clone of the socket and the session's transport, set when the session starts, cleared when it
+  ends); the network loop only resends. The resend time is three round trips, 4–15 ms
+  (`resend_wait`). Tests: `input_goes_out_the_moment_it_is_pushed`, `resends_follow_the_round_trip`.
 
 ### C2 · Keyframe requests wait for the 100 ms feedback tick
 

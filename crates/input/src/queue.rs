@@ -8,6 +8,16 @@ use fernsicht_proto::{InputEvent, MAX_INPUT_EVENTS, PadAxis};
 /// How often unacknowledged events are sent again.
 pub const RESEND_AFTER: Duration = Duration::from_millis(15);
 
+/// How long to wait for an acknowledgement before sending again, from the
+/// measured round trip: a few round trips (an ack is not sent at once),
+/// at least 4 ms, at most [`RESEND_AFTER`]. In a LAN with 0.5 ms round
+/// trips a lost key press goes again after 4 ms instead of 15.
+pub fn resend_wait(rtt: Option<Duration>) -> Duration {
+    rtt.map_or(RESEND_AFTER, |r| {
+        (r * 3).clamp(Duration::from_millis(4), RESEND_AFTER)
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     seq: u32,
@@ -28,6 +38,8 @@ pub struct InputQueue {
     next_seq: u32,
     entries: VecDeque<Entry>,
     last_sent: Option<Instant>,
+    /// How long unacknowledged events wait before they go again.
+    resend_after: Duration,
     /// Keys and buttons currently held, by Linux code.
     held: BTreeSet<u16>,
     /// Gamepad buttons held, and axes away from rest, per pad.
@@ -41,6 +53,7 @@ impl Default for InputQueue {
             next_seq: 1,
             entries: VecDeque::new(),
             last_sent: None,
+            resend_after: RESEND_AFTER,
             held: BTreeSet::new(),
             pad_held: BTreeSet::new(),
             pad_axes: BTreeMap::new(),
@@ -193,8 +206,13 @@ impl InputQueue {
         }
     }
 
+    /// Resends after `wait` from now on (see [`resend_wait`]).
+    pub fn set_resend_after(&mut self, wait: Duration) {
+        self.resend_after = wait;
+    }
+
     /// The events to send now, if any: when something new is queued, or
-    /// when unacknowledged events wait longer than [`RESEND_AFTER`].
+    /// when unacknowledged events wait longer than the resend time.
     pub fn due(&mut self, now: Instant) -> Option<Vec<(u32, InputEvent)>> {
         if self.entries.is_empty() {
             return None;
@@ -202,7 +220,7 @@ impl InputQueue {
         let fresh = self.entries.iter().any(|e| !e.sent);
         let resend = self
             .last_sent
-            .is_none_or(|t| now.duration_since(t) >= RESEND_AFTER);
+            .is_none_or(|t| now.duration_since(t) >= self.resend_after);
         if !fresh && !resend {
             return None;
         }
@@ -276,6 +294,27 @@ mod tests {
         });
         q.push(key(30, true));
         assert_eq!(q.due(t0).unwrap(), vec![(1, key(30, true))]);
+    }
+
+    #[test]
+    fn resends_follow_the_round_trip() {
+        assert_eq!(resend_wait(None), RESEND_AFTER);
+        assert_eq!(
+            resend_wait(Some(Duration::from_micros(500))),
+            Duration::from_millis(4)
+        );
+        assert_eq!(
+            resend_wait(Some(Duration::from_millis(3))),
+            Duration::from_millis(9)
+        );
+        assert_eq!(resend_wait(Some(Duration::from_millis(100))), RESEND_AFTER);
+        let mut q = InputQueue::default();
+        q.set_resend_after(Duration::from_millis(4));
+        let t0 = Instant::now();
+        q.push(key(30, true));
+        q.due(t0).unwrap();
+        assert!(q.due(t0 + Duration::from_millis(3)).is_none());
+        assert!(q.due(t0 + Duration::from_millis(4)).is_some());
     }
 
     #[test]

@@ -334,19 +334,66 @@ impl std::fmt::Debug for AudioOutput {
     }
 }
 
-/// The window's side of input: events go in here, the network thread
-/// sends them reliably (resent until the host acknowledges).
+/// The window's side of input: events go in here and out to the host at
+/// once from the pushing thread; the network thread resends what the host
+/// did not acknowledge.
 #[derive(Debug, Default)]
 pub struct InputHandle {
     queue: Mutex<InputQueue>,
     /// The streamed screen's size, once the host said it.
     stream: Mutex<Option<(u32, u32)>>,
+    /// Where events go while a session runs.
+    link: Mutex<Option<InputLink>>,
+}
+
+/// The session's way to the host, for sending input from any thread
+/// (the socket and the transport take `&self`; seal's counter is atomic).
+#[derive(Clone)]
+struct InputLink {
+    socket: Arc<UdpSocket>,
+    session_id: u32,
+    crypto: Option<Arc<Transport>>,
+}
+
+impl std::fmt::Debug for InputLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputLink")
+            .field("session_id", &self.session_id)
+            .field("sealed", &self.crypto.is_some())
+            .finish()
+    }
+}
+
+impl InputLink {
+    fn send(&self, events: &[(u32, InputEvent)]) {
+        let mut out = [0u8; MAX_DATAGRAM];
+        let n = InputHeader::encode(self.session_id, events, &mut out);
+        send_packet(
+            &self.socket,
+            self.crypto.as_deref().map(|t| (t, self.session_id)),
+            &out[..n],
+        );
+    }
 }
 
 impl InputHandle {
+    /// Queues `event` and, while a session runs, sends it right away: the
+    /// network thread wakes only every few milliseconds.
     pub fn push(&self, event: InputEvent) {
-        if let Ok(mut q) = self.queue.lock() {
+        let link = self.link.lock().ok().and_then(|l| l.clone());
+        let due = self.queue.lock().ok().and_then(|mut q| {
             q.push(event);
+            // Only with a session: `due` marks the events as sent.
+            link.as_ref().and_then(|_| q.due(Instant::now()))
+        });
+        if let (Some(link), Some(events)) = (link, due) {
+            link.send(&events);
+        }
+    }
+
+    fn connect(&self, link: Option<InputLink>) {
+        if let Ok(mut l) = self.link.lock() {
+            *l = link;
         }
     }
 
@@ -1098,13 +1145,29 @@ fn network_loop(
                         overlay::codec_label(ack.codec)
                     );
                 }
-                session = Some((ack.session_id, ack.codec));
                 if let Some(input) = &cfg.input {
                     input.set_stream((u32::from(ack.width), u32::from(ack.height)));
+                    if session.is_none() {
+                        // From now on input goes out the moment it comes.
+                        input.connect(socket.try_clone().ok().map(|s| InputLink {
+                            socket: Arc::new(s),
+                            session_id: ack.session_id,
+                            crypto: crypto.clone(),
+                        }));
+                    }
                 }
+                session = Some((ack.session_id, ack.codec));
             }
             Packet::ClockPong(pong) => {
                 clock.on_pong(&pong, now);
+                // Lost input goes again after a few round trips.
+                if let (Some(input), Some(rtt)) = (&cfg.input, clock.rtt_us())
+                    && let Ok(mut q) = input.queue.lock()
+                {
+                    q.set_resend_after(fernsicht_input::resend_wait(Some(Duration::from_micros(
+                        rtt,
+                    ))));
+                }
             }
             Packet::InputAck(a) => {
                 if session.is_some_and(|(id, _)| id == a.session_id)
@@ -1191,6 +1254,10 @@ fn network_loop(
         }
     }
 
+    // The window may still push; nothing goes out from it any more.
+    if let Some(input) = &cfg.input {
+        input.connect(None);
+    }
     if let Some((session_id, _)) = session {
         let seal_with = crypto.as_deref().map(|t| (t, session_id));
         // Keys and buttons released on the way out (closing releases what
@@ -1868,6 +1935,47 @@ mod tests {
             Some((32768, 65535))
         );
         assert_eq!(window_to_stream((-1.0, 500.0), sq, (1920, 1080)), None);
+    }
+
+    #[test]
+    fn input_goes_out_the_moment_it_is_pushed() {
+        let host = UdpSocket::bind("127.0.0.1:0").unwrap();
+        host.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(host.local_addr().unwrap()).unwrap();
+        let input = InputHandle::default();
+        let key = InputEvent::Key {
+            code: 30,
+            pressed: true,
+        };
+        // Before the session: queued, nothing sent.
+        input.push(key);
+        let mut buf = [0u8; MAX_DATAGRAM];
+        host.set_nonblocking(true).unwrap();
+        assert!(host.recv(&mut buf).is_err());
+        host.set_nonblocking(false).unwrap();
+        // With the session: the next event goes at once, with the waiting one.
+        input.connect(Some(InputLink {
+            socket: Arc::new(client),
+            session_id: 7,
+            crypto: None,
+        }));
+        input.push(InputEvent::Key {
+            code: 30,
+            pressed: false,
+        });
+        let n = host.recv(&mut buf).expect("sent without the network loop");
+        let Ok(Packet::Input(h, body)) = Packet::decode(&buf[..n]) else {
+            panic!("not input")
+        };
+        assert_eq!(h.session_id, 7);
+        assert_eq!(InputHeader::events(body).count(), 2);
+        // After the session: nothing goes out any more.
+        input.connect(None);
+        input.push(key);
+        host.set_nonblocking(true).unwrap();
+        assert!(host.recv(&mut buf).is_err());
     }
 
     #[test]

@@ -65,7 +65,9 @@ stage on the client.
 Input must arrive exactly once and in order, but must not wait behind lost packets. Every Input packet
 carries all events the host has not acknowledged yet, oldest first, each with its sequence number; the
 host applies each sequence number once and acknowledges the highest. A lost packet is covered by the
-next one. Tested with 30 % loss. The host injects the events through `uinput` (a virtual mouse,
+next one. An event leaves the moment it happens, from the window's own thread (not on the network
+loop's next turn); what is not acknowledged goes again after three round trips (4–15 ms). Tested
+with 30 % loss. The host injects the events through `uinput` (a virtual mouse,
 keyboard and up to four Xbox 360 pads) and maps absolute positions onto the monitor shown.
 
 ## Sound
