@@ -94,7 +94,7 @@ pub struct HostConfig {
     /// Settings the desktop's user changes while the host runs.
     pub settings: Arc<HostSettings>,
     /// Where the GPU's clock settings are noted during a session, so a
-    /// crashed host can put them back (`/run/fernsicht/gpu-power.json`).
+    /// crashed host can put them back (`gpu-power.json` in the state directory).
     /// `None`: not noted.
     pub power_record: Option<PathBuf>,
 }

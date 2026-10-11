@@ -332,6 +332,48 @@ fn host_and_client_binaries_pair_and_stream() {
 }
 
 #[test]
+fn sigterm_ends_the_host_cleanly_and_tells_the_client() {
+    let mut host = spawn_host(&state_dir("host-sigterm"));
+    let client_dir = state_dir("client-sigterm");
+    let out = bin("fernsicht-client")
+        .args(["pair", &host.addr, &host.pin, "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // A session that would last 20 s …
+    let client = bin("fernsicht-client")
+        .args([&host.addr, "--duration", "20", "--no-audio", "--state-dir"])
+        .arg(&client_dir)
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    // … until the host is stopped like `systemctl stop` does.
+    let stopped = Instant::now();
+    let kill = Command::new("kill")
+        .args(["-TERM", &host.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    let status = host.child.wait().unwrap();
+    assert!(status.success(), "host ended with {status}");
+    let out = client.wait_with_output().unwrap();
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stopped.elapsed() < Duration::from_secs(5),
+        "the client waited for its timeout: {log}"
+    );
+    assert!(log.contains("host closed the session"), "{log}");
+}
+
+#[test]
 fn an_unpaired_host_is_refused_with_a_hint() {
     let dir = state_dir("unpaired");
     let out = bin("fernsicht-client")

@@ -93,7 +93,10 @@ This is how the service runs:
   at full clock speed (AMD: `power_dpm_force_performance_level` set to
   `high`, Intel: minimum clock raised). Otherwise the card would clock down
   between two frames, and encoding would take longer. Afterwards the
-  service restores everything. To turn this off: in the app under
+  service restores everything, also when it is stopped or restarted
+  mid-session; after a crash or a kill it does so when it starts again
+  (it notes the old values in `/var/lib/fernsicht/gpu-power.json`). To
+  turn this off: in the app under
   “Einstellungen › Dieser Rechner als Host” (settings › this computer as
   host), or with `--no-gpu-boost`.
 

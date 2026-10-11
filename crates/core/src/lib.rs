@@ -6,6 +6,7 @@
 pub mod clock;
 pub mod desktop;
 pub mod latency;
+pub mod signal;
 pub mod slot;
 pub mod sysinfo;
 pub mod thread;

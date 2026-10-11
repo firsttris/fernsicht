@@ -84,7 +84,10 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** SIGTERM kills the process, `GpuBoost::drop` never runs, and the crash record in
   `/run/fernsicht` is deleted by systemd. The next session reads `high` as the old value.
 - **Fix:** handle SIGTERM/SIGINT by setting `stop`; keep the record in the state directory.
-- **Status:** open
+- **Status:** fixed. `fernsicht_core::signal::stop_on_signals` turns SIGINT and SIGTERM into the
+  stop flag (a thread in `sigwait`; a second signal exits at once); the host ends its session with
+  Bye and the GPU's values return. The record lives in the state directory now. Test:
+  `sigterm_ends_the_host_cleanly_and_tells_the_client` (`binaries.rs`).
 
 ### A5 · Switching to a monitor of another size distorts the picture
 

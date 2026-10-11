@@ -294,13 +294,18 @@ fn main() -> anyhow::Result<()> {
     let cfg = HostConfig {
         security: Some(std::sync::Arc::new(security)),
         settings: Arc::new(settings),
-        power_record: root.then(|| "/run/fernsicht/gpu-power.json".into()),
+        // In the state directory: systemd empties /run/fernsicht on stop.
+        power_record: root.then(|| dir.join("gpu-power.json")),
         ..cfg
     };
+    let stop = Arc::new(AtomicBool::new(false));
+    // Before any thread starts: SIGTERM (systemctl stop) and Ctrl+C end the
+    // session cleanly, with Bye and the GPU's clocks put back.
+    fernsicht_core::signal::stop_on_signals(stop.clone())?;
     let agent = HostAgent::bind(cfg)?;
     log::info!("listening on {}", agent.local_addr()?);
     if let Some(web) = agent.web_addr() {
         log::info!("web viewer on http://{web}");
     }
-    agent.run(Arc::new(AtomicBool::new(false)))
+    agent.run(stop)
 }

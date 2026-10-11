@@ -10,8 +10,10 @@
 //! - NVIDIA: left alone (no sysfs knob; it clocks down less while encoding).
 //!
 //! Writing these needs root (the service). The old values are also written
-//! to a file under `/run/fernsicht`, so a host that crashed mid-session
-//! puts them back when it starts again.
+//! to a file in the state directory (`/var/lib/fernsicht`, which systemd
+//! keeps when the service stops), so a host that crashed or was killed
+//! mid-session puts them back when it starts again. A normal stop
+//! (SIGTERM) ends the session, and the values return at once.
 
 use std::path::{Path, PathBuf};
 
