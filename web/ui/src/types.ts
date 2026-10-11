@@ -48,6 +48,13 @@ export interface SessionStats {
   lossBeforeFec: number;
   /** Frames lost after FEC, 0–1. */
   lossAfterFec: number;
+  /** Glass-to-glass spread, where measured per frame (the app). */
+  glassToGlassUs?: { avg: number; p95: number; max: number };
+  /** Round trip to the host, µs, where known. */
+  rttUs?: number | null;
+  /** False where no FEC protects the stream (the web viewer): the loss row
+   * then reads "packets → frames" without "FEC". */
+  fec?: boolean;
 }
 
 export interface SessionInfo {

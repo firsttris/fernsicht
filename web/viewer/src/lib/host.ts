@@ -188,6 +188,39 @@ function setLowLatency(r: RTCRtpReceiver) {
   }
 }
 
+/** Decode and display time of one shown frame, µs. */
+export interface FrameTiming {
+  decodeUs: number;
+  presentUs: number;
+}
+
+/**
+ * One frame's times from `requestVideoFrameCallback`: decoding took
+ * `processingDuration`; from the last packet (`receiveTime`) to the screen
+ * (`expectedDisplayTime`) the rest is waiting to be shown (jitter buffer,
+ * compositor, the next refresh). `null` where the browser leaves these out.
+ */
+export function frameTiming(m: {
+  receiveTime?: number;
+  processingDuration?: number;
+  expectedDisplayTime: number;
+}): FrameTiming | null {
+  if (m.receiveTime === undefined || m.processingDuration === undefined) return null;
+  const decodeUs = m.processingDuration * 1e6;
+  const presentUs = Math.max(0, (m.expectedDisplayTime - m.receiveTime) * 1e3 - decodeUs);
+  return { decodeUs, presentUs };
+}
+
+/** The mean of frame timings; `null` for none. */
+export function meanTiming(t: readonly FrameTiming[]): FrameTiming | null {
+  if (t.length === 0) return null;
+  const sum = t.reduce((a, b) => ({
+    decodeUs: a.decodeUs + b.decodeUs,
+    presentUs: a.presentUs + b.presentUs,
+  }));
+  return { decodeUs: sum.decodeUs / t.length, presentUs: sum.presentUs / t.length };
+}
+
 /** Counters from the last `getStats()`, to compute per-second values. */
 export interface StatsSample {
   totalDecodeTime: number;
@@ -207,12 +240,15 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0
 /**
  * The overlay from the browser's WebRTC statistics and the host's share:
  * capture and encode come from the host, network is half the round trip,
- * decode and the jitter buffer ("Anzeige") from the browser.
+ * decode and display from the frames shown (`frames`, measured with
+ * `requestVideoFrameCallback`), else from the statistics (decode time, and
+ * the jitter buffer for display).
  */
 export function summarize(
   report: Report,
   previous: StatsSample | null,
   host: HostStats | null,
+  frames: FrameTiming | null = null,
 ): { stats: SessionStats; sample: StatsSample } {
   let video: Record<string, unknown> | undefined;
   let rtt = 0;
@@ -251,15 +287,18 @@ export function summarize(
       encode: host?.encodeUs ?? 0,
       network: (rtt * 1e6) / 2,
       decode:
+        frames?.decodeUs ??
         per(sample.totalDecodeTime - p.totalDecodeTime, sample.framesDecoded - p.framesDecoded) *
-        1e6,
+          1e6,
       present:
+        frames?.presentUs ??
         per(
           sample.jitterBufferDelay - p.jitterBufferDelay,
           sample.jitterBufferEmittedCount - p.jitterBufferEmittedCount,
         ) * 1e6,
     },
-    codec: host?.codec ?? "H.264",
+    // Unknown until the host's first report.
+    codec: host?.codec ?? "–",
     fps: num(video?.framesPerSecond) || (host?.fps ?? 0),
     bitrateBps: host?.bitrateBps ?? 0,
     lossBeforeFec: per(Math.max(0, lost), Math.max(0, lost) + received),
@@ -267,6 +306,9 @@ export function summarize(
       sample.framesDropped - p.framesDropped,
       sample.framesReceived - p.framesReceived,
     ),
+    rttUs: rtt > 0 ? rtt * 1e6 : null,
+    // WebRTC here has no FEC: packets lost → frames dropped.
+    fec: false,
   };
   return { stats, sample };
 }

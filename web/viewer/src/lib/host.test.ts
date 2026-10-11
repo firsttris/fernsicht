@@ -8,7 +8,9 @@ import {
   connectionPhase,
   currentSession,
   fetchHostInfo,
+  frameTiming,
   holdSession,
+  meanTiming,
   summarize,
 } from "./host";
 
@@ -186,6 +188,30 @@ describe("overlay from WebRTC statistics", () => {
   it("copes with empty statistics and no word from the host", () => {
     const { stats } = summarize([], null, null);
     expect(stats.stagesUs).toEqual({ capture: 0, encode: 0, network: 0, decode: 0, present: 0 });
-    expect(stats).toMatchObject({ codec: "H.264", fps: 0, lossBeforeFec: 0 });
+    // No codec guessed before the host says it; no round trip known.
+    expect(stats).toMatchObject({ codec: "–", fps: 0, lossBeforeFec: 0, rttUs: null });
+  });
+
+  it("says there is no FEC and gives the round trip", () => {
+    const { stats } = summarize(report(60), null, host);
+    expect(stats.fec).toBe(false);
+    expect(stats.rttUs).toBeCloseTo(2000);
+  });
+
+  it("takes decode and display from the frames shown", () => {
+    const shown = [
+      frameTiming({ receiveTime: 1000, processingDuration: 0.002, expectedDisplayTime: 1010 }),
+      frameTiming({ receiveTime: 2000, processingDuration: 0.004, expectedDisplayTime: 2012 }),
+    ].filter((t) => t !== null);
+    expect(shown).toEqual([
+      { decodeUs: 2000, presentUs: 8000 },
+      { decodeUs: 4000, presentUs: 8000 },
+    ]);
+    const { stats } = summarize(report(60), null, host, meanTiming(shown));
+    expect(stats.stagesUs.decode).toBe(3000);
+    expect(stats.stagesUs.present).toBe(8000);
+    // Browsers without these fields: none, and the statistics are used.
+    expect(frameTiming({ expectedDisplayTime: 5 })).toBeNull();
+    expect(meanTiming([])).toBeNull();
   });
 });

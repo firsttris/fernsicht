@@ -16,6 +16,11 @@ export function LatencyOverlay({ stats, className }: { stats: SessionStats; clas
         <span className="text-xs text-muted-foreground">Glass-to-Glass</span>
         <span className="font-mono text-[22px] font-medium tabular-nums">{formatMs(total)}</span>
       </div>
+      {stats.glassToGlassUs && (
+        <div className="-mt-2 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+          p95 {formatMs(stats.glassToGlassUs.p95)} · max {formatMs(stats.glassToGlassUs.max)}
+        </div>
+      )}
       <div className="flex h-1.5 gap-0.5 overflow-hidden rounded-full" aria-hidden>
         {STAGES.map((s) => (
           <span
@@ -47,10 +52,18 @@ export function LatencyOverlay({ stats, className }: { stats: SessionStats; clas
         <dd className="m-0 text-right font-mono tabular-nums">
           {Math.round(stats.bitrateBps / 1e6)} Mbit/s
         </dd>
-        <dt className="text-muted-foreground">Verlust (FEC)</dt>
+        <dt className="text-muted-foreground">
+          {stats.fec === false ? "Verlust" : "Verlust (FEC)"}
+        </dt>
         <dd className="m-0 text-right font-mono tabular-nums">
           {formatPercent(stats.lossBeforeFec)} → {formatPercent(stats.lossAfterFec)}
         </dd>
+        {stats.rttUs != null && (
+          <>
+            <dt className="text-muted-foreground">RTT</dt>
+            <dd className="m-0 text-right font-mono tabular-nums">{formatMs(stats.rttUs)}</dd>
+          </>
+        )}
       </dl>
     </section>
   );

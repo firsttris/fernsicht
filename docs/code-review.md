@@ -391,7 +391,10 @@ the limits FFmpeg puts on the next latency step.
   dropped frames (WebRTC has no FEC here), the codec defaults to "H.264". The app overlay drops the
   p95, max and RTT the client sends.
 - **Fix:** `requestVideoFrameCallback` for decode and present times; correct labels; show p95 and RTT.
-- **Status:** open
+- **Status:** fixed. The web viewer takes decode and display from `requestVideoFrameCallback`
+  (`frameTiming`, `meanTiming`; the WebRTC statistics remain the fallback), shows "Verlust" without
+  "(FEC)" and no codec before the host names it. The overlay shows p95, max and RTT where known (the
+  app's client already sent them). Tests in `host.test.ts` and `latency-overlay.test.tsx`.
 
 ### A32 · The session toolbar cannot be used with the keyboard
 

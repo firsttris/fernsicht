@@ -42,6 +42,31 @@ describe("LatencyOverlay", () => {
     expect(screen.getByText("0,4 % → 0")).toBeInTheDocument();
   });
 
+  it("shows the spread and the round trip where they are known", () => {
+    const { rerender } = render(<LatencyOverlay stats={stats} />);
+    expect(screen.queryByText(/p95/)).not.toBeInTheDocument();
+    expect(screen.queryByText("RTT")).not.toBeInTheDocument();
+    rerender(
+      <LatencyOverlay
+        stats={{
+          ...stats,
+          glassToGlassUs: { avg: 14_000, p95: 18_000, max: 25_000 },
+          rttUs: 1_000,
+        }}
+      />,
+    );
+    expect(screen.getByText("p95 18 ms · max 25 ms")).toBeInTheDocument();
+    expect(screen.getByText("RTT").closest("dl")).toHaveTextContent("RTT1 ms");
+  });
+
+  it("says where no FEC protects the stream", () => {
+    const { rerender } = render(<LatencyOverlay stats={stats} />);
+    expect(screen.getByText("Verlust (FEC)")).toBeInTheDocument();
+    rerender(<LatencyOverlay stats={{ ...stats, fec: false }} />);
+    expect(screen.getByText("Verlust")).toBeInTheDocument();
+    expect(screen.queryByText("Verlust (FEC)")).not.toBeInTheDocument();
+  });
+
   it("sizes the stage bar proportionally", () => {
     const { container } = render(<LatencyOverlay stats={stats} />);
     const bar = container.querySelector("[aria-hidden].flex.h-1\\.5");

@@ -83,9 +83,12 @@ The app's session page has the toolbar:
 ### Latency overlay
 
 The overlay shows glass-to-glass latency and its stages – Capture, Encode, “Netz” (network), Decode,
-“Anzeige” (display) – plus the codec and its hardware, frame rate, bitrate and loss before and after
-FEC. Glass-to-glass here is measured up to the moment the picture is handed to the window; the
-monitor's own delay comes on top ([architecture](architecture.md#latency-measurement)).
+“Anzeige” (display) – with the spread (p95 and maximum) below it, plus the codec and its hardware,
+frame rate, bitrate, loss before and after FEC and the round trip (RTT). Glass-to-glass here is
+measured up to the moment the picture is handed to the window; the monitor's own delay comes on top
+([architecture](architecture.md#latency-measurement)). In the web viewer, decode and display come
+from the frames the browser shows (from the last packet to the screen), and the loss row reads
+packets lost → frames dropped, as WebRTC there has no FEC.
 
 ### Desktop and gaming mode
 

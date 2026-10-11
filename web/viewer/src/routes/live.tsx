@@ -21,12 +21,15 @@ import {
 } from "../lib/cursor";
 import {
   type ConnectionPhase,
+  type FrameTiming,
   type HostStats,
   type LiveSession,
   RECONNECT_GRACE_MS,
   type StatsSample,
   connectionPhase,
+  frameTiming,
   holdSession,
+  meanTiming,
   summarize,
 } from "../lib/host";
 import { useFullscreen } from "../lib/fullscreen";
@@ -54,6 +57,8 @@ export function LiveSessionPage({
   const [monitors, setMonitors] = useState<HostMonitors>();
   const [touchMode, setTouchMode] = useState<TouchMode>("direct");
   const [muted, setMuted] = useState(false);
+  // Decode and display times of the frames shown, gathered by the screen.
+  const frameTimes = useRef<FrameTiming[]>([]);
   const [zoom, setZoom] = useState<Zoom>(NO_ZOOM);
   const keyboard = useRef<HTMLInputElement>(null);
   const touch = useTouchScreen();
@@ -83,6 +88,7 @@ export function LiveSessionPage({
           report as unknown as Map<string, Record<string, unknown>>,
           previous,
           host,
+          meanTiming(frameTimes.current.splice(0)),
         );
         previous = r.sample;
         setStats(r.stats);
@@ -141,6 +147,7 @@ export function LiveSessionPage({
         session={session}
         mode={mode}
         muted={muted}
+        frameTimes={frameTimes}
         touchMode={touchMode}
         zoom={zoom}
         onZoom={setZoom}
@@ -195,6 +202,7 @@ export function RemoteScreen({
   session,
   mode,
   muted = false,
+  frameTimes,
   touchMode = "direct",
   zoom = NO_ZOOM,
   onZoom = () => {},
@@ -203,6 +211,8 @@ export function RemoteScreen({
   mode: SessionMode;
   /** The host's sound off (the toolbar's sound button). */
   muted?: boolean;
+  /** Where the times of the frames shown go (for the overlay). */
+  frameTimes?: RefObject<FrameTiming[]>;
   touchMode?: TouchMode;
   zoom?: Zoom;
   onZoom?: (z: Zoom) => void;
@@ -226,6 +236,21 @@ export function RemoteScreen({
     v.srcObject = session.stream;
     v.play()?.catch(() => setNeedsClick(true));
   }, [session]);
+
+  // Each frame shown: how long it took to decode and to reach the screen.
+  useEffect(() => {
+    const v = video.current;
+    if (!v?.requestVideoFrameCallback || !frameTimes) return;
+    let handle = 0;
+    const onFrame: VideoFrameRequestCallback = (_, meta) => {
+      const t = frameTiming(meta);
+      // At most a few seconds' worth if nobody reads them.
+      if (t && frameTimes.current.length < 1000) frameTimes.current.push(t);
+      handle = v.requestVideoFrameCallback(onFrame);
+    };
+    handle = v.requestVideoFrameCallback(onFrame);
+    return () => v.cancelVideoFrameCallback(handle);
+  }, [frameTimes]);
 
   // The host's pointer.
   useEffect(() => {
