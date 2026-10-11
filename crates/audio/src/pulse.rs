@@ -163,11 +163,13 @@ impl Stream {
         Ok(Self { lib, s })
     }
 
-    /// Buffered audio in the server, µs.
+    /// Buffered audio in the server, µs; 0 when the server cannot say
+    /// (it returns `(pa_usec_t) -1` then).
     fn latency_us(&mut self) -> u64 {
         let mut err = 0;
         // SAFETY: valid handle.
-        unsafe { (self.lib.latency)(self.s, &mut err) }
+        let us = unsafe { (self.lib.latency)(self.s, &mut err) };
+        if us == u64::MAX { 0 } else { us }
     }
 }
 
@@ -249,9 +251,9 @@ impl Playback {
 }
 
 impl crate::AudioSink for Playback {
-    fn play(&mut self, pcm: &Frame) -> Result<(), String> {
+    fn play(&mut self, pcm: &[i16]) -> Result<(), String> {
         let mut err = 0;
-        // SAFETY: pcm is FRAME_BYTES long; blocks until there is room.
+        // SAFETY: pcm is valid for its length; blocks until there is room.
         let r = unsafe {
             (self.0.lib.write)(
                 self.0.s,

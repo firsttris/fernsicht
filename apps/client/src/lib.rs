@@ -1484,8 +1484,14 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
         }
     };
     let mut jitter = Jitter::new(AUDIO_JITTER_FRAMES);
+    let frame_us = u64::from(fernsicht_audio::FRAME_MS) * 1000;
+    // The host's sound card and ours drift apart: frames a sample shorter
+    // or longer keep the delay at the jitter target.
+    let mut drift =
+        fernsicht_audio::drift::DriftControl::new(AUDIO_JITTER_FRAMES as u64 * frame_us);
     let mut pcm: fernsicht_audio::Frame =
         [0; fernsicht_audio::FRAME_SAMPLES * fernsicht_audio::CHANNELS];
+    let mut stretched = Vec::with_capacity(pcm.len() + fernsicht_audio::CHANNELS);
     let mut captured: std::collections::BTreeMap<u32, i64> = Default::default();
     let mut started = false;
     let mut delays = (0u64, 0u64);
@@ -1538,20 +1544,19 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
             pcm.fill(0);
         }
         started = true;
-        if let Err(e) = sink.play(&pcm) {
+        let delta = drift.step(jitter.depth() as u64 * frame_us);
+        fernsicht_audio::drift::stretch(&pcm, fernsicht_audio::CHANNELS, delta, &mut stretched);
+        if let Err(e) = sink.play(&stretched) {
             log::warn!("sound output: {e}");
             break;
         }
         // Delay of the newest frame: from the host's output to ours.
         if let Some((_, &t)) = captured.last_key_value() {
-            let queued = jitter.depth() as u64 * u64::from(fernsicht_audio::FRAME_MS) * 1000;
-            let d = (now_us() as i64 - t).max(0) as u64 + queued + sink.buffered_us();
-            delays = (delays.0 + d, delays.1 + 1);
-        }
-        // The host's clock runs a little faster than the sound card: the
-        // buffer grows. Keep it near the target.
-        if jitter.depth() > AUDIO_JITTER_FRAMES + 3 {
-            jitter.skip_one();
+            let queued = jitter.depth() as u64 * frame_us;
+            let d = ((now_us() as i64 - t).max(0) as u64)
+                .saturating_add(queued)
+                .saturating_add(sink.buffered_us());
+            delays = (delays.0.saturating_add(d), delays.1 + 1);
         }
     }
     summary.played = jitter.played;

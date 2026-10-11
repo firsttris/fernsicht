@@ -71,8 +71,10 @@ keyboard and up to four Xbox 360 pads) and maps absolute positions onto the moni
 ## Sound
 
 Opus, 48 kHz stereo, 5 ms frames in low-delay mode. Every audio packet also carries the previous frame,
-so a single loss leaves no gap. The client's jitter buffer holds about 15 ms, conceals longer gaps and
-compensates the drift between the two sound cards' clocks.
+so a single loss leaves no gap. The client's jitter buffer holds about 15 ms and conceals longer
+gaps. The two sound cards' clocks drift apart (up to about 100 ppm): instead of dropping a frame or
+running dry, the client plays a frame one sample shorter or longer now and then (0.4 % for 5 ms,
+inaudible), steered by the smoothed buffer depth.
 
 ## Monitors
 

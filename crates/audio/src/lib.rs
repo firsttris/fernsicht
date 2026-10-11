@@ -9,6 +9,7 @@
 //! The libraries (libopus, libpulse-simple) are loaded at runtime: builds
 //! need nothing extra, and machines without them run without audio.
 
+pub mod drift;
 pub mod jitter;
 pub mod opus;
 pub mod pulse;
@@ -31,9 +32,10 @@ pub trait AudioSource: Send {
 }
 
 pub trait AudioSink: Send {
-    /// Queues a frame for playback; blocks while the output buffer is full,
+    /// Queues interleaved samples (a frame, or one stretched by a sample,
+    /// see [`drift`]) for playback; blocks while the output buffer is full,
     /// which paces the caller.
-    fn play(&mut self, pcm: &Frame) -> Result<(), String>;
+    fn play(&mut self, pcm: &[i16]) -> Result<(), String>;
 
     /// Audio queued in the output, µs.
     fn buffered_us(&mut self) -> u64;
@@ -90,13 +92,15 @@ impl Recorder {
 }
 
 impl AudioSink for Recorder {
-    fn play(&mut self, pcm: &Frame) -> Result<(), String> {
+    fn play(&mut self, pcm: &[i16]) -> Result<(), String> {
         self.pcm
             .lock()
             .map_err(|e| e.to_string())?
             .extend_from_slice(pcm);
+        // Paced like a sound card: as long as the samples last.
+        let samples = (pcm.len() / CHANNELS) as u64;
         let due = *self.next.get_or_insert_with(Instant::now)
-            + Duration::from_millis(u64::from(FRAME_MS));
+            + Duration::from_micros(samples * 1_000_000 / u64::from(SAMPLE_RATE));
         if let Some(wait) = due.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
         }

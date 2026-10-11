@@ -296,7 +296,12 @@ the limits FFmpeg puts on the next latency step.
   `pa_simple_get_latency` returns `u64::MAX` on error and the addition overflows.
 - **Fix:** steer a smoothed depth with slight resampling (or crossfaded drop/insert); prefill with
   silence; treat `u64::MAX` as unknown.
-- **Status:** open
+- **Status:** fixed. `fernsicht_audio::drift`: `DriftControl` steers the smoothed jitter depth to
+  its target, and `stretch` plays a frame one sample shorter or longer (linear interpolation) when
+  it strays more than a frame; the old drop-a-frame rule is gone. A simulation test holds the
+  buffer within 5–25 ms for ten minutes at ±300 ppm. Prefilling turned out unnecessary: the
+  controller restores the cushion the sound server's first buffer takes. `pa_simple_get_latency`'s
+  error value counts as 0, and the delay sum saturates. Native PipeWire stays D10.
 
 ### A23 · Gamepad mapping misses common pads
 

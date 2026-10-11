@@ -104,18 +104,6 @@ impl Jitter {
         self.concealed += 1;
         Next::Lost
     }
-
-    /// Drops the oldest waiting frame, to shorten the delay when the
-    /// buffer grew (sound card clock slower than the host's).
-    pub fn skip_one(&mut self) {
-        if let Some(seq) = oldest(self.frames.keys()) {
-            self.frames.remove(&seq);
-            self.dropped += 1;
-            if self.next == Some(seq) {
-                self.next = Some(seq.wrapping_add(1));
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -189,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn delay_is_bounded_and_can_be_shortened() {
+    fn delay_is_bounded() {
         let mut j = Jitter::new(2);
         for s in 0..20 {
             j.push(s, &f(s));
@@ -197,8 +185,6 @@ mod tests {
         assert_eq!(j.depth(), 8, "at most four times the target");
         assert_eq!(j.dropped, 12);
         assert_eq!(j.pop(), Next::Frame(f(12)));
-        j.skip_one();
-        assert_eq!(j.pop(), Next::Frame(f(14)));
     }
 
     #[test]
@@ -208,14 +194,13 @@ mod tests {
         j.push(u32::MAX, &f(1));
         assert_eq!(j.pop(), Next::Frame(f(1)), "the older one, across the wrap");
         assert_eq!(j.pop(), Next::Frame(f(2)));
-        // Bounding and skipping drop the oldest across the wrap, too.
+        // Bounding drops the oldest across the wrap, too.
         let mut j = Jitter::new(1);
         for s in [u32::MAX - 1, u32::MAX, 0, 1, 2] {
             j.push(s, &f(s));
         }
         assert_eq!(j.depth(), 4);
         assert_eq!(j.pop(), Next::Frame(f(u32::MAX)));
-        j.skip_one();
-        assert_eq!(j.pop(), Next::Frame(f(1)));
+        assert_eq!(j.pop(), Next::Frame(f(0)));
     }
 }
