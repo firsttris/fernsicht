@@ -74,14 +74,17 @@ pub fn decodes(gpu: &Gpu, codec: Codec) -> bool {
 
 /// Whether `gpu` encodes `codec` with Vulkan Video, as far as the driver
 /// says (an encode queue with the codec) and the FFmpeg loaded is
-/// [ready](ffmpeg_is_ready).
+/// [ready](ffmpeg_is_ready). H.264 and HEVC; not AV1 (see below).
 pub fn gpu_encodes(gpu: &Gpu, codec: Codec) -> bool {
     let op = match codec {
         Codec::H264 => vk::VideoCodecOperationFlagsKHR::ENCODE_H264,
         Codec::Hevc => vk::VideoCodecOperationFlagsKHR::ENCODE_H265,
-        // VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR (newer than ash).
-        Codec::Av1 => vk::VideoCodecOperationFlagsKHR::from_raw(0x0004_0000),
-        Codec::Synthetic => return false,
+        // Not offered: FFmpeg 8.1's Vulkan AV1 encoder writes the
+        // encoder's aligned surface size as the frame size
+        // (vulkan_encode_av1.c: frame and render size = surface_width/
+        // height, 1920×1088 on RADV for 1080p), and AV1 has no cropping:
+        // the picture gets 8 extra rows. The host takes HEVC instead.
+        Codec::Av1 | Codec::Synthetic => return false,
     };
     ffmpeg_is_ready()
         && gpu

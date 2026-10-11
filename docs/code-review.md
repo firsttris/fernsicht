@@ -917,7 +917,9 @@ FFmpeg's encoder pool, waiting for and signalling its timeline semaphore; no CUD
 at 1080p: 1.7 ms from the screen's DMA-BUF to an H.264 frame against 2.25 ms with NVENC through CUDA,
 and 3.6 ms glass-to-glass (without the display) with Vulkan Video on both sides against 4.8 ms with
 NVENC and NVDEC. On the RX 7800 XT (RADV) the same tests run: 1.7 ms from the DMA-BUF for H.264 and
-HEVC, keyframes 1.2 frames' worth (H.264) and below one (HEVC), decoding 0.8–1 ms. Two details from FFmpeg's source: the video profile comes from `sw_pix_fmt`
+HEVC, keyframes 1.2 frames' worth (H.264) and below one (HEVC), decoding 0.8–1 ms. AV1 is not
+offered: FFmpeg 8.1's Vulkan AV1 encoder writes the aligned surface size as the frame size
+(1920×1088 on RADV), and AV1 has no cropping. Two details from FFmpeg's source: the video profile comes from `sw_pix_fmt`
 (`vulkan_encode.c`), and HEVC's picture order count is sized to the GOP, at most 16 bits
 (`vulkan_encode_h265.c`), so the "endless" GOP is 2^15 frames. NVIDIA's driver refuses the
 ultra-low-latency tuning, so the encoder takes the lowest-latency one the driver offers. `auto`

@@ -71,7 +71,9 @@ display or no root, e.g. in CI.
     1.7 ms per 1080p H.264 frame for import, conversion, copy and encode (NVENC through CUDA: 2.25
     ms), 2.1 ms for HEVC; on the RX 7800 XT (RADV) 1.7 ms for both. NVIDIA's rate control keeps less
     strictly to one frame: a keyframe at 20 Mbit/s is about 1.6 frames' worth (NVENC: one); RADV's
-    about 1.2 for H.264 and less than one for HEVC. Not chosen by `--encoder auto` yet; intra refresh is
+    about 1.2 for H.264 and less than one for HEVC. H.264 and HEVC only: FFmpeg 8.1's Vulkan AV1 encoder writes
+    the encoder's aligned size as the frame size (1920×1088 for 1080p on RADV, `vulkan_encode_av1.c`),
+    and AV1 has no cropping, so a client asking for AV1 gets HEVC from it. Not chosen by `--encoder auto` yet; intra refresh is
     NVENC's only.
 
     Tuning: the lowest-latency mode the driver takes (ultra-low latency, else low latency; NVIDIA's
