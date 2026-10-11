@@ -49,7 +49,12 @@ the limits FFmpeg puts on the next latency step.
 - **Fix:** count reports with no lost frames and no overflow as clean when loss is below
   `SOME_LOSS`; symmetric filter; only store the new rate when it was applied. Test: one lost frame,
   then 300 reports at 3 % loss → the rate returns to the ceiling.
-- **Status:** open
+- **Status:** fixed. A report is clean when no frame was lost, the sender kept up and smoothed loss
+  is below 15 %; the filter is symmetric; a frame lost now and then lowers the rate gently (×0.85),
+  only overflow or heavy loss hard (×0.7). The test also found that the 5 % rule kept the last step
+  from reaching the ceiling (19.55 of 20 Mbit/s for good); the limits are exempt now. The encode
+  loop keeps the old rate when a rebuild fails and tries again when the target changes. Tests in
+  `rate.rs` (`wifi_loss_that_fec_hides_does_not_hold_the_bitrate_down` and others).
 
 ### A3 · Web sessions are not ended cleanly
 

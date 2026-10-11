@@ -2,10 +2,10 @@
 //! back up when the link has been clean for a while, never above what the
 //! client asked for.
 //!
-//! Congestion is what FEC cannot hide: frames lost despite it, the host's
-//! own sender falling behind, or very heavy loss. Steady moderate loss
-//! (Wi-Fi drops packets at random, not only when full) is FEC's job and
-//! does not cost sharpness.
+//! Congestion is what FEC cannot hide: the host's own sender falling
+//! behind, very heavy loss, or frames lost despite FEC. Steady moderate
+//! loss (Wi-Fi drops packets at random, not only when full) is FEC's job:
+//! it neither lowers the bitrate nor keeps it from coming back up.
 //!
 //! Down is quick and up is careful (like TCP): too much bitrate costs
 //! lost frames right away, too little only some sharpness. Changes are
@@ -15,10 +15,15 @@ use std::time::{Duration, Instant};
 
 /// Loss above this (smoothed) counts as congestion: down hard.
 pub const HEAVY_LOSS: f32 = 0.20;
-/// Loss above this: down a little (FEC gets expensive).
+/// Loss above this: down a little (FEC gets expensive). Below it, with no
+/// frame lost and no overflow, the link counts as clean.
 pub const SOME_LOSS: f32 = 0.15;
-/// Loss below this (and no lost frames) counts as a clean link.
-pub const CLEAN: f32 = 0.02;
+/// How much of a new report goes into the smoothed loss.
+const SMOOTHING: f32 = 0.3;
+/// Steps down: hard on congestion, gently for a frame lost now and then.
+const DOWN_HARD: f64 = 0.7;
+const DOWN_GENTLY: f64 = 0.85;
+const UP: f64 = 1.15;
 /// Clean this long before going up.
 pub const CLEAN_FOR: Duration = Duration::from_secs(5);
 /// Shortest time between two changes downwards / upwards.
@@ -75,27 +80,25 @@ impl RateController {
         } else {
             0.0
         };
-        // Quick to rise, slower to fall: one bad report counts.
-        let weight = if loss > self.loss { 0.5 } else { 0.2 };
-        self.loss += (loss - self.loss) * weight;
+        // Symmetric, so the estimate is not biased towards bad reports.
+        self.loss += (loss - self.loss) * SMOOTHING;
         let since = now.saturating_duration_since(self.last_change);
 
-        let factor = if overflow || frames_lost > 0 || self.loss > HEAVY_LOSS {
+        let factor = if overflow || self.loss > HEAVY_LOSS {
             self.clean_since = None;
-            (since >= DOWN_EVERY).then_some(0.7)
-        } else if self.loss > SOME_LOSS {
+            (since >= DOWN_EVERY).then_some(DOWN_HARD)
+        } else if frames_lost > 0 || self.loss > SOME_LOSS {
             self.clean_since = None;
-            (since >= DOWN_EVERY * 2).then_some(0.85)
-        } else if self.loss < CLEAN {
-            let clean = *self.clean_since.get_or_insert(now);
-            (now.saturating_duration_since(clean) >= CLEAN_FOR && since >= UP_EVERY).then_some(1.15)
+            (since >= DOWN_EVERY * 2).then_some(DOWN_GENTLY)
         } else {
-            self.clean_since = None;
-            None
+            let clean = *self.clean_since.get_or_insert(now);
+            (now.saturating_duration_since(clean) >= CLEAN_FOR && since >= UP_EVERY).then_some(UP)
         }?;
         let next = ((f64::from(self.current) * factor) as u32).clamp(self.floor, self.ceiling);
-        // Not worth a new encoder for less than 5 %.
-        if next.abs_diff(self.current) * 20 < self.current {
+        // Not worth a new encoder for less than 5 %, except the last step to
+        // the ceiling or the floor.
+        let at_limit = next == self.ceiling || next == self.floor;
+        if next == self.current || (!at_limit && next.abs_diff(self.current) * 20 < self.current) {
             return None;
         }
         self.current = next;
@@ -147,7 +150,7 @@ mod tests {
     fn heavy_loss_goes_down_fast_and_recovers_slowly() {
         let mut t = Instant::now();
         let mut c = RateController::new(20_000, t);
-        // 10 % loss for 3 s: down about once a second, to the floor at most.
+        // 30 % loss for 3 s: down about once a second, to the floor at most.
         let down = feed(&mut c, &mut t, 30, 0.30);
         assert!(down.len() >= 2, "{down:?}");
         assert!(down.windows(2).all(|w| w[1] < w[0]));
@@ -208,13 +211,38 @@ mod tests {
     }
 
     #[test]
-    fn frames_lost_despite_fec_count_as_congestion() {
+    fn frames_lost_despite_fec_go_down_gently() {
         let mut t = Instant::now();
         let mut c = RateController::new(20_000, t);
         t += Duration::from_secs(2);
-        assert_eq!(c.report(0.03, 2, false, t), Some(14_000));
-        // Not again within a second.
+        assert_eq!(c.report(0.03, 2, false, t), Some(17_000));
+        // Not again within two seconds.
         t += MS;
         assert_eq!(c.report(0.03, 2, false, t), None);
+    }
+
+    #[test]
+    fn wifi_loss_that_fec_hides_does_not_hold_the_bitrate_down() {
+        // A frame lost now and then, otherwise steady random loss that FEC
+        // repairs: the bitrate comes back to the ceiling.
+        for loss in [0.03, 0.10] {
+            let mut t = Instant::now();
+            let mut c = RateController::new(20_000, t);
+            t += Duration::from_secs(2);
+            assert!(c.report(loss, 1, false, t).is_some());
+            feed(&mut c, &mut t, 600, loss);
+            assert_eq!(c.current(), 20_000, "{loss}");
+        }
+    }
+
+    #[test]
+    fn one_bad_report_does_not_count_as_congestion() {
+        let mut t = Instant::now();
+        let mut c = RateController::new(20_000, t);
+        feed(&mut c, &mut t, 30, 0.0);
+        t += MS;
+        assert_eq!(c.report(0.40, 0, false, t), None);
+        assert!(c.loss() < SOME_LOSS);
+        assert!(feed(&mut c, &mut t, 100, 0.0).is_empty());
     }
 }

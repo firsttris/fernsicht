@@ -2113,22 +2113,31 @@ fn encode_loop(
 ) {
     let mut next_frame_id = 0u32;
     let mut errors = RepeatedError::default();
+    // A bitrate the encoder could not be rebuilt for; tried again only
+    // when the target changes, not on every frame.
+    let mut failed_kbps = 0;
     while let Some(frame) = in_slot.take() {
         if !shared.running.load(Ordering::Acquire) {
             break;
         }
         let target = shared.target_kbps.load(Ordering::Relaxed);
-        if target != kbps && target > 0 {
+        if target != kbps && target != failed_kbps && target > 0 {
             if encoder.adjusts_bitrate() {
                 encoder.set_bitrate(target);
+                kbps = target;
             } else {
                 match rebuild(target) {
                     // A fresh encoder starts with a keyframe.
-                    Ok(e) => encoder = e,
-                    Err(e) => log::warn!("bitrate {target} kbit/s: {e:#}"),
+                    Ok(e) => {
+                        encoder = e;
+                        kbps = target;
+                    }
+                    Err(e) => {
+                        log::warn!("bitrate {target} kbit/s: {e:#}");
+                        failed_kbps = target;
+                    }
                 }
             }
-            kbps = target;
         }
         if shared.keyframe_requested.swap(false, Ordering::Relaxed) {
             encoder.request_keyframe();

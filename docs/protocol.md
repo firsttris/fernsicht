@@ -43,9 +43,11 @@ by property tests and a fuzz target ([testing](testing.md)).
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one.
-- **Bitrate adaptation:** the host lowers the bitrate quickly when frames are lost despite FEC or its
-  own sender falls behind, and raises it carefully after 5 s of clean network; never above what the
-  client asked for. Random Wi-Fi loss is FEC's job and does not cost sharpness.
+- **Bitrate adaptation:** the host lowers the bitrate quickly (×0.7, at most once a second) when its
+  own sender falls behind or loss is heavy (over 20 %), gently (×0.85, at most every 2 s) when frames
+  are lost despite FEC or loss is over 15 %, and raises it carefully (×1.15 after 5 s without either);
+  never above what the client asked for. Random Wi-Fi loss that FEC repairs is not congestion: it
+  neither costs sharpness nor keeps the bitrate from coming back.
 
 The video header also carries a slice index and count, reserved for sending parts of a frame before it
 is encoded completely ([next steps](next-steps.md)).
