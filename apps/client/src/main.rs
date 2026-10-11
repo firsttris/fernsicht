@@ -39,8 +39,10 @@ struct Args {
     /// Stream size; 0 (default) = the host's screen size.
     #[arg(long, default_value_t = 0)]
     width: u16,
+    /// Stream height; 0 (default) = the host's screen size.
     #[arg(long, default_value_t = 0)]
     height: u16,
+    /// Frames per second (no more than the host's monitor shows).
     #[arg(long, default_value_t = 60)]
     fps: u16,
     /// Bitrate in kbit/s; 0 (default) = chosen by the host for the size
@@ -156,21 +158,21 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
             let addr = pairing_address(&host);
             let peer = pair(&addr, &pin, &identity, &name.unwrap_or_else(hostname))?;
             println!(
-                "Gekoppelt mit {} ({addr}, Schlüssel {}).",
+                "Paired with {} ({addr}, key {}).",
                 peer.name,
                 peer.key.fingerprint()
             );
-            println!("Verbinden: fernsicht-client {}", peer.name);
+            println!("To connect: fernsicht-client {}", peer.name);
             hosts.add(peer);
             hosts.save(&hosts_path).map_err(anyhow::Error::msg)?;
         }
         Command::Hosts => {
             if hosts.peers.is_empty() {
-                println!("Noch keine Hosts gekoppelt (fernsicht-client pair HOST PIN).");
+                println!("No hosts paired yet (fernsicht-client pair HOST PIN).");
             }
             for p in &hosts.peers {
                 println!(
-                    "{}  {}  Schlüssel {}",
+                    "{}  {}  key {}",
                     p.name,
                     p.address.as_deref().unwrap_or("?"),
                     p.key.fingerprint()
@@ -199,18 +201,18 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
             );
             let found = discover(&targets, Duration::from_secs_f64(wait.clamp(0.1, 30.0)))?;
             if found.is_empty() {
-                println!("Keine Hosts gefunden.");
+                println!("No hosts found.");
             }
             for f in &found {
                 let mut notes = Vec::new();
                 if hosts.get(&f.key).is_some() {
-                    notes.push("gekoppelt");
+                    notes.push("paired");
                 }
                 if f.pairing {
-                    notes.push("Kopplung offen");
+                    notes.push("pairing open");
                 }
                 if f.busy {
-                    notes.push("verbunden");
+                    notes.push("in use");
                 }
                 let about: Vec<&str> = [f.os.as_str(), f.gpu.as_str()]
                     .into_iter()
@@ -233,7 +235,7 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no paired host {host}"))?;
             hosts.remove(&key);
             hosts.save(&hosts_path).map_err(anyhow::Error::msg)?;
-            println!("{host} vergessen.");
+            println!("{host} forgotten.");
         }
     }
     Ok(())
@@ -436,9 +438,9 @@ fn read_app_commands(
 
 fn print_summary(s: &RunSummary) {
     println!();
-    println!("── Zusammenfassung ──");
+    println!("── Summary ──");
     println!(
-        "Frames: {} angezeigt, {} komplett, {} verloren · Pakete: {} empfangen, {} verloren, {} per FEC repariert",
+        "Frames: {} shown, {} complete, {} lost · packets: {} received, {} lost, {} repaired by FEC",
         s.frames_presented,
         s.receiver.frames_completed,
         s.receiver.frames_dropped,
@@ -447,37 +449,37 @@ fn print_summary(s: &RunSummary) {
         s.receiver.packets_recovered
     );
     println!(
-        "Glass-to-Glass (letzte {} Frames): Ø {} · p95 {} · max {}",
+        "Glass-to-glass (last {} frames): avg {} · p95 {} · max {}",
         s.total.samples,
         ms(s.total.avg),
         ms(s.total.p95),
         ms(s.total.max)
     );
     println!(
-        "Mauszeiger: {} Positionen, {} Bilder empfangen",
+        "Pointer: {} positions, {} images received",
         s.cursor_positions, s.cursor_shapes
     );
     if s.audio.played > 0 {
         println!(
-            "Ton: {:.1} s gespielt, Verzögerung Ø {} · {} Frames überbrückt, {} verworfen",
-            s.audio.played as f64 * 0.005,
+            "Sound: {:.1} s played, delay avg {} · {} frames concealed, {} dropped",
+            s.audio.played as f64 * f64::from(fernsicht_audio::FRAME_MS) / 1000.0,
             ms(s.audio.delay_us as u32),
             s.audio.concealed,
             s.audio.dropped
         );
     }
     if s.decode_errors > 0 {
-        println!("Decode-Fehler: {}", s.decode_errors);
+        println!("Decode errors: {}", s.decode_errors);
     }
     if s.frames_skipped + s.frames_overflowed > 0 {
         println!(
-            "Übersprungen (Anzeige hinterher): {} · verworfen (Decoder hinterher): {}",
+            "Skipped (display behind): {} · dropped (decoder behind): {}",
             s.frames_skipped, s.frames_overflowed
         );
     }
     if s.frames_awaiting_keyframe > 0 {
         println!(
-            "Verworfen bis zum ersten Keyframe: {}",
+            "Dropped until the first keyframe: {}",
             s.frames_awaiting_keyframe
         );
     }

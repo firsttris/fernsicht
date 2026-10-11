@@ -56,14 +56,14 @@ once per client computer, like with Bluetooth:
    sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi --pair
    ```
    ```text
-   Kopplung offen für 5 Minuten. PIN: 482913
+   Pairing open for 5 minutes. PIN: 482913
    ```
 2. Enter the PIN on the client computer:
    ```sh
    fernsicht-client pair 192.168.178.87 482913
    ```
    ```text
-   Gekoppelt mit zentrale (192.168.178.87:47800, Schlüssel 3f2a-…).
+   Paired with zentrale (192.168.178.87:47800, key 3f2a-…).
    ```
 
 If the host is already running (for example as a service, see

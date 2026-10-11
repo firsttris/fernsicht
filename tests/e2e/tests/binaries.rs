@@ -49,7 +49,7 @@ fn state_dir(name: &str) -> std::path::PathBuf {
     d
 }
 
-/// The PIN in "Kopplung offen für 5 Minuten. PIN: 123456".
+/// The PIN in "Pairing open for 5 minutes. PIN: 123456".
 fn pin_in(line: &str) -> String {
     line.split("PIN: ")
         .nth(1)
@@ -137,11 +137,11 @@ fn a_running_host_pairs_through_its_control_socket() {
     let host = spawn_host_with(&state_dir("control-host"), false);
     let client_dir = state_dir("control-client");
     let status = host_command(&host, &["status"]);
-    assert!(status.contains("Gekoppelte Geräte: 0"), "{status}");
-    assert!(status.contains("Keine Verbindung"), "{status}");
+    assert!(status.contains("Paired devices: 0"), "{status}");
+    assert!(status.contains("No connection"), "{status}");
 
     let pin = pin_in(host_command(&host, &["pair"]).lines().next().unwrap());
-    assert!(host_command(&host, &["status"]).contains("Kopplung offen"));
+    assert!(host_command(&host, &["status"]).contains("Pairing open"));
     let out = bin("fernsicht-client")
         .args(["pair", &host.addr, &pin, "--name", "sofa", "--state-dir"])
         .arg(&client_dir)
@@ -153,12 +153,12 @@ fn a_running_host_pairs_through_its_control_socket() {
         String::from_utf8_lossy(&out.stderr)
     );
     let status = host_command(&host, &["status"]);
-    assert!(status.contains("Gekoppelte Geräte: 1"), "{status}");
+    assert!(status.contains("Paired devices: 1"), "{status}");
     assert!(status.contains("sofa"), "{status}");
-    assert!(!status.contains("Kopplung offen"), "closed after pairing");
+    assert!(!status.contains("Pairing open"), "closed after pairing");
 
     host_command(&host, &["unpair", "sofa"]);
-    assert!(host_command(&host, &["status"]).contains("Gekoppelte Geräte: 0"));
+    assert!(host_command(&host, &["status"]).contains("Paired devices: 0"));
     // The forgotten device is turned away.
     let out = bin("fernsicht-client")
         .args([&host.addr, "--duration", "1", "--no-audio", "--state-dir"])
@@ -243,7 +243,7 @@ fn host_and_client_binaries_pair_and_stream() {
         "{paired}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(paired.contains("Gekoppelt mit"), "{paired}");
+    assert!(paired.contains("Paired with"), "{paired}");
     let out = bin("fernsicht-client")
         .args(["hosts", "--state-dir"])
         .arg(&client_dir)
@@ -264,7 +264,7 @@ fn host_and_client_binaries_pair_and_stream() {
         .find(|l| l.contains(&host.addr))
         .unwrap_or_else(|| panic!("host not found: {found}"));
     assert!(
-        line.contains("gekoppelt") && line.contains("Testbild"),
+        line.contains("paired") && line.contains("Testbild"),
         "{line}"
     );
     // Connect by address (the name works the same).
@@ -300,7 +300,7 @@ fn host_and_client_binaries_pair_and_stream() {
         "Decode",
         "Anzeige",
         "Verlust (FEC)",
-        "Zusammenfassung",
+        "Summary",
     ] {
         assert!(stdout.contains(needle), "missing {needle:?} in:\n{stdout}");
     }
@@ -308,7 +308,7 @@ fn host_and_client_binaries_pair_and_stream() {
         .lines()
         .find(|l| l.starts_with("Frames:"))
         .expect("summary line");
-    // "Frames: N angezeigt, M komplett, L verloren · …"
+    // "Frames: N shown, M complete, L lost · …"
     let number_before = |word: &str| -> u32 {
         let head = &frames[..frames
             .find(word)
@@ -320,9 +320,9 @@ fn host_and_client_binaries_pair_and_stream() {
             .unwrap()
     };
     let (shown, complete, lost) = (
-        number_before(" angezeigt"),
-        number_before(" komplett"),
-        number_before(" verloren"),
+        number_before(" shown"),
+        number_before(" complete"),
+        number_before(" lost"),
     );
     assert!(shown >= 120, "{frames}");
     // FEC hiding 1 % loss exactly is asserted by the scenarios, which can
@@ -395,7 +395,7 @@ fn ctrl_c_ends_the_client_with_a_goodbye() {
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !host_command(&host, &["status"]).contains("Verbunden") {
+    while !host_command(&host, &["status"]).contains("Connected") {
         assert!(Instant::now() < deadline, "the session did not start");
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -412,10 +412,10 @@ fn ctrl_c_ends_the_client_with_a_goodbye() {
         "client ended with {}: {stdout}",
         out.status
     );
-    assert!(stdout.contains("Zusammenfassung"), "{stdout}");
+    assert!(stdout.contains("Summary"), "{stdout}");
     // The host heard the goodbye: the session is over before its 5 s
     // timeout would have ended it.
-    while host_command(&host, &["status"]).contains("Verbunden") {
+    while host_command(&host, &["status"]).contains("Connected") {
         assert!(
             stopped.elapsed() < Duration::from_secs(3),
             "the host waited for its timeout"

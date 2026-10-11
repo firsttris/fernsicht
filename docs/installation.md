@@ -143,7 +143,7 @@ fernsicht-client discover
 ```
 
 ```text
-zentrale  192.168.178.87:47800  Bazzite · Radeon RX 7700 XT / 7800 XT · AV1  gekoppelt
+zentrale  192.168.178.87:47800  Bazzite · Radeon RX 7700 XT / 7800 XT · AV1  paired
 ```
 
 The client sends a broadcast query into the local network and also asks
@@ -164,7 +164,7 @@ fernsicht-host-agent pair
 ```
 
 ```text
-Kopplung offen für 5 Minuten. PIN: 482913
+Pairing open for 5 minutes. PIN: 482913
 Auf dem neuen Gerät: fernsicht-client pair <diese Adresse> <PIN>
 ```
 
@@ -185,9 +185,9 @@ fernsicht-host-agent status
 ```
 
 ```text
-Host zentrale (Schlüssel 3f2a-…)
-Verbunden: bazzite (192.168.178.20:51234), 2560×1440 bei 60 fps, verschlüsselt
-Gekoppelte Geräte: 1
+Host zentrale (key 3f2a-…)
+Connected: bazzite (192.168.178.20:51234), 2560×1440 at 60 fps, encrypted
+Paired devices: 1
   bazzite  9c41-…
 ```
 

@@ -116,31 +116,31 @@ fn command(cmd: Command, control: Option<std::path::PathBuf>) -> anyhow::Result<
         Command::Pair => {
             let r: PairingOpened = ask(&path, &Request::Pair)?;
             println!(
-                "Kopplung offen für {} Minuten. PIN: {}",
+                "Pairing open for {} minutes. PIN: {}",
                 r.expires_in_s / 60,
                 r.pin
             );
-            println!("Auf dem neuen Gerät: fernsicht-client pair <diese Adresse> <PIN>");
+            println!("On the new device: fernsicht-client pair <this address> <PIN>");
         }
         Command::Status => {
             let r: Status = ask(&path, &Request::Status)?;
-            println!("Host {} (Schlüssel {})", r.name, r.key);
+            println!("Host {} (key {})", r.name, r.key);
             match r.session {
                 Some(s) => println!(
-                    "Verbunden: {} ({}), {}×{} bei {} fps{}",
+                    "Connected: {} ({}), {}×{} at {} fps{}",
                     s.client,
                     s.address,
                     s.width,
                     s.height,
                     s.fps,
-                    if s.encrypted { ", verschlüsselt" } else { "" }
+                    if s.encrypted { ", encrypted" } else { "" }
                 ),
-                None => println!("Keine Verbindung."),
+                None => println!("No connection."),
             }
             if let Some(secs) = r.pairing {
-                println!("Kopplung offen, noch {secs} s.");
+                println!("Pairing open, {secs} s left.");
             }
-            println!("Gekoppelte Geräte: {}", r.paired.len());
+            println!("Paired devices: {}", r.paired.len());
             for p in r.paired {
                 println!("  {}  {}", p.name, p.key);
             }
@@ -152,11 +152,11 @@ fn command(cmd: Command, control: Option<std::path::PathBuf>) -> anyhow::Result<
                     device: Some(device.clone()),
                 },
             )?;
-            println!("{device} entfernt.");
+            println!("{device} removed.");
         }
         Command::Disconnect => {
             request(&path, &Request::Disconnect)?;
-            println!("Sitzung beendet.");
+            println!("Session ended.");
         }
     }
     Ok(())
@@ -274,7 +274,7 @@ fn main() -> anyhow::Result<()> {
         let pin = fernsicht_secure::pairing::new_pin();
         security.open_pairing(&pin);
         println!(
-            "Kopplung offen für {} Minuten. PIN: {pin}",
+            "Pairing open for {} minutes. PIN: {pin}",
             PAIRING_OPEN_FOR.as_secs() / 60
         );
     }
