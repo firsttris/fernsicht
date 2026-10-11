@@ -51,9 +51,12 @@ pub fn default_path() -> PathBuf {
     if unsafe { libc::geteuid() } == 0 {
         return "/run/fernsicht/control.sock".into();
     }
+    // Not /tmp without it: another user could create the directory there
+    // first. The runtime directory is the user's own.
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        // SAFETY: getuid has no preconditions.
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
     runtime.join("fernsicht/control.sock")
 }
 
@@ -195,7 +198,7 @@ pub fn serve(
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let allowed = allowed_uids();
-                        answer(stream, &allowed, &sec, &session, &settings);
+                        answer(stream, &allowed, &sec, &session, &settings, REQUEST_TIME);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -210,24 +213,57 @@ pub fn serve(
         })
 }
 
+/// How long a caller has for its request, in total: one connection at a
+/// time is served, so a slow one must not hold up the others.
+const REQUEST_TIME: Duration = Duration::from_secs(2);
+/// Longest request line.
+const MAX_REQUEST: usize = 4096;
+
 fn answer(
     stream: UnixStream,
     allowed: &[u32],
     sec: &HostSecurity,
     session: &StatusCell,
     settings: &HostSettings,
+    within: Duration,
 ) {
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(within));
     let Some(uid) = peer_uid(&stream) else { return };
-    let mut line = String::new();
-    let mut reader = BufReader::new(&stream);
-    if reader.by_ref().take(4096).read_line(&mut line).is_err() {
+    let mut w = &stream;
+    // Who it is comes first: a caller who may not ask is answered without
+    // reading anything.
+    if !allowed.contains(&uid) {
+        let _ = writeln!(w, "{}", handle("", uid, allowed, sec, session, settings));
         return;
     }
+    let Some(line) = read_line_within(&stream, within) else {
+        return;
+    };
     let reply = handle(line.trim(), uid, allowed, sec, session, settings);
-    let mut w = &stream;
     let _ = writeln!(w, "{reply}");
+}
+
+/// One line of at most [`MAX_REQUEST`] bytes, within `within` in total
+/// (not per read: a caller dripping a byte at a time is cut off too).
+fn read_line_within(mut stream: &UnixStream, within: Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + within;
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 256];
+    while !buf.contains(&b'\n') {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || buf.len() > MAX_REQUEST || stream.set_read_timeout(Some(left)).is_err()
+        {
+            return None;
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&byte[..n]),
+            Err(_) => return None,
+        }
+    }
+    let end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
+    String::from_utf8(buf[..end].to_vec()).ok()
 }
 
 /// Sends one request to a host's control socket and returns the answer.
@@ -264,6 +300,52 @@ mod tests {
             paired_at: 5,
         });
         HostSecurity::new(Identity::generate(), "zentrale", t, None)
+    }
+
+    #[test]
+    fn a_caller_who_may_not_ask_is_turned_away_without_reading() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        // Our own uid is not in the list; nothing is ever sent.
+        let started = std::time::Instant::now();
+        answer(
+            ours,
+            &[],
+            &sec(),
+            &StatusCell::default(),
+            &HostSettings::default(),
+            Duration::from_secs(5),
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let mut reply = String::new();
+        BufReader::new(&theirs).read_line(&mut reply).unwrap();
+        assert!(reply.contains("not allowed"), "{reply}");
+    }
+
+    #[test]
+    fn a_dripping_caller_is_cut_off_in_time() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        // SAFETY: geteuid has no preconditions.
+        let me = unsafe { libc::geteuid() };
+        let dripper = std::thread::spawn(move || {
+            let mut w = &theirs;
+            for b in br#"{"cmd":"status"}"# {
+                if w.write_all(&[*b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let started = std::time::Instant::now();
+        answer(
+            ours,
+            &[me],
+            &sec(),
+            &StatusCell::default(),
+            &HostSettings::default(),
+            Duration::from_millis(200),
+        );
+        assert!(started.elapsed() < Duration::from_millis(600));
+        dripper.join().unwrap();
     }
 
     #[test]

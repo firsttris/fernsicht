@@ -595,7 +595,10 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Problem:** one connection at a time, uid checked after reading, timeout per read; falls back to
   `/tmp/fernsicht/`.
 - **Fix:** check the uid first, total deadline, no `/tmp` fallback.
-- **Status:** open
+- **Status:** fixed. A caller who may not ask is answered at once without anything read; a request
+  line has 2 s in total (`read_line_within`), so dripping bytes cannot hold the socket; without
+  `XDG_RUNTIME_DIR` the socket goes to `/run/user/<uid>`, never `/tmp`. Tests:
+  `a_caller_who_may_not_ask_is_turned_away_without_reading`, `a_dripping_caller_is_cut_off_in_time`.
 
 ## C. Performance
 
