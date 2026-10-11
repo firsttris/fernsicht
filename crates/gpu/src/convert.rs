@@ -8,19 +8,15 @@
 
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::Arc;
-use std::time::Duration;
 
 use ash::vk;
 use fernsicht_capture::DmaBuf;
 
 use crate::Gpu;
+use crate::device::submit_and_wait;
 use crate::import;
 
 const WGSL: &str = include_str!("convert.wgsl");
-
-/// How long a conversion may take before it counts as a GPU hang. A frame
-/// needs well under a millisecond; waiting forever would freeze the host.
-const GPU_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
     move |e| format!("{what}: {e}")
@@ -365,7 +361,7 @@ impl Converter {
                 );
                 d.end_command_buffer(cmd)
                     .map_err(err("end command buffer"))?;
-                submit_and_wait(&self.gpu, cmd, self.fence)?;
+                submit_and_wait(&self.gpu, &[cmd], self.fence)?;
                 let raw = std::slice::from_raw_parts(mapped, l.len() as usize);
                 let (w, pitch) = (l.width as usize, l.pitch as usize);
                 let mut out = Vec::with_capacity(w * l.height as usize * 3 / 2);
@@ -537,40 +533,8 @@ impl Converter {
             );
             d.end_command_buffer(cmd)
                 .map_err(err("end command buffer"))?;
-            submit_and_wait(&self.gpu, cmd, self.fence)
+            submit_and_wait(&self.gpu, &[cmd], self.fence)
         }
-    }
-}
-
-/// Submits `cmd` and waits for `fence` with a time limit.
-pub(crate) unsafe fn submit_and_wait(
-    gpu: &Gpu,
-    cmd: vk::CommandBuffer,
-    fence: vk::Fence,
-) -> Result<(), String> {
-    let d = &gpu.device;
-    let cmds = [cmd];
-    // SAFETY: valid objects; submissions are serialized by the queue lock.
-    unsafe {
-        {
-            let _queue = gpu.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
-            d.queue_submit(
-                gpu.queue,
-                &[vk::SubmitInfo::default().command_buffers(&cmds)],
-                fence,
-            )
-            .map_err(err("submit"))?;
-        }
-        let waited = d.wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64);
-        if waited == Err(vk::Result::TIMEOUT) {
-            // The fence may still signal; the caller idles the device before
-            // freeing anything the GPU might use.
-            return Err(format!(
-                "the GPU did not finish within {GPU_TIMEOUT:?} (hung?)"
-            ));
-        }
-        d.reset_fences(&[fence]).map_err(err("reset fence"))?;
-        waited.map_err(err("wait for the GPU"))
     }
 }
 

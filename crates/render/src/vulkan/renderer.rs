@@ -939,28 +939,10 @@ impl Renderer {
             d.end_command_buffer(cmd)
                 .map_err(other("end command buffer"))?;
 
-            let cmds = [cmd];
-            let waits: Vec<vk::Semaphore> = wait.into_iter().collect();
-            let wait_stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; waits.len()];
-            let signals: Vec<vk::Semaphore> = signal.into_iter().collect();
-            let submit = vk::SubmitInfo::default()
-                .command_buffers(&cmds)
-                .wait_semaphores(&waits)
-                .wait_dst_stage_mask(&wait_stages)
-                .signal_semaphores(&signals);
-            {
-                let _queue = self
-                    .gpu
-                    .queue_lock
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                d.queue_submit(self.gpu.queue, &[submit], self.fence)
-                    .map_err(other("submit"))?;
-            }
-            let waited = d.wait_for_fences(&[self.fence], true, u64::MAX);
-            d.reset_fences(&[self.fence])
-                .map_err(other("reset fence"))?;
-            waited.map_err(other("wait for the GPU"))?;
+            // Waits at most GPU_TIMEOUT; the fence is ready for the next
+            // frame either way.
+            fernsicht_gpu::submit_with(&self.gpu, &[cmd], wait, signal, self.fence)
+                .map_err(RenderError::Other)?;
         }
         Ok(())
     }

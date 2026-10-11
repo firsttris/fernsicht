@@ -275,7 +275,10 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** the next submit gets an already signalled fence; the wait returns at once and CUDA
   may read a half-written buffer. The renderer waits forever (`u64::MAX`).
 - **Fix:** reset after `wait_idle` on the error path; one shared `submit_and_wait` with a limit.
-- **Status:** open
+- **Status:** fixed. `fernsicht_gpu::submit_with` (and `submit_and_wait` without semaphores) is the
+  one place that submits and waits: at most `GPU_TIMEOUT` (1 s), and after a timeout it idles the
+  device and resets the fence, so the next submit never gets a signalled fence. The renderer uses
+  it too instead of waiting forever.
 
 ### A21 · A partly failed swapchain creation leaks the swapchain
 

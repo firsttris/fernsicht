@@ -108,6 +108,72 @@ fn pick(candidates: &[Candidate], prefer: &Prefer) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// How long a submission may take before the GPU counts as hung.
+pub const GPU_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Submits `cmds` (waiting on `wait` at colour output, signalling
+/// `signal`) and waits for `fence`, at most [`GPU_TIMEOUT`]. The fence is
+/// unsignalled again afterwards, also after a timeout (the device is
+/// idled first), so the next submission can use it
+/// (VUID-vkQueueSubmit-fence-00063).
+///
+/// # Safety
+/// The command buffers, semaphores and fence belong to `gpu`'s device and
+/// the fence is unsignalled.
+pub unsafe fn submit_with(
+    gpu: &Gpu,
+    cmds: &[vk::CommandBuffer],
+    wait: Option<vk::Semaphore>,
+    signal: Option<vk::Semaphore>,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    let d = &gpu.device;
+    let waits: Vec<vk::Semaphore> = wait.into_iter().collect();
+    let stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; waits.len()];
+    let signals: Vec<vk::Semaphore> = signal.into_iter().collect();
+    let submit = vk::SubmitInfo::default()
+        .command_buffers(cmds)
+        .wait_semaphores(&waits)
+        .wait_dst_stage_mask(&stages)
+        .signal_semaphores(&signals);
+    // SAFETY: as the caller promises; submissions are serialized by the
+    // queue lock.
+    unsafe {
+        {
+            let _queue = gpu.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
+            d.queue_submit(gpu.queue, &[submit], fence)
+                .map_err(|e| format!("submit: {e}"))?;
+        }
+        let waited = d.wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64);
+        if waited == Err(vk::Result::TIMEOUT) {
+            // Let the work finish (or the device be lost), so the fence
+            // can be reset and nothing is freed under the GPU.
+            gpu.wait_idle();
+        }
+        d.reset_fences(&[fence])
+            .map_err(|e| format!("reset fence: {e}"))?;
+        match waited {
+            Err(vk::Result::TIMEOUT) => Err(format!(
+                "the GPU did not finish within {GPU_TIMEOUT:?} (hung?)"
+            )),
+            other => other.map_err(|e| format!("wait for the GPU: {e}")),
+        }
+    }
+}
+
+/// [`submit_with`] without semaphores.
+///
+/// # Safety
+/// As for [`submit_with`].
+pub unsafe fn submit_and_wait(
+    gpu: &Gpu,
+    cmds: &[vk::CommandBuffer],
+    fence: vk::Fence,
+) -> Result<(), String> {
+    // SAFETY: passed on.
+    unsafe { submit_with(gpu, cmds, None, None, fence) }
+}
+
 /// Device kinds from best to worst for video.
 fn rank(kind: vk::PhysicalDeviceType) -> u32 {
     match kind {

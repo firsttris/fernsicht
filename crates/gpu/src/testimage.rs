@@ -10,7 +10,7 @@ use fernsicht_capture::dmabuf::fourcc_name;
 use fernsicht_capture::{DmaBuf, DmaBufPlane};
 
 use crate::Gpu;
-use crate::convert::submit_and_wait;
+use crate::device::submit_and_wait;
 use crate::import::{self, rgb_format};
 
 fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
@@ -202,7 +202,7 @@ pub fn upload_as_dmabuf(
                 &[release],
             );
             d.end_command_buffer(cmd).map_err(err("end"))?;
-            submit_and_wait(gpu, cmd, fence)?;
+            submit_and_wait(gpu, &[cmd], fence)?;
 
             let mut props = vk::ImageDrmFormatModifierPropertiesEXT::default();
             modifier_api
