@@ -366,6 +366,10 @@ impl Backend {
         }
         let mut child = Command::new(&self.client)
             .arg(&target)
+            // The device the user chose, for sure: names are the devices'
+            // own choice, addresses may be shared.
+            .arg("--key")
+            .arg(id)
             .arg("--app")
             .arg("--state-dir")
             .arg(&self.dir)

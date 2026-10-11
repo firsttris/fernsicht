@@ -7,7 +7,7 @@ use clap::Parser;
 use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
     AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice, Identity,
-    OverlayOutput, Trusted, default_state_dir, find_host, pair, remember_address, run,
+    OverlayOutput, Trusted, default_state_dir, find_host, pair, printable, remember_address, run,
     with_default_port,
 };
 use fernsicht_render::overlay::ms;
@@ -28,6 +28,10 @@ struct Args {
     /// 192.168.1.20 (port 47800 unless given).
     #[arg(required = true)]
     host: Option<String>,
+    /// The paired host's key (fingerprint): picks it for sure, and HOST is
+    /// then where to reach it (the app passes both).
+    #[arg(long)]
+    key: Option<String>,
     /// Where this device's key and paired hosts are kept (default:
     /// ~/.config/fernsicht).
     #[arg(long, global = true)]
@@ -215,11 +219,13 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
                     .into_iter()
                     .filter(|s| !s.is_empty())
                     .collect();
+                // Name, OS and GPU are what anyone on the LAN answered:
+                // no control characters reach the terminal.
                 println!(
                     "{}  {}  {}  {}",
-                    f.name,
+                    printable(&f.name),
                     f.addr,
-                    about.join(" · "),
+                    printable(&about.join(" · ")),
                     notes.join(", ")
                 );
             }
@@ -260,7 +266,11 @@ fn main() -> anyhow::Result<()> {
     }
     let wanted = args.host.clone().expect("required by clap");
     let hosts = Trusted::load(&dir.join("hosts.json")).map_err(anyhow::Error::msg)?;
-    let Some(host) = find_host(&hosts, &wanted).cloned() else {
+    let found = match &args.key {
+        Some(key) => hosts.peers.iter().find(|p| p.key.fingerprint() == *key),
+        None => find_host(&hosts, &wanted),
+    };
+    let Some(host) = found.cloned() else {
         anyhow::bail!(
             "not paired with {wanted}. On the host run \"fernsicht-host-agent pair\", \
              then here: fernsicht-client pair {wanted} PIN"
@@ -268,11 +278,17 @@ fn main() -> anyhow::Result<()> {
     };
     let identity =
         Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;
-    let cfg = ClientConfig {
-        host: host
-            .address
+    // An address given (by the app: where discovery just found the host)
+    // is used; for a name, where the host was last.
+    let target = if args.key.is_some() || fernsicht_client::is_address(&wanted) {
+        with_default_port(&wanted)
+    } else {
+        host.address
             .clone()
-            .unwrap_or_else(|| with_default_port(&wanted)),
+            .unwrap_or_else(|| with_default_port(&wanted))
+    };
+    let cfg = ClientConfig {
+        host: target,
         security: Some(Arc::new(ClientSecurity {
             identity,
             host: host.key,

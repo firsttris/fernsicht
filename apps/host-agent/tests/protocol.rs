@@ -1123,7 +1123,7 @@ mod secure {
         let client = Identity::generate();
         let key = pair(&mut peer, &client, "000000").unwrap();
         let (t, ack, _) = connect(&mut peer, &client, &key, 1).unwrap();
-        assert!(sec.unpair("bazzite"));
+        assert_eq!(sec.unpair("bazzite"), Ok(()));
         assert!(says_bye(&mut peer, &t, ack.session_id));
         host.shutdown();
     }

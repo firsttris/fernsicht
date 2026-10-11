@@ -127,8 +127,10 @@ pub fn handle(
             json!({"ok": true})
         }
         Some("unpair") => match req.get("device").and_then(Value::as_str) {
-            Some(d) if sec.unpair(d) => json!({"ok": true}),
-            Some(d) => json!({"ok": false, "error": format!("no paired device {d}")}),
+            Some(d) => match sec.unpair(d) {
+                Ok(()) => json!({"ok": true}),
+                Err(e) => json!({"ok": false, "error": format!("{d}: {e}")}),
+            },
             None => json!({"ok": false, "error": "which device?"}),
         },
         _ => json!({"ok": false, "error": "unknown command"}),

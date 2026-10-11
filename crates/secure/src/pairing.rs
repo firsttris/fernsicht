@@ -105,7 +105,10 @@ fn parse_key_and_name(b: &[u8]) -> Result<(PublicKey, String), PairError> {
     }
     let mut k = [0u8; 32];
     k.copy_from_slice(&b[..32]);
-    let name = String::from_utf8(b[32..].to_vec()).map_err(|_| PairError::Malformed("name"))?;
+    let name = String::from_utf8(b[32..].to_vec())
+        .ok()
+        .filter(|n| plain_name(n))
+        .ok_or(PairError::Malformed("name"))?;
     Ok((PublicKey(k), name))
 }
 
@@ -193,7 +196,13 @@ pub struct HostPairing {
 /// and name), checked before an attempt is counted.
 pub fn message1_is_well_formed(msg1: &[u8]) -> bool {
     (SPAKE_LEN..=SPAKE_LEN + MAX_NAME).contains(&msg1.len())
-        && std::str::from_utf8(&msg1[SPAKE_LEN..]).is_ok()
+        && std::str::from_utf8(&msg1[SPAKE_LEN..]).is_ok_and(plain_name)
+}
+
+/// A device name without control characters: names end up in logs,
+/// terminals and lists, and the other side chooses them.
+pub fn plain_name(name: &str) -> bool {
+    !name.chars().any(char::is_control)
 }
 
 impl HostPairing {
@@ -209,7 +218,9 @@ impl HostPairing {
             return Err(PairError::Malformed("message 1"));
         }
         let client_name = String::from_utf8(msg1[SPAKE_LEN..].to_vec())
-            .map_err(|_| PairError::Malformed("name"))?;
+            .ok()
+            .filter(|n| plain_name(n))
+            .ok_or(PairError::Malformed("name"))?;
         let (a, b) = spake_ids();
         let (state, spake) =
             Spake2::<Ed25519Group>::start_b(&Password::new(pin.as_bytes()), &a, &b);
@@ -255,6 +266,15 @@ impl HostPairing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_with_control_characters_are_refused() {
+        let host = Identity::generate();
+        let (_, m1) = ClientPairing::start("123456", &Identity::generate(), "ba\u{1b}[2Jzzite");
+        assert!(!message1_is_well_formed(&m1));
+        assert!(HostPairing::respond("123456", &host, "zentrale", &m1).is_err());
+        assert!(plain_name("bazzite") && !plain_name("a\nb"));
+    }
 
     fn pair(
         client_pin: &str,

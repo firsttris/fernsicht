@@ -724,15 +724,16 @@ impl HostSecurity {
     }
 
     /// Forgets a paired device, by name or key fingerprint.
-    pub fn unpair(&self, device: &str) -> bool {
+    pub fn unpair(&self, device: &str) -> Result<(), &'static str> {
         let mut t = self.trusted.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(key) = t
-            .peers
-            .iter()
-            .find(|p| p.name == device || p.key.fingerprint() == device)
-            .map(|p| p.key)
-        else {
-            return false;
+        // The key, or a name only one device has: names are chosen by the
+        // devices themselves.
+        let by_key = t.peers.iter().find(|p| p.key.fingerprint() == device);
+        let mut named = t.peers.iter().filter(|p| p.name == device);
+        let key = match (by_key, named.next(), named.next()) {
+            (Some(p), _, _) | (None, Some(p), None) => p.key,
+            (None, Some(_), Some(_)) => return Err("several devices have that name; use the key"),
+            (None, None, _) => return Err("no such paired device"),
         };
         t.remove(&key);
         if let Some(path) = &self.trusted_path
@@ -742,7 +743,7 @@ impl HostSecurity {
         }
         // A session of that device ends with it.
         self.revocations.fetch_add(1, Ordering::AcqRel);
-        true
+        Ok(())
     }
 }
 

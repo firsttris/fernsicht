@@ -187,13 +187,41 @@ pub fn with_default_port(host: &str) -> String {
 
 /// The paired host meant by `what`: its name or its address.
 pub fn find_host<'a>(trusted: &'a Trusted, what: &str) -> Option<&'a Peer> {
+    // The key first, then the address, the name last and only if it is
+    // unique: names are chosen by the other side, and a host named like
+    // another one's address must not get its connection.
     let addr = with_default_port(what);
-    trusted.peers.iter().find(|p| p.name == what).or_else(|| {
+    let by_key = trusted.peers.iter().find(|p| p.key.fingerprint() == what);
+    let by_addr = || {
         trusted
             .peers
             .iter()
             .find(|p| p.address.as_deref() == Some(addr.as_str()))
-    })
+    };
+    let by_name = || {
+        let mut named = trusted.peers.iter().filter(|p| p.name == what);
+        match (named.next(), named.next()) {
+            (Some(p), None) => Some(p),
+            _ => None,
+        }
+    };
+    by_key.or_else(by_addr).or_else(by_name)
+}
+
+/// Whether `what` is an address (an IP, with or without port) rather
+/// than a name.
+pub fn is_address(what: &str) -> bool {
+    with_default_port(what)
+        .parse::<std::net::SocketAddr>()
+        .is_ok()
+}
+
+/// `s` for a terminal: control characters (from names others chose)
+/// become `�`.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
 }
 
 /// The paired hosts with `key`'s address set to `addr`, after a session
@@ -1752,6 +1780,36 @@ mod tests {
         assert!(find_host(&t, "192.168.178.87:47800").is_some());
         assert!(find_host(&t, "192.168.178.88").is_none());
         assert!(find_host(&t, "bazzite").is_none());
+    }
+
+    #[test]
+    fn a_name_cannot_pose_as_an_address_or_another_device() {
+        let peer = |name: &str, address: &str| Peer {
+            name: name.into(),
+            key: Identity::generate().public,
+            address: Some(address.into()),
+            paired_at: 0,
+        };
+        let mut t = Trusted::default();
+        // Paired first: a host that calls itself like the other's address.
+        t.add(peer("192.168.178.87:47800", "192.168.178.66:47800"));
+        t.add(peer("zentrale", "192.168.178.87:47800"));
+        let zentrale = t.peers[1].key;
+        assert_eq!(
+            find_host(&t, "192.168.178.87:47800").map(|p| p.key),
+            Some(zentrale)
+        );
+        // The key picks for sure.
+        assert_eq!(
+            find_host(&t, &zentrale.fingerprint()).map(|p| p.key),
+            Some(zentrale)
+        );
+        // Two devices with one name: neither, rather than the wrong one.
+        t.add(peer("zentrale", "192.168.178.90:47800"));
+        assert!(find_host(&t, "zentrale").is_none());
+        assert!(is_address("192.168.178.87") && is_address("[fe80::1]:47800"));
+        assert!(!is_address("zentrale.local"));
+        assert_eq!(printable("ze\u{1b}[2Jntrale"), "ze\u{fffd}[2Jntrale");
     }
 
     #[test]

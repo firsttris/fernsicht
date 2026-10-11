@@ -571,7 +571,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Problem:** a paired host named like another host's address receives that connection; `unpair
   <name>` removes the first match; control characters go straight to terminals.
 - **Fix:** pass and match by key; reject control characters in names.
-- **Status:** open
+- **Status:** fixed. `find_host` tries the key, then the address, then a name only if one device
+  has it; the app passes `--key` with the address it found (which the client now uses, instead of
+  the stored one: it had made B4's discovered addresses useless). `unpair` takes the key or a
+  unique name. Names with control characters are refused when pairing (both sides), and what
+  discovery shows in a terminal is made printable. Tests: `a_name_cannot_pose_as_an_address_or_another_device`,
+  `names_with_control_characters_are_refused`.
 
 ### B13 · Key file handling
 
