@@ -192,6 +192,16 @@ impl HostDescription {
 const ANNOUNCE_PER_SOURCE: f64 = 20.0;
 const ANNOUNCE_TOTAL: f64 = 200.0;
 
+/// Handshakes a second per address and in total: each costs key
+/// agreement (X25519) on the control loop, a real client sends one every
+/// quarter second at most.
+const HANDSHAKES_PER_SOURCE: f64 = 10.0;
+const HANDSHAKES_TOTAL: f64 = 100.0;
+
+/// Warnings about refused devices a second per address and in total.
+const REFUSAL_LOGS_PER_SOURCE: f64 = 0.2;
+const REFUSAL_LOGS_TOTAL: f64 = 2.0;
+
 /// Where the sound comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AudioKind {
@@ -809,6 +819,10 @@ impl HostAgent {
         let mut pairing: Option<PairingExchange> = None;
         let mut announce_budget =
             limits::PerSource::new(ANNOUNCE_PER_SOURCE, ANNOUNCE_TOTAL, Instant::now());
+        let mut handshake_budget =
+            limits::PerSource::new(HANDSHAKES_PER_SOURCE, HANDSHAKES_TOTAL, Instant::now());
+        let mut refusal_logs =
+            limits::PerSource::new(REFUSAL_LOGS_PER_SOURCE, REFUSAL_LOGS_TOTAL, Instant::now());
         let control_stop = Arc::new(AtomicBool::new(false));
         let mut revocations_seen = self.cfg.security.as_ref().map_or(0, |s| s.revocations());
         let control = match (&self.cfg.control, &self.cfg.security) {
@@ -958,7 +972,10 @@ impl HostAgent {
                     let _ = self.socket.send_to(&out[..n], from);
                 }
                 Packet::Handshake(h) if !h.reply => {
-                    self.on_handshake(h.message, from, &mut session, &mut out);
+                    if handshake_budget.take(from.ip(), Instant::now()) {
+                        let log_refusal = refusal_logs.take(from.ip(), Instant::now());
+                        self.on_handshake(h.message, from, &mut session, log_refusal, &mut out);
+                    }
                 }
                 Packet::Pair(p) => self.on_pair(p, from, &mut pairing, &mut out),
                 Packet::Discover(d) => {
@@ -1135,6 +1152,8 @@ impl HostAgent {
         msg: &[u8],
         from: SocketAddr,
         session: &mut Option<Session>,
+        // Whether a refusal may be logged (rate-limited per address).
+        log_refusal: bool,
         out: &mut [u8],
     ) {
         let Some(sec) = &self.cfg.security else {
@@ -1162,10 +1181,12 @@ impl HostAgent {
             }
         };
         let Some(client) = sec.is_paired(&responder.client) else {
-            log::warn!(
-                "{from}: refused an unpaired device ({}); pair it with --pair",
-                responder.client.fingerprint()
-            );
+            if log_refusal {
+                log::warn!(
+                    "{from}: refused an unpaired device ({}); pair it with --pair",
+                    responder.client.fingerprint()
+                );
+            }
             let n = RejectReason::NotPaired.encode(out);
             let _ = self.socket.send_to(&out[..n], from);
             return;

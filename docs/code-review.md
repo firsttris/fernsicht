@@ -513,7 +513,10 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `apps/host-agent/src/lib.rs:1038-1052`.
 - **Fix:** token buckets per source and global; rate-limited logging.
-- **Status:** open
+- **Status:** fixed. Handshakes are processed at most 10 a second per address and 100 in total
+  (`limits::PerSource`; a real client sends one every 250 ms at most); the warning about an
+  unpaired device comes at most every 5 s per address. A cookie exchange under load (as WireGuard
+  has) was not needed at these rates.
 
 ### B9 · Anyone can use up the pairing attempts; no CSRF protection
 
