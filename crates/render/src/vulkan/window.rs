@@ -233,23 +233,44 @@ impl WindowPresenter {
                 )
                 .map_err(e("create swapchain"))?;
             self.destroy_swapchain();
-            let images = swapchain_fn
-                .get_swapchain_images(handle)
-                .map_err(e("swapchain images"))?;
+            // Views and semaphores for the new images; what was made is
+            // destroyed again if a step fails, the swapchain with it (a
+            // surface takes only one: every later try would fail with
+            // ERROR_NATIVE_WINDOW_IN_USE_KHR).
             let mut views = Vec::new();
             let mut rendered = Vec::new();
-            for &image in &images {
-                views.push(super::import::view(&gpu, image, format.format)?);
-                rendered.push(
-                    gpu.device
-                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                        .map_err(e("semaphore"))?,
-                );
-            }
-            let acquired = gpu
-                .device
-                .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                .map_err(e("semaphore"))?;
+            let mut acquired = vk::Semaphore::null();
+            let built = (|| -> Result<Vec<vk::Image>, String> {
+                let images = swapchain_fn
+                    .get_swapchain_images(handle)
+                    .map_err(e("swapchain images"))?;
+                for &image in &images {
+                    views.push(super::import::view(&gpu, image, format.format)?);
+                    rendered.push(
+                        gpu.device
+                            .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                            .map_err(e("semaphore"))?,
+                    );
+                }
+                acquired = gpu
+                    .device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .map_err(e("semaphore"))?;
+                Ok(images)
+            })();
+            let images = match built {
+                Ok(images) => images,
+                Err(err) => {
+                    for v in views {
+                        gpu.device.destroy_image_view(v, None);
+                    }
+                    for s in rendered.into_iter().chain([acquired]) {
+                        gpu.device.destroy_semaphore(s, None);
+                    }
+                    swapchain_fn.destroy_swapchain(handle, None);
+                    return Err(err);
+                }
+            };
             log::info!(
                 "swapchain {}×{}, {} images, {:?}",
                 extent.width,

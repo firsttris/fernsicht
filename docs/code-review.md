@@ -284,7 +284,8 @@ the limits FFmpeg puts on the next latency step.
 
 - **Where:** `crates/render/src/vulkan/window.rs:211-243`.
 - **Fix:** build into a local value, clean up on error, then store.
-- **Status:** open
+- **Status:** fixed. Views and semaphores are built in one step; if it fails, they and the new
+  swapchain are destroyed before the error returns.
 
 ### A22 · Audio drift compensation is coarse; latency up to twice the documented value
 
