@@ -65,6 +65,9 @@ const OUT_QUEUE: usize = 64;
 /// instead of encoding for nobody.
 pub(crate) const CONNECT_WITHIN: Duration = Duration::from_secs(10);
 
+/// How often str0m reports statistics (the round trip among them).
+const STATS_INTERVAL: Duration = Duration::from_secs(1);
+
 /// A browser asking for a session, from the HTTP thread to the host's loop.
 pub(crate) struct WebRequest {
     pub pin: String,
@@ -156,7 +159,9 @@ pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSe
         .set_ice_lite(true)
         .clear_codecs()
         .enable_opus(true, false)
-        .enable_av1(true);
+        .enable_av1(true)
+        // For the round trip in the browser's receiver reports.
+        .set_stats_interval(Some(STATS_INTERVAL));
     for (pt, rtx, profile) in H264 {
         cfg.codec_config()
             .add_h264(pt.into(), Some(rtx.into()), true, profile);
@@ -228,6 +233,8 @@ struct RtcSession {
     channel: Option<ChannelId>,
     /// RTP time of the next Opus frame.
     audio_time: u64,
+    /// The round trip the browser's receiver reports tell.
+    rtt: Duration,
 }
 
 impl RtcSession {
@@ -248,6 +255,7 @@ impl RtcSession {
             audio: None,
             channel: None,
             audio_time: 0,
+            rtt: Duration::ZERO,
         }
     }
 
@@ -346,10 +354,13 @@ impl RtcSession {
                     }
                 }
             }
-            Event::KeyframeRequest(_) => {
-                self.shared
-                    .keyframe_requested
-                    .store(true, Ordering::Relaxed);
+            // Browsers ask (PLI) until the keyframe arrives: one answers
+            // them all.
+            Event::KeyframeRequest(_) => self.shared.want_keyframe(None, self.rtt),
+            Event::MediaEgressStats(s) => {
+                if let Some(rtt) = s.rtt {
+                    self.rtt = rtt;
+                }
             }
             Event::ChannelOpen(id, _) => {
                 self.channel = Some(id);
@@ -368,11 +379,7 @@ impl RtcSession {
                         sink.release_all();
                     }
                 }
-                Some(Command::Keyframe) => {
-                    self.shared
-                        .keyframe_requested
-                        .store(true, Ordering::Relaxed);
-                }
+                Some(Command::Keyframe) => self.shared.want_keyframe(None, self.rtt),
                 Some(Command::Monitor(i)) => self.shared.select_monitor(i),
                 Some(Command::Bye) => {
                     log::info!("web session: browser said goodbye");

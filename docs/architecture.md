@@ -71,6 +71,8 @@ acceptance test for glass-to-glass is a phone's slow-motion camera filming both 
 - The client sends **feedback** every 100 ms: frames completed and dropped, packets received, lost
   and recovered, whether it needs a keyframe or the pointer's image. The host sizes FEC from the loss
   and adapts the bitrate when frames are lost despite FEC ([performance](performance.md)).
+- A **keyframe request** goes out the moment the client sees a gap, not with the next feedback; the
+  host answers each loss with one keyframe ([protocol](protocol.md#video-shards-fec-and-pacing)).
 - **Input** (mouse, keys, gamepads) is retransmitted until the host acknowledges it, and every event
   is applied exactly once ([protocol](protocol.md#input)).
 - **Monitor and codec choice** are negotiated at the start (Hello) and switched in the session

@@ -78,6 +78,8 @@ pub struct LinkStats {
     pub max_redundancy_permille: AtomicU64,
     /// Video keyframe shards seen (first shard of each keyframe).
     pub keyframes: AtomicU64,
+    /// Keyframe requests the client sent (plain sessions).
+    pub keyframe_requests: AtomicU64,
 }
 
 /// xorshift64*, deterministic per seed.
@@ -162,6 +164,7 @@ impl ImpairedLink {
                         continue;
                     };
                     *client_addr.lock().unwrap() = Some(from);
+                    observe(&buf[..n], &stats);
                     let t0 = *epoch.lock().unwrap().get_or_insert_with(Instant::now);
                     forward(
                         &buf[..n],
@@ -294,18 +297,25 @@ impl Drop for ImpairedLink {
     }
 }
 
-/// Records protocol facts the tests assert on (FEC redundancy, keyframes).
+/// Records protocol facts the tests assert on (FEC redundancy, keyframes,
+/// keyframe requests).
 fn observe(datagram: &[u8], stats: &LinkStats) {
-    if let Ok(Packet::Video(h, _)) = Packet::decode(datagram) {
-        if h.data_shards >= 10 {
-            let permille = u64::from(h.recovery_shards) * 1000 / u64::from(h.data_shards);
-            stats
-                .max_redundancy_permille
-                .fetch_max(permille, Ordering::Relaxed);
+    match Packet::decode(datagram) {
+        Ok(Packet::Video(h, _)) => {
+            if h.data_shards >= 10 {
+                let permille = u64::from(h.recovery_shards) * 1000 / u64::from(h.data_shards);
+                stats
+                    .max_redundancy_permille
+                    .fetch_max(permille, Ordering::Relaxed);
+            }
+            if h.keyframe && h.group_index == 0 && h.shard_index == 0 {
+                stats.keyframes.fetch_add(1, Ordering::Relaxed);
+            }
         }
-        if h.keyframe && h.group_index == 0 && h.shard_index == 0 {
-            stats.keyframes.fetch_add(1, Ordering::Relaxed);
+        Ok(Packet::KeyframeRequest(_)) => {
+            stats.keyframe_requests.fetch_add(1, Ordering::Relaxed);
         }
+        _ => {}
     }
 }
 

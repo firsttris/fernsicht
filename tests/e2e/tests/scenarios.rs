@@ -183,7 +183,13 @@ fn blackout_recovers_with_a_keyframe() {
         s.receiver.frames_dropped >= 10,
         "blackout lost no frames? {s:?}"
     );
-    // The client asked for a keyframe and the host sent one.
+    // The client asked for a keyframe the moment it saw the gap, not again
+    // and again, and the host sent one.
+    let asked = o.link.keyframe_requests.load(Ordering::Relaxed);
+    assert!(
+        (1..=10).contains(&asked),
+        "{asked} keyframe requests: {s:?}"
+    );
     let keyframes = o.link.keyframes.load(Ordering::Relaxed);
     assert!(keyframes >= 2, "host sent {keyframes} keyframes: {s:?}");
     assert!(s.keyframes_decoded >= 2, "{s:?}");

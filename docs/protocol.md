@@ -26,6 +26,7 @@ most 1,400 bytes; once a session is secure, every packet travels inside a **Seal
 | Pair (15) / Reject (16) | both | the four steps of pairing with a PIN; why a client is turned away |
 | Discover (17) / Announce (18) | client → broadcast / host → client | device discovery in the LAN |
 | Monitors (19) / SelectMonitor (20) | host → client / back | the host's monitors and which is shown; the client's choice |
+| KeyframeRequest (21) | client → host | the client cannot show the stream: the last frame it completed and its round-trip time; sent at once, again while no keyframe comes |
 
 Limits are enforced while parsing: frames at most 8 MiB, at most 1,024 shards per FEC group, pointer
 images at most 256×256, at most 64 input events per packet, at most 8 monitors. The format is covered
@@ -43,6 +44,13 @@ by property tests and a fuzz target ([testing](testing.md)).
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one.
+- **Keyframe requests** go out the moment the client sees the gap (KeyframeRequest), not with the
+  next feedback, and again each time a keyframe should have come and did not: after the round trip,
+  two frames and 10 ms. The host answers each loss once: a request from a client that has not
+  completed a frame since the last keyframe, within that time after it, is answered by that
+  keyframe. A client that completed a later frame lost the keyframe, and gets another at once.
+  Feedback still carries the keyframe flag (for hosts before KeyframeRequest); the host weighs it the
+  same way. Browsers ask with RTCP PLI; the round trip comes from their receiver reports.
 - **Bitrate adaptation:** the host lowers the bitrate quickly (×0.7, at most once a second) when its
   own sender falls behind or loss is heavy (over 20 %), gently (×0.85, at most every 2 s) when frames
   are lost despite FEC or loss is over 15 %, and raises it carefully (×1.15 after 5 s without either);

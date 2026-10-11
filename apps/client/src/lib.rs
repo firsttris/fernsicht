@@ -27,10 +27,11 @@ use fernsicht_core::now_us;
 use fernsicht_core::thread::{HOT_NICE, raise_priority, spawn_hot};
 use fernsicht_input::InputQueue;
 pub use fernsicht_input::{InputEvent, buttons};
+use fernsicht_net::keyframe::{self, Asks};
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats};
 use fernsicht_proto::{
-    Bye, ClockPing, Codec, CodecSet, Feedback, Handshake, Hello, InputHeader, MAX_DATAGRAM, Packet,
-    Pair as PairMsg, RejectReason, SealedHeader, SelectMonitor, VideoHeader,
+    Bye, ClockPing, Codec, CodecSet, Feedback, Handshake, Hello, InputHeader, KeyframeRequest,
+    MAX_DATAGRAM, Packet, Pair as PairMsg, RejectReason, SealedHeader, SelectMonitor, VideoHeader,
 };
 use fernsicht_render::overlay::{self, StreamInfo};
 use fernsicht_render::{HeadlessPresenter, Presenter};
@@ -928,6 +929,9 @@ fn network_loop(
     let mut clock = ClockSync::new();
     let mut loss = LossSim::new(cfg.loss, 0xF00D);
     let mut session: Option<(u32, Codec)> = None;
+    // The host's frame interval, from its HelloAck.
+    let mut frame_interval = Duration::from_millis(16);
+    let mut keyframe_asks = Asks::default();
     let mut last_hello: Option<Instant> = None;
     let mut last_ping: Option<Instant> = None;
     let mut ping_seq = 0u32;
@@ -998,6 +1002,22 @@ fn network_loop(
                 .and_then(|mut q| q.due(Instant::now()));
             if let Some(events) = due {
                 let n = InputHeader::encode(session_id, &events, &mut out);
+                send_packet(socket, seal_with, &out[..n]);
+            }
+        }
+        // A broken picture asks for a keyframe at once, not at the next
+        // feedback tick.
+        if let Some((session_id, _)) = session {
+            let needed = reassembler.needs_keyframe() || pipe.need_keyframe.load(Ordering::Relaxed);
+            let rtt = Duration::from_micros(clock.rtt_us().unwrap_or(0));
+            let wait = keyframe::in_flight_for(rtt, frame_interval);
+            if keyframe_asks.due(needed, Instant::now(), wait) {
+                let ask = KeyframeRequest {
+                    session_id,
+                    last_complete: reassembler.last_completed(),
+                    rtt_us: u32::try_from(rtt.as_micros()).unwrap_or(u32::MAX),
+                };
+                let n = ask.encode(&mut out);
                 send_packet(socket, seal_with, &out[..n]);
             }
         }
@@ -1157,6 +1177,7 @@ fn network_loop(
                     }
                 }
                 session = Some((ack.session_id, ack.codec));
+                frame_interval = Duration::from_secs(1) / u32::from(ack.fps.max(1));
             }
             Packet::ClockPong(pong) => {
                 clock.on_pong(&pong, now);

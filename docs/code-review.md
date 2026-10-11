@@ -623,7 +623,14 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   de-duplicated, so lossy Wi-Fi can cause keyframe storms.
 - **Fix:** send an immediate request on gap detection (rate-limited); ignore requests within
   RTT + 2 frames of the last keyframe; later NACK and retransmit for keyframes in the LAN.
-- **Status:** open
+- **Status:** fixed, except NACK. The client sends a KeyframeRequest (new packet kind 21: last
+  complete frame, round-trip time) the moment the need arises and again only when a keyframe
+  should have come (`crates/net/src/keyframe.rs`). The host records the last keyframe it sent and
+  skips requests it answers: newer than the client's last complete frame and within RTT + 2 frames
+  + 10 ms; a client that completed a later frame lost it and gets another at once. Feedback's flag
+  and browser PLIs (RTT from str0m's receiver-report statistics) go through the same check.
+  Retransmitting lost keyframe shards (NACK) stays open: intra refresh and reference frame
+  invalidation (D1, D2) would make the keyframe itself rare.
 
 ### C3 · Fixed-rate pacing adds latency on cable and paces large frames least
 

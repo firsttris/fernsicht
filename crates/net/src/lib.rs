@@ -4,11 +4,13 @@
 //! - [`reassembly`]: rebuilds frames on the receiver, latest frame wins
 //! - [`pacer`]: spreads a frame's packets over part of the frame interval
 //! - [`clock_sync`]: NTP-style host↔client clock offset estimation
+//! - [`keyframe`]: asking for a keyframe at once, answering each loss once
 //! - [`loss`]: deterministic packet-loss injection for testing
 //! - [`socket`]: UDP sockets with buffers sized for video bursts
 
 pub mod clock_sync;
 pub mod fec;
+pub mod keyframe;
 pub mod loss;
 pub mod pacer;
 pub mod rate;

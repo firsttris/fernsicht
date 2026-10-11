@@ -45,6 +45,7 @@ fuzz_target!(|data: &[u8]| {
             Monitors::encode(m.session_id, m.current, &list, &mut buf)
         }
         Packet::SelectMonitor(p) => p.encode(&mut buf),
+        Packet::KeyframeRequest(p) => p.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

@@ -56,6 +56,7 @@ pub enum Kind {
     Announce = 18,
     Monitors = 19,
     SelectMonitor = 20,
+    KeyframeRequest = 21,
 }
 
 impl Kind {
@@ -81,6 +82,7 @@ impl Kind {
             18 => Kind::Announce,
             19 => Kind::Monitors,
             20 => Kind::SelectMonitor,
+            21 => Kind::KeyframeRequest,
             _ => return None,
         })
     }
@@ -1350,6 +1352,53 @@ impl SelectMonitor {
     }
 }
 
+/// The client cannot show the stream until a keyframe comes, client → host:
+/// sent the moment it sees a gap, and again while none comes. Feedback's
+/// keyframe flag says the same at its own pace (and to hosts before this
+/// packet).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyframeRequest {
+    pub session_id: u32,
+    /// The last frame the client completed, `None` before the first: a
+    /// keyframe newer than it is on its way.
+    pub last_complete: Option<u32>,
+    /// The client's round-trip time, µs (0: not measured yet).
+    pub rtt_us: u32,
+}
+
+const FLAG_HAS_FRAME: u8 = 0x01;
+
+impl KeyframeRequest {
+    pub const LEN: usize = PREFIX_LEN + 12;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        let flags = if self.last_complete.is_some() {
+            FLAG_HAS_FRAME
+        } else {
+            0
+        };
+        w.prefix(Kind::KeyframeRequest, flags);
+        w.u32(self.session_id);
+        w.u32(self.last_complete.unwrap_or(0));
+        w.u32(self.rtt_us);
+        Self::LEN
+    }
+
+    fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        if flags & !FLAG_HAS_FRAME != 0 {
+            return Err(DecodeError::Invalid("keyframe request flags"));
+        }
+        let session_id = r.u32()?;
+        let frame = r.u32()?;
+        Ok(KeyframeRequest {
+            session_id,
+            last_complete: (flags & FLAG_HAS_FRAME != 0).then_some(frame),
+            rtt_us: r.u32()?,
+        })
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -1377,6 +1426,7 @@ pub enum Packet<'a> {
     Announce(Announce<'a>),
     Monitors(Monitors<'a>),
     SelectMonitor(SelectMonitor),
+    KeyframeRequest(KeyframeRequest),
 }
 
 impl<'a> Packet<'a> {
@@ -1509,6 +1559,15 @@ impl<'a> Packet<'a> {
                     return Err(DecodeError::Invalid("trailing bytes after select monitor"));
                 }
                 Packet::SelectMonitor(m)
+            }
+            Kind::KeyframeRequest => {
+                let k = KeyframeRequest::read(flags, &mut r)?;
+                if !r.is_empty() {
+                    return Err(DecodeError::Invalid(
+                        "trailing bytes after keyframe request",
+                    ));
+                }
+                Packet::KeyframeRequest(k)
             }
         })
     }
@@ -1880,6 +1939,26 @@ mod tests {
         assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::SelectMonitor(sel)));
         buf[8] = MAX_MONITORS as u8;
         assert!(Packet::decode(&buf[..n]).is_err());
+    }
+
+    #[test]
+    fn keyframe_request_roundtrip() {
+        let mut buf = [0u8; 64];
+        for last_complete in [Some(0), Some(u32::MAX), None] {
+            let k = KeyframeRequest {
+                session_id: 7,
+                last_complete,
+                rtt_us: 1_250,
+            };
+            let n = k.encode(&mut buf);
+            assert_eq!(n, KeyframeRequest::LEN);
+            assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::KeyframeRequest(k)));
+        }
+        let mut bad = buf;
+        bad[3] = 0x02; // unknown flag
+        assert!(Packet::decode(&bad[..KeyframeRequest::LEN]).is_err());
+        assert!(Packet::decode(&buf[..KeyframeRequest::LEN - 1]).is_err());
+        assert!(Packet::decode(&buf[..KeyframeRequest::LEN + 1]).is_err());
     }
 
     #[test]

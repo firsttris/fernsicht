@@ -39,6 +39,7 @@ use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock, now_us};
 use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
+use fernsicht_net::keyframe::{self, Sent};
 use fernsicht_net::{
     FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer, RateController,
 };
@@ -327,6 +328,10 @@ struct Shared {
     stats: Arc<HostStats>,
     running: AtomicBool,
     keyframe_requested: AtomicBool,
+    /// The last keyframe encoded: requests it answers are skipped.
+    last_keyframe: Mutex<Option<Sent>>,
+    /// One frame at the session's rate.
+    frame: Duration,
     /// The client lacks the pointer image.
     cursor_requested: AtomicBool,
     /// Loss rate FEC is sized for, as `f32` bits.
@@ -341,6 +346,27 @@ struct Shared {
 }
 
 impl Shared {
+    /// The client asked for a keyframe: one comes, unless one is on its way
+    /// already (see [`keyframe::already_coming`]). `client_has` is the last
+    /// frame the client completed, `rtt` its round trip.
+    fn want_keyframe(&self, client_has: Option<u32>, rtt: Duration) {
+        let last = *self.last_keyframe.lock().unwrap_or_else(|e| e.into_inner());
+        let window = keyframe::in_flight_for(rtt, self.frame);
+        if keyframe::already_coming(last, client_has, Instant::now(), window) {
+            log::trace!("keyframe request: one is on its way");
+        } else {
+            self.keyframe_requested.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Keyframe `frame_id` went to the sender.
+    fn sent_keyframe(&self, frame_id: u32) {
+        *self.last_keyframe.lock().unwrap_or_else(|e| e.into_inner()) = Some(Sent {
+            frame_id,
+            at: Instant::now(),
+        });
+    }
+
     /// Asks the capture thread to show monitor `index`.
     fn select_monitor(&self, index: u8) {
         *self
@@ -385,6 +411,8 @@ struct Session {
     rate: RateController,
     /// Sender overflows counted at the last report.
     overflows_seen: u64,
+    /// The round trip the client last reported (with keyframe requests).
+    client_rtt: Duration,
     threads: Vec<JoinHandle<()>>,
     frame_slot: Arc<Slot<Frame>>,
     /// Released (all keys up) when the session ends.
@@ -1034,6 +1062,14 @@ impl HostAgent {
                     let n = ack.encode(&mut out);
                     let _ = s.link.send(&out[..n]);
                 }
+                Packet::KeyframeRequest(k) if authentic => {
+                    if let Some(s) = session.as_mut()
+                        && k.session_id == s.params.session_id
+                    {
+                        s.client_rtt = Duration::from_micros(u64::from(k.rtt_us));
+                        s.shared.want_keyframe(k.last_complete, s.client_rtt);
+                    }
+                }
                 Packet::SelectMonitor(m) if authentic => {
                     if let Some(s) = session.as_ref()
                         && m.session_id == s.params.session_id
@@ -1431,6 +1467,8 @@ impl HostAgent {
             stats: self.stats.clone(),
             running: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(true),
+            last_keyframe: Mutex::new(None),
+            frame: Duration::from_micros(clock::frame_interval_us(u32::from(params.fps))),
             cursor_requested: AtomicBool::new(false),
             fec_loss: AtomicU32::new(loss.estimate().to_bits()),
             target_kbps: AtomicU32::new(0),
@@ -1644,6 +1682,7 @@ impl HostAgent {
             rate: RateController::new(params.bitrate_kbps, Instant::now()),
             // The counter spans all sessions: this one starts from here.
             overflows_seen: HostStats::get(&self.stats.send_overflows),
+            client_rtt: Duration::ZERO,
             threads: threads.done(),
             frame_slot,
             input,
@@ -1717,7 +1756,9 @@ fn on_feedback(s: &mut Session, fb: &Feedback) {
         s.shared.target_kbps.store(kbps, Ordering::Relaxed);
     }
     if fb.request_keyframe {
-        s.shared.keyframe_requested.store(true, Ordering::Relaxed);
+        // Its frame id is the highest seen, not the last complete: the
+        // round trip alone tells.
+        s.shared.want_keyframe(None, s.client_rtt);
     }
     if fb.request_cursor {
         s.shared.cursor_requested.store(true, Ordering::Relaxed);
@@ -2428,13 +2469,15 @@ fn encode_loop(
         match result {
             Ok(()) => {
                 HostStats::bump(&shared.stats.frames_encoded);
-                if out.keyframe {
+                let (frame_id, keyframe) = (next_frame_id, out.keyframe);
+                if keyframe {
                     HostStats::bump(&shared.stats.keyframes_encoded);
                 }
-                out.frame_id = next_frame_id;
+                out.frame_id = frame_id;
                 (out.width, out.height) = size;
                 next_frame_id = next_frame_id.wrapping_add(1);
                 match send_tx.try_send(out) {
+                    Ok(()) if keyframe => shared.sent_keyframe(frame_id),
                     Ok(()) => {}
                     // The sender is a whole queue behind (network or CPU
                     // overload). Later frames reference this one, so resync
@@ -2584,6 +2627,8 @@ mod tests {
             stats: Arc::default(),
             running: AtomicBool::new(true),
             keyframe_requested: AtomicBool::new(false),
+            last_keyframe: Mutex::new(None),
+            frame: Duration::from_micros(16_667),
             cursor_requested: AtomicBool::new(false),
             fec_loss: AtomicU32::new(0),
             target_kbps: AtomicU32::new(0),

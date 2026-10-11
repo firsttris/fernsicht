@@ -179,6 +179,11 @@ impl Reassembler {
         self.needs_keyframe
     }
 
+    /// The last frame completed, `None` before the first.
+    pub fn last_completed(&self) -> Option<u32> {
+        self.last_completed
+    }
+
     pub fn totals(&self) -> ReceiverStats {
         self.total
     }

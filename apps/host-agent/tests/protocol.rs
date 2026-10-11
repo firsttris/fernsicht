@@ -427,6 +427,82 @@ fn keyframe_request_produces_a_keyframe() {
     host.shutdown();
 }
 
+fn ask_keyframe(peer: &Peer, session_id: u32, last_complete: Option<u32>, rtt_us: u32) {
+    peer.send(|b| {
+        KeyframeRequest {
+            session_id,
+            last_complete,
+            rtt_us,
+        }
+        .encode(b)
+    });
+}
+
+/// The id of the next keyframe newer than `after`.
+fn next_keyframe(peer: &mut Peer, after: u32, timeout: Duration) -> Option<u32> {
+    peer.wait_for(timeout, |p| match p {
+        Packet::Video(h, _) if h.keyframe && h.frame_id > after => Some(h.frame_id),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_keyframe_request_is_answered() {
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 240, 60, 1_000);
+    let ack = peer.ack();
+    let seen = peer
+        .wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Video(h, _) if h.frame_id > 5 => Some(h.frame_id),
+            _ => None,
+        })
+        .expect("no video");
+    ask_keyframe(&peer, ack.session_id, Some(seen), 1_000);
+    assert!(next_keyframe(&mut peer, seen, Duration::from_secs(2)).is_some());
+    host.shutdown();
+}
+
+#[test]
+fn one_keyframe_answers_the_requests_sent_before_it_arrived() {
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 240, 60, 1_000);
+    let ack = peer.ack();
+    let seen = peer
+        .wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Video(h, _) if h.frame_id > 5 => Some(h.frame_id),
+            _ => None,
+        })
+        .expect("no video");
+    // A long round trip: the keyframe is on its way for half a second.
+    let rtt_us = 500_000;
+    ask_keyframe(&peer, ack.session_id, Some(seen), rtt_us);
+    let key = next_keyframe(&mut peer, seen, Duration::from_secs(2)).expect("no keyframe");
+    // The same loss, asked about again before the keyframe arrived, and
+    // feedback saying the same.
+    for _ in 0..5 {
+        ask_keyframe(&peer, ack.session_id, Some(key - 1), rtt_us);
+        peer.send(|b| {
+            Feedback {
+                session_id: ack.session_id,
+                request_keyframe: true,
+                ..Feedback::default()
+            }
+            .encode(b)
+        });
+    }
+    assert_eq!(
+        next_keyframe(&mut peer, key, Duration::from_millis(250)),
+        None,
+        "one keyframe answers them all"
+    );
+    // A frame after it completed: the keyframe was lost, another comes.
+    ask_keyframe(&peer, ack.session_id, Some(key + 1), rtt_us);
+    assert!(next_keyframe(&mut peer, key, Duration::from_secs(2)).is_some());
+    host.shutdown();
+}
+
 #[test]
 fn reported_loss_raises_fec_redundancy() {
     let host = Host::default();
