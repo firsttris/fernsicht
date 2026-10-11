@@ -66,7 +66,7 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
   `/dev/uinput`. Its unit keeps only the capabilities it uses (`CAP_SYS_ADMIN`, `CAP_DAC_OVERRIDE`,
   `CAP_DAC_READ_SEARCH`, `CAP_SYS_NICE`, `CAP_NET_ADMIN`), mounts the system read-only except its
   state and runtime directories, and forbids loading kernel modules, new privileges, namespaces and
-  set-uid files (`packaging/fernsicht-host.service`). A small privileged helper for capture only
+  set-uid files (`packaging/fernsicht-host-agent.service`). A small privileged helper for capture only
   is a possible next step ([next steps](next-steps.md)).
 - The control socket (`/run/fernsicht/control.sock`) is local only; pairing and unpairing go through
   it. It answers root, the service's own user and the user of the active session on the machine's

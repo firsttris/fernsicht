@@ -12,7 +12,7 @@ web viewer.
 2. **On the computer you want to control:** in the bottom left, under
    “Dieser Rechner” (this computer), click **“Diesen Rechner freigeben”**
    (share this computer). This asks for the administrator password once.
-   - After that, the host runs as a system service (`fernsicht-host`). It
+   - After that, the host runs as a system service (`fernsicht-host-agent`). It
      starts at boot and runs independently of the app. It is installed in
      `/opt/fernsicht`.
    - **“Freigabe beenden”** (stop sharing) removes it again. Keys and
@@ -78,7 +78,7 @@ Fernsicht-Host läuft. Gerät koppeln: fernsicht-host-agent pair
 The script does the following:
 
 - It copies the program to `/usr/local/bin`.
-- It sets up the `fernsicht-host` service ([unit](https://github.com/firsttris/fernsicht/blob/main/packaging/fernsicht-host.service)) and starts it.
+- It sets up the `fernsicht-host-agent` service ([unit](https://github.com/firsttris/fernsicht/blob/main/packaging/fernsicht-host-agent.service)) and starts it.
 - If firewalld is running and UDP port 47800 is closed, it opens the port.
 
 Updating works the same way: build again and run the scripts again.
@@ -202,9 +202,9 @@ After that, this device can no longer connect until it is paired again.
 ## Log, stop, uninstall
 
 ```sh
-journalctl -u fernsicht-host -f        # follow the log
-sudo systemctl stop fernsicht-host     # stop (starts again at the next boot)
-sudo systemctl disable --now fernsicht-host   # stop and no longer start automatically
+journalctl -u fernsicht-host-agent -f        # follow the log
+sudo systemctl stop fernsicht-host-agent     # stop (starts again at the next boot)
+sudo systemctl disable --now fernsicht-host-agent   # stop and no longer start automatically
 sudo ./packaging/install-host.sh --uninstall       # remove completely
 ```
 

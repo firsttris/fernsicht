@@ -8,10 +8,10 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
-    include: ["{web/ui,web/viewer,apps/client-ui}/src/**/*.test.{ts,tsx}"],
+    include: ["{web/ui,web/viewer,web/client-ui}/src/**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
-      include: ["{web/ui,web/viewer,apps/client-ui}/src/**/*.{ts,tsx}"],
+      include: ["{web/ui,web/viewer,web/client-ui}/src/**/*.{ts,tsx}"],
       exclude: ["**/*.test.{ts,tsx}", "**/main.tsx", "**/*.d.ts"],
       reporter: ["text", "lcov"],
       thresholds: { lines: 90, functions: 90, branches: 85, statements: 90 },

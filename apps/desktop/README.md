@@ -1,7 +1,7 @@
 # Fernsicht-App
 
 Die Desktop-App: [Tauri](https://tauri.app) um die Client-UI
-(`apps/client-ui`). Sie zeigt die Rechner im Netz, koppelt per PIN und
+(`web/client-ui`). Sie zeigt die Rechner im Netz, koppelt per PIN und
 startet Sitzungen.
 
 - **Sitzungen** laufen im nativen Fenster von `fernsicht-client` (Vulkan,

@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 pnpm --filter @fernsicht/client-ui build
 pnpm --filter @fernsicht/viewer build
 # The servers themselves (exec), not a pnpm wrapper: so they end with the trap.
-(cd apps/client-ui && exec node_modules/.bin/vite preview --port 4311 --strictPort >/dev/null) &
+(cd web/client-ui && exec node_modules/.bin/vite preview --port 4311 --strictPort >/dev/null) &
 client=$!
 (cd web/viewer && exec node_modules/.bin/vite preview --port 4312 --strictPort >/dev/null) &
 viewer=$!

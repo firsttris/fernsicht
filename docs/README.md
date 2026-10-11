@@ -33,7 +33,7 @@ Also as a website with search: **https://firsttris.github.io/fernsicht/**
 ## How Fernsicht works, in one minute
 
 - **Two programs.** `fernsicht-host-agent` runs on the computer you control, usually as the system
-  service `fernsicht-host`. `fernsicht-client` shows its screen in a Vulkan window. The app (Tauri)
+  service `fernsicht-host-agent`. `fernsicht-client` shows its screen in a Vulkan window. The app (Tauri)
   is the friendly face of the client: devices, pairing, settings, sessions.
 - **The picture stays on the GPU.** The host reads the framebuffer the monitor shows (KMS) at each
   vblank and hands it to the hardware encoder as a DMA-BUF: VAAPI on AMD and Intel, NVENC on NVIDIA

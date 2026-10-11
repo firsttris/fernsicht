@@ -323,7 +323,7 @@ jobs:
         with:
           name: ui-dist
           path: |
-            apps/client-ui/dist
+            web/client-ui/dist
             web/viewer/dist
           retention-days: 1
 

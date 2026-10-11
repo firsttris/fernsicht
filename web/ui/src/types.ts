@@ -1,6 +1,6 @@
 /**
  * Shapes the client UI and the web viewer show. What the Rust side sends
- * has generated types (`apps/client-ui/src/lib/bindings`,
+ * has generated types (`web/client-ui/src/lib/bindings`,
  * `web/viewer/src/lib/bindings`); they must fit these, which the
  * typecheck tells.
  */

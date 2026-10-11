@@ -10,7 +10,9 @@ set -eu
 
 cd "$(dirname "$0")/.."
 bin=target/release/fernsicht-host-agent
-unit=fernsicht-host.service
+unit=fernsicht-host-agent.service
+# The service's old name (before 0.2), removed when installing or removing.
+old_unit=fernsicht-host.service
 prefix=${PREFIX:-/usr/local}
 port=47800
 
@@ -20,8 +22,8 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ "${1:-}" = "--uninstall" ]; then
-    systemctl disable --now "$unit" 2>/dev/null || true
-    rm -f "/etc/systemd/system/$unit" "$prefix/bin/fernsicht-host-agent"
+    systemctl disable --now "$unit" "$old_unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$unit" "/etc/systemd/system/$old_unit" "$prefix/bin/fernsicht-host-agent"
     rm -rf "$prefix/share/fernsicht/viewer"
     systemctl daemon-reload
     echo "Fernsicht-Host entfernt (Schlüssel und Kopplungen bleiben in /var/lib/fernsicht)."
@@ -50,6 +52,10 @@ if [ -f web/viewer/dist/index.html ]; then
     chmod -R a+rX "$prefix/share/fernsicht"
 else
     echo "Hinweis: web/viewer/dist fehlt (./packaging/build.sh baut es); kein Web-Viewer." >&2
+fi
+if [ -f "/etc/systemd/system/$old_unit" ]; then
+    systemctl disable --now "$old_unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$old_unit"
 fi
 sed "s|/usr/local/bin/|$prefix/bin/|" "packaging/$unit" >"/etc/systemd/system/$unit"
 chmod 0644 "/etc/systemd/system/$unit"

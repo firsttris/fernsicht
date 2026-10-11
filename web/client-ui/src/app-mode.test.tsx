@@ -220,7 +220,7 @@ describe("Desktop-App", () => {
     await user.click(screen.getByRole("button", { name: "Desktop" }));
     expect(called("set_mode")).toEqual([["set_mode", { gaming: false }]]);
     await user.click(screen.getByRole("button", { name: "Tasten senden" }));
-    await user.click(screen.getByRole("menuitem", { name: "Windows+W" }));
+    await user.click(screen.getByRole("menuitem", { name: "Super+W" }));
     expect(called("send_keys")).toEqual([["send_keys", { codes: [125, 17] }]]);
     await user.click(screen.getByRole("button", { name: "Trennen" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/devices"));

@@ -3,7 +3,7 @@
 //!
 //! The host has to run as root and from boot on, so it cannot run out of
 //! the AppImage, which is mounted for one user only. Installing unpacks the
-//! AppImage to `/opt/fernsicht/app` and sets up `fernsicht-host.service`
+//! AppImage to `/opt/fernsicht/app` and sets up `fernsicht-host-agent.service`
 //! (the unit from `packaging/`, pointed at the unpacked host and web
 //! viewer); the service then runs on its own. Both steps need root: they
 //! run through `pkexec`, which asks for the admin password.
@@ -15,12 +15,16 @@ use anyhow::Context;
 use fernsicht_client::{Failure, FailureCode};
 use serde::Serialize;
 
-pub const SERVICE: &str = "fernsicht-host.service";
-pub const UNIT_PATH: &str = "/etc/systemd/system/fernsicht-host.service";
+pub const SERVICE: &str = "fernsicht-host-agent.service";
+pub const UNIT_PATH: &str = "/etc/systemd/system/fernsicht-host-agent.service";
+/// What the service was called before it took the program's name: an
+/// install or update removes it.
+pub const OLD_SERVICE: &str = "fernsicht-host.service";
+pub const OLD_UNIT_PATH: &str = "/etc/systemd/system/fernsicht-host.service";
 pub const INSTALL_DIR: &str = "/opt/fernsicht";
 
 /// The unit `packaging/install-host.sh` installs, the one source of it.
-const UNIT: &str = include_str!("../../../packaging/fernsicht-host.service");
+const UNIT: &str = include_str!("../../../packaging/fernsicht-host-agent.service");
 
 /// The host service on this computer, as the app shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -87,15 +91,18 @@ rm -f "$new/Fernsicht.AppImage"
 chown -R root:root "$new/app"
 chmod -R u+rwX,go-w,go+rX "$new/app"
 chmod 755 "$new"
-systemctl stop fernsicht-host.service 2>/dev/null || true
+systemctl stop fernsicht-host-agent.service 2>/dev/null || true
+# The service's old name (before 0.2): gone, the new one replaces it.
+systemctl disable --now fernsicht-host.service 2>/dev/null || true
+rm -f /etc/systemd/system/fernsicht-host.service
 rm -rf "$dir"
 mv "$new" "$dir"
 if command -v restorecon >/dev/null 2>&1; then restorecon -R "$dir" || true; fi
-printf '%s' "$unit" >/etc/systemd/system/fernsicht-host.service
-chmod 644 /etc/systemd/system/fernsicht-host.service
+printf '%s' "$unit" >/etc/systemd/system/fernsicht-host-agent.service
+chmod 644 /etc/systemd/system/fernsicht-host-agent.service
 systemctl daemon-reload
-systemctl enable fernsicht-host.service
-systemctl restart fernsicht-host.service
+systemctl enable fernsicht-host-agent.service
+systemctl restart fernsicht-host-agent.service
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     changed=0
     for proto in udp tcp; do
@@ -111,8 +118,8 @@ fi
 /// Run as root: the service and the host go; keys and pairings stay in
 /// /var/lib/fernsicht.
 pub const UNINSTALL_SCRIPT: &str = r#"set -eu
-systemctl disable --now fernsicht-host.service 2>/dev/null || true
-rm -f /etc/systemd/system/fernsicht-host.service
+systemctl disable --now fernsicht-host-agent.service fernsicht-host.service 2>/dev/null || true
+rm -f /etc/systemd/system/fernsicht-host-agent.service /etc/systemd/system/fernsicht-host.service
 rm -rf /opt/fernsicht /usr/local/bin/fernsicht-host-agent /usr/local/share/fernsicht
 systemctl daemon-reload
 "#;
@@ -192,12 +199,17 @@ fn bundle() -> Option<(PathBuf, PathBuf)> {
 
 /// What is installed here, and what this app could install.
 pub fn status() -> HostService {
-    let unit = std::fs::read_to_string(UNIT_PATH).ok();
-    let active = Command::new("systemctl")
-        .args(["is-active", "--quiet", SERVICE])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+    // Under its old name until the next update renames it.
+    let unit = std::fs::read_to_string(UNIT_PATH)
+        .or_else(|_| std::fs::read_to_string(OLD_UNIT_PATH))
+        .ok();
+    let active = [SERVICE, OLD_SERVICE].iter().any(|service| {
+        Command::new("systemctl")
+            .args(["is-active", "--quiet", service])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    });
     let bundle = bundle();
     HostService {
         installed: unit.is_some(),
@@ -265,7 +277,7 @@ mod tests {
             "ExecStart=/opt/fernsicht/app/usr/bin/fernsicht-host-agent --capture kms \
              --encoder auto --input --web-root /opt/fernsicht/app/usr/lib/Fernsicht/viewer"
         );
-        // Everything else as in packaging/fernsicht-host.service.
+        // Everything else as in packaging/fernsicht-host-agent.service.
         assert!(u.contains("StateDirectory=fernsicht"));
         assert!(u.contains("WantedBy=multi-user.target"));
         assert_eq!(u.matches("ExecStart=").count(), 1);
@@ -274,6 +286,15 @@ mod tests {
             Path::new("/opt/fernsicht/app/usr/bin/fernsicht-host-agent")
         );
         assert_eq!(exec_start("[Unit]\n"), None);
+    }
+
+    #[test]
+    fn the_service_has_the_programs_name_and_the_old_one_goes() {
+        assert_eq!(SERVICE, "fernsicht-host-agent.service");
+        assert!(INSTALL_SCRIPT.contains("systemctl enable fernsicht-host-agent.service"));
+        // An update from before the rename: the old unit is removed.
+        assert!(INSTALL_SCRIPT.contains(&format!("rm -f {OLD_UNIT_PATH}")));
+        assert!(UNINSTALL_SCRIPT.contains(OLD_UNIT_PATH) && UNINSTALL_SCRIPT.contains(UNIT_PATH));
     }
 
     #[test]

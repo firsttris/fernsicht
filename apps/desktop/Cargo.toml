@@ -1,6 +1,6 @@
 [package]
 name = "fernsicht-desktop"
-description = "The Fernsicht app: devices in the LAN, pairing, sessions (Tauri around apps/client-ui)"
+description = "The Fernsicht app: devices in the LAN, pairing, sessions (Tauri around web/client-ui)"
 version = "0.1.4"
 license = "AGPL-3.0-only"
 edition = "2024"
@@ -8,7 +8,7 @@ rust-version = "1.90"
 publish = false
 
 # Not in the main workspace (see its `exclude`): Tauri needs WebKitGTK and
-# the built UI (apps/client-ui/dist), which the other crates' builds and
+# the built UI (web/client-ui/dist), which the other crates' builds and
 # CI jobs should not. Built and tested by its own CI job.
 
 [[bin]]

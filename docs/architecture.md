@@ -94,7 +94,7 @@ flowchart TB
     Browser <-->|"WebRTC: video, Opus,<br/>data channel"| Host
 ```
 
-- **The app** (`apps/desktop`, Tauri around `apps/client-ui`) lists devices (discovery broadcast plus
+- **The app** (`apps/desktop`, Tauri around `web/client-ui`) lists devices (discovery broadcast plus
   paired hosts), pairs, and starts `fernsicht-client --app` for a session. It reads the overlay as
   JSON lines from the client's stdout (and, if the session fails, a last line with a failure code
   and the message) and sends commands on its stdin (mute, mode, keys, monitor). The app's commands

@@ -4,7 +4,7 @@
   "version": "0.1.4",
   "identifier": "dev.fernsicht.app",
   "build": {
-    "frontendDist": "../client-ui/dist",
+    "frontendDist": "../../web/client-ui/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm --filter @fernsicht/client-ui dev",
     "beforeBuildCommand": "pnpm --filter @fernsicht/client-ui build && pnpm --filter @fernsicht/viewer build"

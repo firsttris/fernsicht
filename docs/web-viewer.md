@@ -38,9 +38,9 @@ network. The host serves the page itself.
   that never manages to connect (blocked UDP) is given up after 10 s.
 - **Monitors:** with two or more monitors on the host, “Bildschirm wählen”
   (choose screen) in the toolbar switches the one shown.
-- **System keys:** Ctrl+Alt+Del, the Windows key and similar keys are in
+- **System keys:** Ctrl+Alt+Del, the Super key (KDE: Meta) and similar keys are in
   the “Tasten senden” (send keys) menu. Chrome and Edge can also pass the
-  Windows key, Alt+Tab and Esc through in full screen (Keyboard Lock), but
+  Super key, Alt+Tab and Esc through in full screen (Keyboard Lock), but
   only on secure pages: over the LAN the page is plain `http://`, so there
   these keys stay with the browser's computer (HTTPS for the viewer is on
   the list of [next steps](next-steps.md)).

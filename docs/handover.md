@@ -31,7 +31,7 @@ are built, tested and pushed:
      sealed.
    - Only paired devices get in. Code: `crates/secure`.
 2. **Host as a service.**
-   - systemd unit `packaging/fernsicht-host.service`.
+   - systemd unit `packaging/fernsicht-host-agent.service`.
    - Control socket `/run/fernsicht/control.sock` with the commands
      `fernsicht-host-agent pair | status | unpair`.
    - Encoder chosen to match the GPU (`--encoder auto`).
@@ -51,7 +51,7 @@ are built, tested and pushed:
      The client prints the overlay as JSON and exits when stdin closes.
    - “Dieser Rechner” (this computer) opens pairing on the local host and
      shows the PIN.
-   - The UI (`apps/client-ui`) uses the real commands in Tauri, and demo
+   - The UI (`web/client-ui`) uses the real commands in Tauri, and demo
      data in the browser.
 5. **Installation.**
    - `packaging/build.sh` builds everything in the box.
@@ -100,7 +100,7 @@ Added after that:
      loader) are left out; `appimagetool` takes care of that.
    - In the app: “Diesen Rechner freigeben” (share this computer)
      (`apps/desktop/src/share.rs`) extracts the AppImage via `pkexec` to
-     `/opt/fernsicht/app` and sets up `fernsicht-host.service`. Plus
+     `/opt/fernsicht/app` and sets up `fernsicht-host-agent.service`. Plus
      “Freigabe beenden” (stop sharing) and “Host aktualisieren” (update
      host).
    - Release as in the other repos: **Bump version**
@@ -159,7 +159,7 @@ Confirmed live (2026-10-10, according to the user):
      - These with the hardened unit (review B10: capability bounding set,
        `ProtectSystem=strict`): sound through the user's socket and the
        GPU's sysfs clocks are the likeliest to need something more.
-     - Log: `journalctl -u fernsicht-host -f`.
+     - Log: `journalctl -u fernsicht-host-agent -f`.
 2. **App on both machines.**
    - Install: `./packaging/build.sh && ./packaging/install-app.sh`.
    - On the zentrale: “Gerät koppeln” (pair a device).
@@ -179,8 +179,8 @@ Confirmed live (2026-10-10, according to the user):
    with Firefox and a phone.
 5. **AppImage sharing:** Start the AppImage from the first release on the
    zentrale and choose “Diesen Rechner freigeben” (KDE asks for the
-   password). Then check: Is `fernsicht-host` running (`systemctl status
-   fernsicht-host`)? Is there picture, sound and input? Then “Freigabe
+   password). Then check: Is `fernsicht-host-agent` running (`systemctl status
+   fernsicht-host-agent`)? Is there picture, sound and input? Then “Freigabe
    beenden” and share again. Since review B11 the AppImage is unpacked
    without running it (unsquashfs, else a loop mount of its squashfs):
    check that `/opt/fernsicht/app` belongs to root.

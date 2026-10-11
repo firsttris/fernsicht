@@ -51,7 +51,7 @@ the pairing. How it works: [security](security.md).
 Under “Dieser Rechner” (this computer):
 
 - “Diesen Rechner freigeben” (share this computer) installs the host from the AppImage as the system
-  service `fernsicht-host` (KDE asks for your password).
+  service `fernsicht-host-agent` (KDE asks for your password).
 - “Host aktualisieren auf …” (update the host to …) appears when the app carries a newer host than
   the installed one.
 - “Freigabe beenden” (stop sharing) removes the service again.
@@ -75,7 +75,7 @@ Watching only (`--view-only`): Esc closes, F11 toggles fullscreen, PageUp/PageDo
 The app's session page has the toolbar:
 
 - **Desktop / Gaming** switches the mode during the session.
-- “Tasten senden” (send keys) sends Ctrl+Alt+Del, the Windows key, Windows+W, Alt+Tab, Alt+F4 or
+- “Tasten senden” (send keys) sends Ctrl+Alt+Del, the Super key (KDE: Meta), Super+W, Alt+Tab, Alt+F4 or
   Print to the host.
 - “Bildschirm wählen” (choose screen), with two or more monitors on the host: switch the monitor
   shown. The pointer follows.

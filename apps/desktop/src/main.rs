@@ -1,4 +1,4 @@
-//! The Fernsicht app: the client UI (apps/client-ui) in a window, with
+//! The Fernsicht app: the client UI (web/client-ui) in a window, with
 //! the commands it calls. Sessions run in the native client's own window
 //! (Vulkan, no webview in the picture's path); the app starts and ends
 //! them and shows their overlay.

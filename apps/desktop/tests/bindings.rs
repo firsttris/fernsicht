@@ -23,7 +23,7 @@ fn app_types(cfg: &Config) -> Result<(), ExportError> {
 type Export = fn(&Config) -> Result<(), ExportError>;
 
 const SETS: [(&str, Export); 2] = [
-    ("apps/client-ui/src/lib/bindings", app_types),
+    ("web/client-ui/src/lib/bindings", app_types),
     (
         "web/viewer/src/lib/bindings",
         fernsicht_host_agent::export_viewer_types,

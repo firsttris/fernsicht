@@ -63,7 +63,7 @@ function NativeWindowNotice({ name }: { name: string }) {
       <AppWindow size={40} strokeWidth={1.5} aria-hidden />
       <span className="text-foreground">Das Bild von „{name}“ läuft in einem eigenen Fenster.</span>
       <span>
-        Dort gehen Maus und Tastatur an den Host, im Vollbild auch Windows-Taste und Alt+Tab.
+        Dort gehen Maus und Tastatur an den Host, im Vollbild auch die Super-Taste und Alt+Tab.
         Strg+Alt+Shift+F schaltet Vollbild um, Strg+Alt+Shift+Q beendet die Sitzung. Strg+Alt+Entf
         und Co. gibt es oben unter „Tasten senden“.
       </span>
