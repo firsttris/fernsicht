@@ -244,7 +244,11 @@ the limits FFmpeg puts on the next latency step.
   machines import across devices, which fails. NVENC on a host with two GPUs asks for an
   environment variable instead of picking the matching device.
 - **Fix:** pick by `VK_EXT_physical_device_drm` (render node) and by device UUID for CUDA.
-- **Status:** open
+- **Status:** fixed. `fernsicht_gpu::Prefer` (best kind, a render node, or a UUID) and the pure
+  `pick`: the client's window prefers the VAAPI decoder's render node, NVENC asks CUDA for its UUID
+  first and takes the Vulkan device with it. Without a match the best kind is used, with a warning.
+  Tests: `the_preferred_gpu_wins_over_the_better_kind`, `device_numbers_split_like_glibc`; the
+  NVIDIA codec tests pass with it.
 
 ### A18 · The VAAPI decoder's export cache is keyed by surface ID only
 

@@ -47,6 +47,67 @@ pub struct Gpu {
     uuid: [u8; 16],
 }
 
+/// Which GPU to take when there are several.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Prefer {
+    /// Discrete before integrated.
+    #[default]
+    Best,
+    /// The one with this DRM render node (major, minor), e.g. the VAAPI
+    /// decoder's: its DMA-BUFs import only on the same GPU.
+    RenderNode(u32, u32),
+    /// The one with this device UUID, e.g. the CUDA device NVENC runs on.
+    Uuid([u8; 16]),
+}
+
+impl Prefer {
+    /// The GPU behind a render node such as `/dev/dri/renderD128`; `Best`
+    /// if there is no such node.
+    pub fn render_node(path: &str) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).map_or(Prefer::Best, |m| {
+            let (major, minor) = dev_numbers(m.rdev());
+            Prefer::RenderNode(major, minor)
+        })
+    }
+
+    fn matches(&self, c: &Candidate) -> bool {
+        match *self {
+            Prefer::Best => true,
+            Prefer::RenderNode(major, minor) => c.render == Some((major, minor)),
+            Prefer::Uuid(uuid) => c.uuid == uuid,
+        }
+    }
+}
+
+/// Major and minor of a device number (Linux's encoding, as glibc's
+/// `major()`/`minor()`).
+fn dev_numbers(dev: u64) -> (u32, u32) {
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    (major as u32, minor as u32)
+}
+
+/// What decides between Vulkan devices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Candidate {
+    /// [`rank`] of its type.
+    rank: u32,
+    /// Its render node, where the driver says (`VK_EXT_physical_device_drm`).
+    render: Option<(u32, u32)>,
+    uuid: [u8; 16],
+}
+
+/// The device to take: the preferred one if there is one, else the best
+/// kind; among equals the first.
+fn pick(candidates: &[Candidate], prefer: &Prefer) -> Option<usize> {
+    candidates
+        .iter()
+        .enumerate()
+        .min_by_key(|(i, c)| (!prefer.matches(c), c.rank, *i))
+        .map(|(i, _)| i)
+}
+
 /// Device kinds from best to worst for video.
 fn rank(kind: vk::PhysicalDeviceType) -> u32 {
     match kind {
@@ -61,12 +122,21 @@ fn rank(kind: vk::PhysicalDeviceType) -> u32 {
 impl Gpu {
     /// For offscreen rendering (tests, diagnostics).
     pub fn new() -> Result<Self, String> {
-        Self::create(&[], false)
+        Self::create(&[], false, Prefer::Best)
+    }
+
+    /// Offscreen, on the preferred GPU if Vulkan has it.
+    pub fn preferring(prefer: Prefer) -> Result<Self, String> {
+        Self::create(&[], false, prefer)
     }
 
     /// `instance_extensions` are what the window system needs for a
     /// surface; `present` enables the swapchain extension.
-    pub fn create(instance_extensions: &[*const c_char], present: bool) -> Result<Self, String> {
+    pub fn create(
+        instance_extensions: &[*const c_char],
+        present: bool,
+        prefer: Prefer,
+    ) -> Result<Self, String> {
         // SAFETY: loading the system Vulkan loader; every object created
         // below is destroyed in Drop or on the error path.
         unsafe {
@@ -85,7 +155,7 @@ impl Gpu {
                 )
                 .map_err(|e| format!("create Vulkan instance: {e}"))?;
             log::debug!("instance created");
-            match Self::with_instance(entry, instance.clone(), present) {
+            match Self::with_instance(entry, instance.clone(), present, prefer) {
                 Ok(gpu) => Ok(gpu),
                 Err(e) => {
                     instance.destroy_instance(None);
@@ -99,6 +169,7 @@ impl Gpu {
         entry: ash::Entry,
         instance: ash::Instance,
         present: bool,
+        prefer: Prefer,
     ) -> Result<Self, String> {
         // SAFETY: instance is valid; see create().
         unsafe {
@@ -128,15 +199,43 @@ impl Gpu {
                     .iter()
                     .position(|q| q.queue_flags.contains(vk::QueueFlags::GRAPHICS));
                 if let Some(family) = family {
-                    candidates.push((rank(props.device_type), pd, family as u32, name));
+                    let has_drm = instance
+                        .enumerate_device_extension_properties(pd)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|e| {
+                            e.extension_name_as_c_str() == Ok(ash::ext::physical_device_drm::NAME)
+                        });
+                    let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
+                    let mut ids = vk::PhysicalDeviceIDProperties::default();
+                    let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut ids);
+                    if has_drm {
+                        props2 = props2.push_next(&mut drm);
+                    }
+                    instance.get_physical_device_properties2(pd, &mut props2);
+                    let render = (has_drm && drm.has_render == vk::TRUE)
+                        .then_some((drm.render_major as u32, drm.render_minor as u32));
+                    let candidate = Candidate {
+                        rank: rank(props.device_type),
+                        render,
+                        uuid: ids.device_uuid,
+                    };
+                    candidates.push((candidate, pd, family as u32, name));
                 }
             }
-            candidates.sort_by_key(|c| c.0);
             log::debug!(
                 "candidates: {:?}",
-                candidates.iter().map(|c| &c.3).collect::<Vec<_>>()
+                candidates.iter().map(|c| (&c.3, c.0)).collect::<Vec<_>>()
             );
-            let Some((_, physical, queue_family, name)) = candidates.into_iter().next() else {
+            let chosen = pick(&candidates.iter().map(|c| c.0).collect::<Vec<_>>(), &prefer);
+            if prefer != Prefer::Best
+                && let Some(i) = chosen
+                && !prefer.matches(&candidates[i].0)
+            {
+                log::warn!("no Vulkan device for {prefer:?}; using {}", candidates[i].3);
+            }
+            let Some((_, physical, queue_family, name)) = chosen.map(|i| candidates.swap_remove(i))
+            else {
                 return Err(match wanted {
                     Some(w) => format!("no Vulkan 1.3 device matching {DEVICE_ENV}={w}"),
                     None => "no Vulkan 1.3 device with graphics".into(),
@@ -265,6 +364,45 @@ impl Drop for Gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const AMD: Candidate = Candidate {
+        rank: 0,
+        render: Some((226, 129)),
+        uuid: [1; 16],
+    };
+    const INTEL: Candidate = Candidate {
+        rank: 1,
+        render: Some((226, 128)),
+        uuid: [2; 16],
+    };
+    const LLVMPIPE: Candidate = Candidate {
+        rank: 3,
+        render: None,
+        uuid: [3; 16],
+    };
+
+    #[test]
+    fn the_preferred_gpu_wins_over_the_better_kind() {
+        let gpus = [LLVMPIPE, INTEL, AMD];
+        assert_eq!(pick(&gpus, &Prefer::Best), Some(2), "discrete first");
+        // The VAAPI decoder runs on the iGPU: its pictures import there.
+        assert_eq!(pick(&gpus, &Prefer::RenderNode(226, 128)), Some(1));
+        assert_eq!(pick(&gpus, &Prefer::Uuid([1; 16])), Some(2));
+        // Not there: the best kind.
+        assert_eq!(pick(&gpus, &Prefer::RenderNode(226, 200)), Some(2));
+        assert_eq!(pick(&[], &Prefer::Best), None);
+    }
+
+    #[test]
+    fn device_numbers_split_like_glibc() {
+        // makedev(226, 128) and a large one, makedev(4097, 300000).
+        assert_eq!(dev_numbers(0xe280), (226, 128));
+        let big = (300000u64 & 0xff)
+            | ((4097u64 & 0xfff) << 8)
+            | ((300000u64 & !0xff) << 12)
+            | ((4097u64 & !0xfff) << 32);
+        assert_eq!(dev_numbers(big), (4097, 300000));
+    }
 
     #[test]
     fn only_transient_device_errors_are_retried() {

@@ -13,7 +13,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
 use super::renderer::Target;
-use super::{Gpu, RenderError, Renderer};
+use super::{Gpu, Prefer, RenderError, Renderer};
 use crate::{CursorOverlay, Presenter};
 
 /// Present modes from most to least preferred for latency.
@@ -69,7 +69,9 @@ pub struct WindowPresenter {
 unsafe impl Send for WindowPresenter {}
 
 impl WindowPresenter {
-    pub fn new(window: Arc<Window>, title: &str) -> Result<Self, String> {
+    /// A presenter for `window` on the GPU `prefer` names (the decoder's,
+    /// so its pictures import without a copy).
+    pub fn new(window: Arc<Window>, title: &str, prefer: Prefer) -> Result<Self, String> {
         let display = window
             .display_handle()
             .map_err(|e| format!("display handle: {e}"))?
@@ -80,7 +82,7 @@ impl WindowPresenter {
             .as_raw();
         let extensions = ash_window::enumerate_required_extensions(display)
             .map_err(|e| format!("surface extensions: {e}"))?;
-        let gpu = Arc::new(Gpu::create(extensions, true)?);
+        let gpu = Arc::new(Gpu::create(extensions, true, prefer)?);
         // SAFETY: the window outlives the surface (we hold an Arc).
         let surface = unsafe {
             ash_window::create_surface(&gpu.entry, &gpu.instance, display, handle, None)

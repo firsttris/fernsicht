@@ -95,6 +95,10 @@ The client decodes with FFmpeg's own decoders on the GPU (chosen by name, so FFm
 AV1 is never picked): VAAPI on AMD/Intel, NVDEC on NVIDIA. Decoder output is a frame per packet, no
 frame threading.
 
+With several GPUs, Vulkan runs on the one that holds the pictures: the client's window on the VAAPI
+decoder's GPU (matched by render node, `VK_EXT_physical_device_drm`), the host's NVENC converter on
+the CUDA device (matched by UUID). `FERNSICHT_VULKAN_DEVICE` (part of a device name) overrides it.
+
 The **renderer** (`render`, Vulkan) draws NV12 as RGB with a shader (BT.709), letterboxed into the
 window, and the host's pointer over it:
 

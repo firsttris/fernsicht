@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use fernsicht_capture::{DmaBuf, Frame, PixelFormat};
 use fernsicht_core::now_us;
-use fernsicht_gpu::Gpu;
 use fernsicht_gpu::convert::Converter;
+use fernsicht_gpu::{Gpu, Prefer};
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
@@ -193,9 +193,11 @@ impl NvencEncoder {
 
     fn setup_gpu_input(&self) -> Result<GpuInput, CodecError> {
         let backend = |e: String| CodecError::Backend(e);
-        let gpu = Arc::new(Gpu::new().map_err(backend)?);
         let (ctx, _) = self.cuda();
         let cuda_uuid = cuda::Current::push(ctx)?.device_uuid()?;
+        // The Vulkan device on the GPU NVENC runs on: its memory goes to
+        // CUDA without a copy.
+        let gpu = Arc::new(Gpu::preferring(Prefer::Uuid(cuda_uuid)).map_err(backend)?);
         if cuda_uuid != gpu.device_uuid() {
             return Err(CodecError::Backend(format!(
                 "Vulkan picked {}, which is not the GPU NVENC runs on; choose it with {}",

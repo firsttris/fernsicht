@@ -7,6 +7,6 @@
 mod device;
 pub mod import;
 
-pub use device::{DEVICE_ENV, Gpu};
+pub use device::{DEVICE_ENV, Gpu, Prefer};
 pub mod convert;
 pub mod testimage;

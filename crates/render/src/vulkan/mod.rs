@@ -8,5 +8,5 @@ pub(crate) use fernsicht_gpu::import;
 #[cfg(feature = "window")]
 pub mod window;
 
-pub use fernsicht_gpu::{DEVICE_ENV, Gpu};
+pub use fernsicht_gpu::{DEVICE_ENV, Gpu, Prefer};
 pub use renderer::{RenderError, Renderer, cursor_rect, letterbox, spirv};

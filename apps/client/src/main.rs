@@ -443,6 +443,7 @@ mod window {
         ClientConfig, InputEvent, InputHandle, PresenterFactory, RunSummary, buttons, run_with,
     };
     use fernsicht_render::Presenter;
+    use fernsicht_render::vulkan::Prefer;
     use fernsicht_render::vulkan::window::WindowPresenter;
     use winit::application::ApplicationHandler;
     use winit::dpi::LogicalSize;
@@ -662,8 +663,14 @@ mod window {
                 self.shortcuts = crate::shortcuts::ShortcutLock::new(&window);
             }
             let for_presenter = window.clone();
+            // Vulkan on the VAAPI decoder's GPU: its pictures import
+            // without a copy (NVDEC pictures come through the CPU anyway).
+            let prefer = match cfg.decoder {
+                fernsicht_client::DecoderChoice::Nvdec => Prefer::Best,
+                _ => Prefer::render_node(&cfg.render_node),
+            };
             let factory: PresenterFactory = Box::new(move || {
-                WindowPresenter::new(for_presenter, &title)
+                WindowPresenter::new(for_presenter, &title, prefer)
                     .map(|p| Box::new(p) as Box<dyn Presenter>)
             });
             let (stop, proxy) = (self.stop.clone(), self.proxy.clone());
