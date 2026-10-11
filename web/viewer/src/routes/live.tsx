@@ -35,7 +35,7 @@ import {
 } from "../lib/host";
 import { useFullscreen } from "../lib/fullscreen";
 import { PadTracker } from "../lib/gamepad";
-import { WheelAccumulator, contentRect, linuxButton, toAbsolute } from "../lib/input";
+import { WheelAccumulator, contentRect, linuxButton, lockPointer, toAbsolute } from "../lib/input";
 import { BACKSPACE, ENTER, diffText, guessLayout, tapKey, typeText } from "../lib/textkeys";
 import { NO_ZOOM, TouchController, type TouchMode, type Zoom } from "../lib/touch";
 import { keysGoToHost, linuxKeyCode } from "../lib/keys";
@@ -398,7 +398,7 @@ export function RemoteScreen({
         // goes on (the button may be down on the host since before Esc let
         // the pointer go; releasing a button that is up does nothing).
         if (down) {
-          void el.requestPointerLock?.();
+          void lockPointer(el);
           return;
         }
         session.send({ t: "b", c: code, p: false });
@@ -429,7 +429,19 @@ export function RemoteScreen({
     const release = () => session.send({ t: "release" });
     const noMenu = (e: Event) => e.preventDefault();
     const onCancel = (e: PointerEvent) => touch.cancel(e.pointerId);
-    el.addEventListener("pointermove", onMove);
+    // Raw updates come the moment the system reports a move, not with the
+    // next frame (Chrome, secure pages only). Where they come, moves are
+    // taken from them alone.
+    let raw = false;
+    const onRaw = (e: Event) => {
+      raw = true;
+      onMove(e as PointerEvent);
+    };
+    const onFrameMove = (e: PointerEvent) => {
+      if (!raw) onMove(e);
+    };
+    el.addEventListener("pointerrawupdate", onRaw);
+    el.addEventListener("pointermove", onFrameMove);
     el.addEventListener("pointerdown", onButton);
     el.addEventListener("pointerup", onButton);
     el.addEventListener("pointercancel", onCancel);
@@ -441,7 +453,8 @@ export function RemoteScreen({
     return () => {
       clearInterval(ticker);
       el.removeEventListener("pointercancel", onCancel);
-      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerrawupdate", onRaw);
+      el.removeEventListener("pointermove", onFrameMove);
       el.removeEventListener("pointerdown", onButton);
       el.removeEventListener("pointerup", onButton);
       el.removeEventListener("wheel", onWheel);

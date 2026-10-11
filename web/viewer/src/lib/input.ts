@@ -3,6 +3,26 @@
 /** Browser `MouseEvent.button` → Linux `BTN_*`. */
 const BUTTONS = [0x110, 0x112, 0x111, 0x113, 0x114];
 
+/**
+ * Captures the pointer for a game: raw movement, without the desktop's
+ * acceleration (`unadjustedMovement`), where the browser can; else the
+ * plain lock. A refusal (no click, the page not focused) is no error.
+ */
+export async function lockPointer(el: HTMLElement): Promise<void> {
+  type Lock = (options?: { unadjustedMovement?: boolean }) => Promise<void> | undefined;
+  const request = (el.requestPointerLock as Lock | undefined)?.bind(el);
+  if (!request) return;
+  try {
+    await request({ unadjustedMovement: true });
+  } catch {
+    try {
+      await request();
+    } catch {
+      // Not now; the next click asks again.
+    }
+  }
+}
+
 export function linuxButton(button: number): number | undefined {
   return BUTTONS[button];
 }

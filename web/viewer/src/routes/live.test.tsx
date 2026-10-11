@@ -213,6 +213,16 @@ describe("Web-Viewer am Host", () => {
     );
   });
 
+  it("follows raw pointer updates where the browser sends them", async () => {
+    const { pc, screenEl } = await connected();
+    const raw = new MouseEvent("pointerrawupdate", { clientX: 0, clientY: 0 });
+    fireEvent(screenEl, raw);
+    expect(pc.moves.sent).toHaveLength(1);
+    // The same move again with the frame: taken from the raw update only.
+    fireEvent.pointerMove(screenEl, { clientX: 0, clientY: 0 });
+    expect(pc.moves.sent).toHaveLength(1);
+  });
+
   it("captures the pointer in gaming mode", async () => {
     const { pc, screenEl } = await connected("gaming");
     const lock = vi.fn();
@@ -221,7 +231,8 @@ describe("Web-Viewer am Host", () => {
     expect(pc.channel.sent).toEqual([]);
     expect(pc.moves.sent).toEqual([]);
     fireEvent.pointerDown(screenEl, { button: 0 });
-    expect(lock).toHaveBeenCalled();
+    // Raw movement for games, where the browser can.
+    expect(lock).toHaveBeenCalledWith({ unadjustedMovement: true });
     expect(pc.channel.sent).toEqual([]);
     Object.defineProperty(document, "pointerLockElement", {
       configurable: true,

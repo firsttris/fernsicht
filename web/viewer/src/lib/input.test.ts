@@ -1,6 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { WheelAccumulator, contentRect, linuxButton, toAbsolute } from "./input";
+import { WheelAccumulator, contentRect, linuxButton, lockPointer, toAbsolute } from "./input";
+
+describe("pointer for games", () => {
+  it("asks for raw movement, else the plain lock, and swallows a refusal", async () => {
+    const el = document.createElement("div");
+    const raw = vi.fn(() => Promise.resolve());
+    Object.assign(el, { requestPointerLock: raw });
+    await lockPointer(el);
+    expect(raw).toHaveBeenCalledWith({ unadjustedMovement: true });
+
+    // A browser without raw movement refuses the option: the plain lock.
+    const plain = vi.fn((o?: object) => (o ? Promise.reject(new Error("no")) : Promise.resolve()));
+    Object.assign(el, { requestPointerLock: plain });
+    await lockPointer(el);
+    expect(plain.mock.calls).toEqual([[{ unadjustedMovement: true }], []]);
+
+    // Not allowed at all (no click): no error.
+    Object.assign(el, { requestPointerLock: () => Promise.reject(new Error("no")) });
+    await expect(lockPointer(el)).resolves.toBeUndefined();
+  });
+});
 
 describe("mouse", () => {
   it("maps buttons", () => {

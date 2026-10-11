@@ -26,7 +26,10 @@ network. The host serves the page itself.
   numbered across both, so an old one never undoes a newer one.
 - **Input:** In **Desktop** mode the mouse controls the host directly. In
   **Gaming** mode a click into the video captures the mouse pointer, and
-  Esc releases it. Controllers work through the Gamepad API; some browsers
+  Esc releases it; where the browser can, the movement is raw, without the
+  desktop's acceleration (`unadjustedMovement`). On secure pages Chrome
+  reports moves the moment the system does (`pointerrawupdate`), not with
+  the next frame. Controllers work through the Gamepad API; some browsers
   only expose them on HTTPS pages.
 - **Interruptions:** if the connection drops for a moment (Wi-Fi), the
   picture shows “Verbindung unterbrochen …” and continues when it comes

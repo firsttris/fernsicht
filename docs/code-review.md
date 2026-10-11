@@ -779,7 +779,10 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Where:** `web/viewer/src/routes/live.tsx:255-279`.
 - **Fix:** `requestPointerLock({ unadjustedMovement: true })` with fallback and `.catch()`;
   `pointerrawupdate` where available.
-- **Status:** open
+- **Status:** fixed. `lockPointer` asks for raw movement, falls back to the plain lock and swallows
+  a refusal. The viewer listens to `pointerrawupdate` and `pointermove`; once a raw update came,
+  moves are taken from those alone. Raw updates need a secure page, so over plain HTTP in the LAN
+  they wait for D7 (HTTPS).
 
 ### C15 · Unchanged screens are encoded every refresh
 
