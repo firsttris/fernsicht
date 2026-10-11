@@ -226,6 +226,9 @@ Confirmed live (2026-10-10, according to the user):
 
 ## Open tasks, by importance
 
+The findings of the code review (bugs, security, performance, clean-up) are listed with
+their status in [code-review.md](code-review.md); they are worked through from top to bottom.
+
 The performance items (AV1/HEVC, immediate display, slices, intra
 refresh, congestion control, 4:4:4) with their benefit and effort are
 collected in [performance.md](performance.md).
@@ -265,35 +268,10 @@ collected in [performance.md](performance.md).
 
 ## Rules for working
 
-- **Never without explicit OK** move the mouse or keyboard, play sound
-  or open windows on a desktop where the user is sitting. Ask first and
-  wait for the answer. Exception: a virtual display. On the zentrale the
-  box has Xvfb, xdotool and ImageMagick, see below.
-- **Commands as root** (`sudo`, `pkexec`) are run by the user. Do not
-  work around this.
-- **Other processes** of the user (e.g. their running host) must not be
-  stopped. Use other ports for tests.
-- **Pushing** via SSH, to both branches:
-  `git push git@github.com:firsttris/fernsicht.git HEAD:main` and
-  `HEAD:ccr-a9432ae9-5iz8to`. Afterwards check CI (`gh run list`).
-- **Language:** documentation, README and code comments in English; the
-  app's user interface stays German; commit messages in English.
-
-## Checking that everything is right
-
-In the box, in the repo:
-
-```sh
-cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-pnpm install && pnpm format:check && pnpm -r typecheck && pnpm test
-pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
-cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-shellcheck packaging/*.sh
-```
-
-The test setup is described in [testing.md](testing.md) (fuzzing,
-coverage threshold 90 %, GPU tests).
+The rules for working on the project (what never to do on the user's desktop, root commands,
+pushing, language, code style, the checks before every push) are in
+[`CLAUDE.md`](https://github.com/firsttris/fernsicht/blob/main/CLAUDE.md). The test setup is
+described in [testing.md](testing.md) (fuzzing, coverage threshold 90 %, GPU tests).
 
 ## Viewing the app without a real desktop
 

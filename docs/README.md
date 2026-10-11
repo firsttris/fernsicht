@@ -23,6 +23,7 @@ Also as a website with search: **https://firsttris.github.io/fernsicht/**
 | [Security](security.md) | pairing with SPAKE2, Noise IK sessions, sealed packets, the web viewer's access |
 | [Performance](performance.md) | measurements, what is already state of the art, what can still get faster |
 | [Next steps](next-steps.md) | the logical next things to build, with their value and effort |
+| [Code review](code-review.md) | the review of the whole code base: bugs, security, performance, clean-up, each with its status |
 | [Latency baseline](latency-baseline.md) | how the comparison with Sunshine/Moonlight is measured |
 | [Development](development.md) | dev container, building with features, checks, releases |
 | [Testing](testing.md) | the test layers, from unit tests to fuzzing and real GPUs |

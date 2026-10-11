@@ -43,6 +43,7 @@ nav:
       - Performance: performance.md
       - Latency baseline: latency-baseline.md
       - Next steps: next-steps.md
+      - Code review: code-review.md
   - Development:
       - Development: development.md
       - Testing: testing.md

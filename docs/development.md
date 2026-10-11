@@ -143,5 +143,11 @@ them:
 sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
 ```
 
-The rules for working on the project and the state of the open live tests are in the
-[handover notes](handover.md).
+## Code style and rules
+
+The rules for working on the project are in
+[`CLAUDE.md`](https://github.com/firsttris/fernsicht/blob/main/CLAUDE.md): functional rather than
+object-oriented code (pure functions, data in and data out, no classes in TypeScript, traits only for
+swappable backends), files split by domain, no allocations or syscalls on per-frame paths without a
+reason, and tests, docs and README updated with every change. The state of the open live tests is in
+the [handover notes](handover.md); the open review findings are in the [code review](code-review.md).

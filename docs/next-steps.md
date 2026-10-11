@@ -1,6 +1,7 @@
 # Next steps
 
-What would come next, in a sensible order. Performance items are explained in detail, with their
+What would come next, in a sensible order. The findings of the
+[code review](code-review.md) (bugs, security, performance, clean-up) come first. Performance items are explained in detail, with their
 gain and effort, on the [performance](performance.md) page; what works today is on the
 [status](status.md) page.
 
