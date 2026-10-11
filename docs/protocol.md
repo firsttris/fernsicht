@@ -34,13 +34,17 @@ by property tests and a fuzz target ([testing](testing.md)).
 
 ## Video: shards, FEC and pacing
 
-- An encoded frame is cut into shards of equal size and grouped (at most 512 data shards per group).
+- An encoded frame is cut into shards of equal size. Up to 512 shards (about 600 kB: every P-frame
+  and most keyframes) form **one FEC group**, so its recovery shards repair any losses in the
+  frame, a burst too. Larger frames are split into balanced groups (sizes differ by one at most).
+  At least 10 % recovery shards per group.
 - Each group gets **Reed-Solomon recovery shards** (`reed-solomon-simd`), as many as needed for the
   loss rate the client reports, so that a group fails with a probability of at most 10⁻⁵ (sized
   binomially). The estimate never drops below 1 % loss; recovery is capped at 50 % of a group, with
   at least 3 recovery shards allowed for tiny frames.
-- A frame's **data shards go first**, all groups in order, then the recovery shards: without loss a
-  frame is complete with its last data shard.
+- A frame's **data shards go first**, then the recovery shards: without loss a frame is complete with
+  its last data shard. With several groups, their shards take turns, so that a burst of losses
+  spreads over the groups instead of breaking one.
 - The **pacer** is a token bucket: up to 64 KiB leave back-to-back (a P-frame usually fits whole and
   goes at line rate), the rest at the pacing rate (`--pace-mbit`, 400 Mbit/s), so that switch and
   Wi-Fi buffers do not overflow on keyframes. The bucket refills between frames. A frame too large

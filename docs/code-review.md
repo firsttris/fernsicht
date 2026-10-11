@@ -653,7 +653,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   kills a 300 kB keyframe that one group with the same overhead would survive. The comment "smaller
   groups isolate burst loss" is backwards.
 - **Fix:** one group per frame up to 512 shards (or interleaved shards); balanced groups.
-- **Status:** open
+- **Status:** fixed. One group per frame up to 512 shards; larger frames in balanced groups whose
+  shards take turns on the wire (data, then recovery), no protocol change. A 250 kB keyframe is
+  one group now: its recovery costs half (302 instead of 616 µs, one Reed-Solomon decode instead
+  of three); packetizing it 14 µs more (45 µs, the larger transform). The minimum of 10 %
+  recovery now covers bursts of that length anywhere in the frame.
 
 ### C5 · Every bitrate change rebuilds the hardware encoder
 

@@ -5,8 +5,9 @@ use reed_solomon_simd::ReedSolomonEncoder;
 use thiserror::Error;
 
 /// Probability that a group stays unrecoverable that recovery sizing aims
-/// for. At 60 fps with one to three groups per frame this is roughly one
-/// lost frame per hour at the design loss rate.
+/// for. With one group per frame (more only past 512 shards) and 60 fps,
+/// that is about two lost frames an hour at the design loss rate, at most:
+/// whole recovery shards round it down.
 pub const TARGET_GROUP_FAILURE: f64 = 1e-5;
 
 /// Upper bound for `max_data_per_group`. With `max_redundancy ≤ 1` a group
@@ -22,8 +23,9 @@ pub const MIN_RECOVERY_CAP: usize = 3;
 pub struct FecConfig {
     /// Payload bytes per datagram. Must be even.
     pub shard_size: usize,
-    /// Upper bound for data shards per FEC group. Smaller groups decode
-    /// faster and isolate burst loss; larger groups protect better.
+    /// Upper bound for data shards per FEC group. Larger groups survive
+    /// longer bursts for the same overhead: any `recovery` losses in the
+    /// group are repaired, wherever they fall.
     pub max_data_per_group: usize,
     /// Minimum recovery shards as a fraction of data shards (0.0 disables
     /// FEC entirely).
@@ -39,7 +41,8 @@ impl Default for FecConfig {
     fn default() -> Self {
         Self {
             shard_size: DEFAULT_SHARD_SIZE,
-            max_data_per_group: 64,
+            // One group for frames up to ~600 kB: P-frames and most keyframes.
+            max_data_per_group: MAX_DATA_PER_GROUP,
             redundancy: 0.10,
             max_redundancy: 0.50,
             loss: LossEstimator::FLOOR,
@@ -89,6 +92,25 @@ pub fn group_failure(data: usize, recovery: usize, p: f64) -> f64 {
     (1.0 - cdf).max(0.0)
 }
 
+/// Group `group` of `count` for a frame of `data_total` data shards: its
+/// first shard and its data shards. Balanced: the sizes differ by one at
+/// most, so no group is left with a few shards and little protection.
+fn balanced(data_total: usize, count: usize, group: usize) -> (usize, usize) {
+    let (base, extra) = (data_total / count, data_total % count);
+    (
+        group * base + group.min(extra),
+        base + usize::from(group < extra),
+    )
+}
+
+/// Writes group `g`'s fields into `header`.
+fn set_group(header: &mut VideoHeader, g: usize, group: &Group, shard: usize) {
+    header.group_index = g as u16;
+    header.group_offset = (group.first_shard * shard) as u32;
+    header.data_shards = group.data as u16;
+    header.recovery_shards = group.recovery as u16;
+}
+
 /// Per-frame values copied into every packet header.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameMeta {
@@ -121,6 +143,21 @@ pub struct Packetizer {
     encoder: Option<ReedSolomonEncoder>,
     packets: Vec<Vec<u8>>,
     len: usize,
+    /// The current frame's groups.
+    groups: Vec<Group>,
+    /// The packets on their way into sending order.
+    sending: Vec<Vec<u8>>,
+}
+
+/// One FEC group of a frame: where its data and recovery packets are
+/// before they are put in sending order.
+#[derive(Clone, Copy, Debug)]
+struct Group {
+    first_shard: usize,
+    data: usize,
+    /// Index of its first recovery packet.
+    recovery_at: usize,
+    recovery: usize,
 }
 
 impl Packetizer {
@@ -139,6 +176,8 @@ impl Packetizer {
             encoder: None,
             packets: Vec::new(),
             len: 0,
+            groups: Vec::new(),
+            sending: Vec::new(),
         })
     }
 
@@ -182,17 +221,28 @@ impl Packetizer {
             ..VideoHeader::default()
         };
 
+        self.groups.clear();
+        let mut recovery_at = data_total;
+        for g in 0..group_count {
+            let (first_shard, data) = balanced(data_total, group_count, g);
+            let recovery = self.cfg.recovery_for(data);
+            self.groups.push(Group {
+                first_shard,
+                data,
+                recovery_at,
+                recovery,
+            });
+            recovery_at += recovery;
+        }
+
         // Data first, all groups, then their parity: without loss a frame is
         // complete with its last data shard, not only after the parity of
-        // the groups before it.
-        for group in 0..group_count {
-            let (first_shard, data, recovery) = self.group(data_total, group);
-            let offset = first_shard * shard;
-            header.group_index = group as u16;
-            header.group_offset = offset as u32;
-            header.data_shards = data as u16;
-            header.recovery_shards = recovery as u16;
-            for i in 0..data {
+        // the groups before it. Each data packet sits at its shard number.
+        for g in 0..group_count {
+            let group = self.groups[g];
+            let offset = group.first_shard * shard;
+            set_group(&mut header, g, &group, shard);
+            for i in 0..group.data {
                 let start = offset + i * shard;
                 let end = (start + shard).min(frame.len());
                 header.shard_index = i as u16;
@@ -203,31 +253,29 @@ impl Packetizer {
                 payload[end - start..].fill(0);
             }
         }
-        for group in 0..group_count {
-            let (first_shard, data, recovery) = self.group(data_total, group);
-            if recovery == 0 {
+        for g in 0..group_count {
+            let group = self.groups[g];
+            if group.recovery == 0 {
                 continue;
             }
-            header.group_index = group as u16;
-            header.group_offset = (first_shard * shard) as u32;
-            header.data_shards = data as u16;
-            header.recovery_shards = recovery as u16;
+            set_group(&mut header, g, &group, shard);
             let encoder = match &mut self.encoder {
                 Some(enc) => {
-                    enc.reset(data, recovery, shard)?;
+                    enc.reset(group.data, group.recovery, shard)?;
                     enc
                 }
-                None => self
-                    .encoder
-                    .insert(ReedSolomonEncoder::new(data, recovery, shard)?),
+                None => {
+                    self.encoder
+                        .insert(ReedSolomonEncoder::new(group.data, group.recovery, shard)?)
+                }
             };
-            // A group's data packets sit at its shard numbers.
-            for pkt in &self.packets[first_shard..first_shard + data] {
+            let data = group.first_shard..group.first_shard + group.data;
+            for pkt in &self.packets[data] {
                 encoder.add_original_shard(&pkt[VideoHeader::LEN..])?;
             }
             let result = encoder.encode()?;
             for (i, rec) in result.recovery_iter().enumerate() {
-                header.shard_index = (data + i) as u16;
+                header.shard_index = (group.data + i) as u16;
                 if self.len == self.packets.len() {
                     self.packets.push(Vec::new());
                 }
@@ -238,15 +286,39 @@ impl Packetizer {
                 pkt[VideoHeader::LEN..].copy_from_slice(rec);
             }
         }
+        if group_count > 1 {
+            self.interleave();
+        }
         Ok(&self.packets[..self.len])
     }
 
-    /// Group `group` of a frame with `data_total` data shards: its first
-    /// shard, data shards and recovery shards.
-    fn group(&self, data_total: usize, group: usize) -> (usize, usize, usize) {
-        let first = group * self.cfg.max_data_per_group;
-        let data = (data_total - first).min(self.cfg.max_data_per_group);
-        (first, data, self.cfg.recovery_for(data))
+    /// Puts the packets in sending order: the groups' data shards in turn,
+    /// then their recovery shards in turn, so that a burst of losses
+    /// spreads over the groups instead of breaking one. Moves the buffers,
+    /// copies nothing.
+    fn interleave(&mut self) {
+        let groups = &self.groups;
+        let most_data = groups.iter().map(|g| g.data).max().unwrap_or(0);
+        let most_recovery = groups.iter().map(|g| g.recovery).max().unwrap_or(0);
+        let data = (0..most_data).flat_map(|i| {
+            groups
+                .iter()
+                .filter(move |g| i < g.data)
+                .map(move |g| g.first_shard + i)
+        });
+        let recovery = (0..most_recovery).flat_map(|i| {
+            groups
+                .iter()
+                .filter(move |g| i < g.recovery)
+                .map(move |g| g.recovery_at + i)
+        });
+        let mut sending = std::mem::take(&mut self.sending);
+        sending.clear();
+        for i in data.chain(recovery) {
+            sending.push(std::mem::take(&mut self.packets[i]));
+        }
+        self.packets.splice(..self.len, sending.drain(..));
+        self.sending = sending;
     }
 
     fn next_packet(&mut self) -> &mut Vec<u8> {
@@ -397,7 +469,9 @@ mod tests {
             ..FecConfig::default()
         };
         let mut p = Packetizer::new(cfg).unwrap();
-        let frame = vec![7u8; 64 * 25 + 1]; // 26 data shards → groups of 10, 10, 6
+        // 26 data shards → three balanced groups of 9, 9 and 8 (not 10,
+        // 10 and a weak 6).
+        let frame = vec![7u8; 64 * 25 + 1];
         let packets = p.packetize(&meta(), &frame).unwrap();
         let mut groups = Vec::new();
         for pkt in packets {
@@ -409,12 +483,68 @@ mod tests {
                 groups.push((h.group_offset, h.data_shards, h.recovery_shards));
             }
         }
-        assert_eq!(groups, vec![(0, 10, 3), (640, 10, 3), (1280, 6, 2)]);
-        assert_eq!(packets.len(), 10 + 3 + 10 + 3 + 6 + 2);
+        assert_eq!(groups, vec![(0, 9, 3), (576, 9, 3), (1152, 8, 3)]);
+        assert_eq!(packets.len(), 26 + 3 * 3);
     }
 
     #[test]
-    fn data_goes_before_parity() {
+    fn groups_are_balanced_and_cover_the_frame() {
+        for total in 1..200 {
+            for count in 1..=total.min(9) {
+                let groups: Vec<_> = (0..count).map(|g| balanced(total, count, g)).collect();
+                let mut next = 0;
+                for &(first, data) in &groups {
+                    assert_eq!(first, next, "{total} in {count}");
+                    next += data;
+                }
+                assert_eq!(next, total);
+                let sizes = groups.iter().map(|g| g.1);
+                assert!(sizes.clone().max().unwrap() - sizes.min().unwrap() <= 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_up_to_512_shards_is_one_group() {
+        let mut p = Packetizer::new(FecConfig::default()).unwrap();
+        let frame = vec![1u8; 500 * DEFAULT_SHARD_SIZE];
+        let packets = p.packetize(&meta(), &frame).unwrap();
+        let Packet::Video(h, _) = Packet::decode(&packets[0]).unwrap() else {
+            panic!()
+        };
+        assert_eq!((h.group_count, h.data_shards), (1, 500));
+    }
+
+    #[test]
+    fn a_burst_spreads_over_the_groups() {
+        let cfg = FecConfig {
+            shard_size: 64,
+            max_data_per_group: 10,
+            redundancy: 0.3,
+            loss: 0.0,
+            ..FecConfig::default()
+        };
+        let mut p = Packetizer::new(cfg).unwrap();
+        let frame: Vec<u8> = (0..64 * 26).map(|i| i as u8).collect();
+        let packets = p.packetize(&meta(), &frame).unwrap().to_vec();
+        // Nine packets in a row lost: three of each group, as many as its
+        // recovery shards repair. In frame order they would break a group.
+        let mut r = crate::Reassembler::new();
+        let done = packets
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !(5..14).contains(i))
+            .find_map(|(_, pkt)| {
+                let Ok(Packet::Video(h, payload)) = Packet::decode(pkt) else {
+                    panic!()
+                };
+                r.push(&h, payload, 0).map(|f| f.data.to_vec())
+            });
+        assert_eq!(done.as_deref(), Some(&frame[..]));
+    }
+
+    #[test]
+    fn data_goes_before_parity_and_the_groups_take_turns() {
         let cfg = FecConfig {
             shard_size: 64,
             max_data_per_group: 10,
@@ -433,10 +563,11 @@ mod tests {
                 (h.group_index, h.shard_index >= h.data_shards)
             })
             .collect();
-        // All 26 data shards in frame order, then the parity of each group.
+        // All 26 data shards, then the parity.
         assert!(order[..26].iter().all(|&(_, parity)| !parity));
         assert!(order[26..].iter().all(|&(_, parity)| parity));
-        assert!(order.is_sorted_by_key(|&(g, parity)| (parity, g)));
+        // Never two packets of one group in a row.
+        assert!(order.windows(2).all(|w| w[0].0 != w[1].0), "{order:?}");
     }
 
     #[test]
