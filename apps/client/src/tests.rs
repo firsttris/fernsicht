@@ -396,13 +396,15 @@ fn the_app_gets_the_overlay_and_the_monitors_in_one_object() {
 
 #[test]
 fn failures_keep_their_code_through_context_and_the_app_line() {
-    let e = anyhow::Error::new(Failure::rejected(fernsicht_proto::RejectReason::NotPaired))
-        .context("192.0.2.1:47800");
+    let e = anyhow::Error::new(
+        Failure::rejected(fernsicht_proto::RejectReason::NotPaired).at("192.0.2.1:47800"),
+    )
+    .context("streaming");
     let f = failure_of(&e);
     assert_eq!(f.code, FailureCode::NotPaired);
     assert!(
         f.message
-            .starts_with("192.0.2.1:47800: this device is not paired"),
+            .starts_with("streaming: 192.0.2.1:47800: this device is not paired"),
         "{f}"
     );
     assert_eq!(failure_of(&anyhow::anyhow!("odd")).code, FailureCode::Other);

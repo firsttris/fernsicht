@@ -58,6 +58,11 @@ impl Failure {
         };
         Self::new(code, reject_text(r))
     }
+
+    /// The same failure, said of `place` (a host's address).
+    pub fn at(self, place: &str) -> Self {
+        Self::new(self.code, format!("{place}: {}", self.message))
+    }
 }
 
 impl fmt::Display for Failure {

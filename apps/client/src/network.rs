@@ -488,7 +488,7 @@ fn authentic<'a>(
         // Not authenticated: believed only while asking for a session, never
         // during one (anyone could end it with five bytes).
         Packet::Reject(r) if net.session.is_none() => {
-            Err(anyhow::Error::new(Failure::rejected(r)).context(cfg.host.clone()))
+            Err(Failure::rejected(r).at(&cfg.host).into())
         }
         _ => Ok(None),
     }
@@ -509,7 +509,7 @@ fn on_packet(
     match packet {
         // Plain mode (tests): the host could not start the session.
         Packet::Reject(r) if net.session.is_none() => {
-            return Err(anyhow::Error::new(Failure::rejected(r)).context(cfg.host.clone()));
+            return Err(Failure::rejected(r).at(&cfg.host).into());
         }
         Packet::HelloAck(ack) => on_hello_ack(cfg, socket, net, &ack),
         Packet::ClockPong(pong) => {
