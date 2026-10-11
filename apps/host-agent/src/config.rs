@@ -35,7 +35,7 @@ pub struct HostConfig {
     /// unencrypted: for tests only; the program always sets it.
     pub security: Option<Arc<HostSecurity>>,
     /// Local control socket (pairing, status) while running; needs
-    /// `security`. See [`control`].
+    /// `security`. See [`control`](crate::control).
     pub control: Option<PathBuf>,
     /// What the host says about itself when clients look for hosts in the
     /// LAN (it answers only with `security`, which gives name and key).
@@ -79,7 +79,7 @@ impl HostSettings {
         }
     }
 
-    /// Clock the GPU up during sessions ([`power`]).
+    /// Clock the GPU up during sessions ([`power`](crate::power)).
     pub fn gpu_boost(&self) -> bool {
         self.gpu_boost.load(Ordering::Relaxed)
     }

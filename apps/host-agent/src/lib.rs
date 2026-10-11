@@ -5,7 +5,7 @@
 //! [control] Hello/HelloAck, clock pings, feedback → FEC + keyframes
 //! ```
 //!
-//! Raw frames meet a latest-frame-wins [`Slot`]: when the encoder is busy,
+//! Raw frames meet a latest-frame-wins [`Slot`](fernsicht_core::Slot): when the encoder is busy,
 //! the newest capture replaces an unconsumed one, which costs nothing.
 //! Encoded frames reference each other, so they go through a short FIFO and
 //! are only dropped when it overflows; that forces a keyframe. Buffers
