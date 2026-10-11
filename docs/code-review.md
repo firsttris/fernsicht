@@ -193,7 +193,10 @@ the limits FFmpeg puts on the next latency step.
   with full recovery buffers.
 - **Fix:** enforce the packetizer's layout (`group_offset == index · D · shard`, equal D except the
   last) or cap recovery bytes per slot at the frame length; a test that counts allocations.
-- **Status:** open
+- **Status:** fixed, independent of the packetizer's layout (which C4 will change): a group's data
+  shards must be shard-aligned and must not overlap another group's (a reused per-slot bitmap), and
+  recovery stays bounded by the data it protects, so a slot holds at most about four times its
+  frame. Test: `groups_that_claim_the_same_data_are_refused`.
 
 ### A14 · A failed session start locks the client out; replaced sessions get no Bye
 

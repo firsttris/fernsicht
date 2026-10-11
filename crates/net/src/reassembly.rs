@@ -81,6 +81,10 @@ struct FrameSlot {
     shard_size: usize,
     buf: Vec<u8>,
     groups: Vec<Group>,
+    /// Which data shards of the frame a seen group covers: groups may not
+    /// overlap, so all groups' recovery shards together stay within a few
+    /// times the frame, whatever the headers claim.
+    claimed: Vec<bool>,
     groups_done: usize,
     received: usize,
     first_packet_us: u64,
@@ -101,6 +105,8 @@ impl FrameSlot {
         for g in &mut self.groups[..groups] {
             g.seen = false;
         }
+        self.claimed.clear();
+        self.claimed.resize(padded / shard, false);
         self.groups_done = 0;
         self.received = 0;
         self.first_packet_us = now_us;
@@ -229,18 +235,28 @@ impl Reassembler {
         let gi = h.group_index as usize;
         let shard_idx = h.shard_index as usize;
         {
-            let buf_len = slot.buf.len();
             let g = &mut slot.groups[gi];
             if !g.seen {
-                // The group's data shards must lie inside the frame buffer;
-                // otherwise FEC recovery would write past its end. Recovery
-                // shards are bounded by the data they protect, so a hostile
-                // header can't make us buffer more than a few frames' worth.
-                let end = h.group_offset as usize + h.data_shards as usize * shard;
+                // The group's data shards must lie inside the frame buffer
+                // (else FEC recovery would write past its end) and on shards
+                // no other group of the frame has (else a hostile header
+                // could make every group claim the whole frame, each with
+                // its own recovery buffer). Recovery shards are bounded by
+                // the data they protect: a slot holds at most about four
+                // times its frame.
+                let first = h.group_offset as usize / shard;
+                let shards = first..first + h.data_shards as usize;
                 let max_recovery = h.data_shards.max(MIN_RECOVERY_CAP as u16);
-                if end > buf_len || h.recovery_shards > max_recovery {
+                if !(h.group_offset as usize).is_multiple_of(shard)
+                    || h.recovery_shards > max_recovery
+                    || slot
+                        .claimed
+                        .get(shards.clone())
+                        .is_none_or(|c| c.contains(&true))
+                {
                     return None;
                 }
+                slot.claimed[shards].fill(true);
                 g.init(h, shard);
             } else if !g.matches(h) {
                 return None;
@@ -458,6 +474,46 @@ mod tests {
             panic!()
         };
         r.push(&h, payload, 0).map(|f| f.data.to_vec())
+    }
+
+    #[test]
+    fn groups_that_claim_the_same_data_are_refused() {
+        // A hostile host: an 8 MiB frame of thousands of groups, each
+        // claiming the frame's start with full recovery buffers. Only the
+        // first may take that data; memory stays a few times the frame.
+        let shard = 1352usize;
+        let mut r = Reassembler::new();
+        let mut h = VideoHeader {
+            session_id: 1,
+            frame_id: 1,
+            frame_len: fernsicht_proto::MAX_FRAME_LEN,
+            group_count: 1000,
+            data_shards: 512,
+            recovery_shards: 512,
+            ..VideoHeader::default()
+        };
+        let payload = vec![0u8; shard];
+        for g in 0..1000u16 {
+            h.group_index = g;
+            h.shard_index = 512; // a recovery shard: allocates the buffer
+            r.push(&h, &payload, 0);
+        }
+        let slot = r.slots.iter().find(|s| s.active).expect("a slot");
+        let seen = slot.groups.iter().filter(|g| g.seen).count();
+        assert_eq!(seen, 1, "overlapping groups were taken");
+        let recovery: usize = slot.groups.iter().map(|g| g.recovery.capacity()).sum();
+        assert!(
+            recovery <= 4 * slot.buf.len(),
+            "{recovery} bytes of recovery buffers"
+        );
+        // Misaligned groups are refused too.
+        h.group_index = 1;
+        h.group_offset = 7;
+        h.data_shards = 1;
+        h.recovery_shards = 1;
+        r.push(&h, &payload, 0);
+        let slot = r.slots.iter().find(|s| s.active).expect("a slot");
+        assert!(!slot.groups[1].seen);
     }
 
     fn cfg(redundancy: f32) -> FecConfig {
