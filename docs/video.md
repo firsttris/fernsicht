@@ -69,8 +69,9 @@ display or no root, e.g. in CI.
     (both planes of one multi-planar image), which waits for and signals the image's timeline
     semaphore. No CUDA, no second API. FFmpeg 7.1 or newer at runtime. Measured on the GTX 1080:
     1.7 ms per 1080p H.264 frame for import, conversion, copy and encode (NVENC through CUDA: 2.25
-    ms), 2.1 ms for HEVC. Its rate control keeps less strictly to one frame: a keyframe at 20 Mbit/s
-    is about 1.6 frames' worth (NVENC: one). Not chosen by `--encoder auto` yet; intra refresh is
+    ms), 2.1 ms for HEVC; on the RX 7800 XT (RADV) 1.7 ms for both. NVIDIA's rate control keeps less
+    strictly to one frame: a keyframe at 20 Mbit/s is about 1.6 frames' worth (NVENC: one); RADV's
+    about 1.2 for H.264 and less than one for HEVC. Not chosen by `--encoder auto` yet; intra refresh is
     NVENC's only.
 
     Tuning: the lowest-latency mode the driver takes (ultra-low latency, else low latency; NVIDIA's
