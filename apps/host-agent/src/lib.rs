@@ -13,6 +13,7 @@
 
 pub mod control;
 mod health;
+mod http;
 mod layout;
 mod limits;
 pub mod power;

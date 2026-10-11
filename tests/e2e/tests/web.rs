@@ -313,7 +313,17 @@ fn the_host_serves_the_viewer_page() {
     );
     assert_eq!(http(web, "GET", "/assets/nope.js", None).0, 404);
     assert_eq!(http(web, "GET", "/../../etc/passwd", None).0, 404);
-    assert_eq!(http(web, "DELETE", "/api/info", None).0, 404);
+    // Methods the viewer does not use are refused.
+    assert_eq!(http(web, "DELETE", "/api/info", None).0, 405);
+    // A header that never ends is cut off, the host keeps serving.
+    let mut endless = TcpStream::connect(web).unwrap();
+    endless.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let line = format!("GET / HTTP/1.1\r\nX-Long: {}", "a".repeat(16 * 1024));
+    let _ = endless.write_all(line.as_bytes());
+    let mut answer = Vec::new();
+    let _ = endless.read_to_end(&mut answer);
+    assert!(answer.starts_with(b"HTTP/1.1 413"), "{}", String::from_utf8_lossy(&answer));
+    assert_eq!(http(web, "GET", "/", None).0, 200);
     host.stop();
     let _ = std::fs::remove_dir_all(&root);
 }

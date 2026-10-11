@@ -17,7 +17,6 @@
 //! used once and not remembered. The PIN itself crosses the LAN in the
 //! clear, like the page.
 
-use std::io::Read;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +38,7 @@ use str0m::media::{Frequency, MediaKind, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 
+use crate::http::{self, Body, Head, Method, Response};
 use crate::{HostSecurity, HostStats, SessionParams, Shared};
 
 /// What a session sends to the browser, from its threads to the WebRTC
@@ -635,9 +635,6 @@ pub(crate) fn out_channel() -> (Sender<WebOut>, Receiver<WebOut>) {
 
 // ── HTTP ────────────────────────────────────────────────────────────────
 
-/// Largest request body read (an SDP offer is a few KiB).
-const MAX_BODY: u64 = 64 * 1024;
-
 /// Serves the viewer page from `root` and the API until `stop`.
 pub(crate) fn serve(
     addr: &str,
@@ -646,89 +643,46 @@ pub(crate) fn serve(
     requests: Sender<WebRequest>,
     stop: Arc<AtomicBool>,
 ) -> anyhow::Result<(JoinHandle<()>, SocketAddr)> {
-    let server =
-        tiny_http::Server::http(addr).map_err(|e| anyhow::anyhow!("web server on {addr}: {e}"))?;
-    let local = server
-        .server_addr()
-        .to_ip()
-        .ok_or_else(|| anyhow::anyhow!("web server: not an IP address"))?;
-    let server = Arc::new(server);
-    let t = std::thread::Builder::new()
-        .name("web".into())
-        .spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                match server.recv_timeout(Duration::from_millis(100)) {
-                    Ok(Some(req)) => {
-                        // Connecting waits for the session to start; pages
-                        // and the other API calls must not wait behind it.
-                        let (root, sec, requests) = (root.clone(), sec.clone(), requests.clone());
-                        std::thread::spawn(move || {
-                            handle(req, root.as_deref(), &sec, &requests);
-                        });
-                    }
-                    Ok(None) => {}
-                    Err(e) => log::warn!("web server: {e}"),
-                }
-            }
-        })?;
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|e| anyhow::anyhow!("web server on {addr}: {e}"))?;
+    let local = listener.local_addr()?;
+    let t = http::serve(listener, stop, move |head, body, from| {
+        handle(head, body, from, root.as_deref(), &sec, &requests)
+    })?;
     Ok((t, local))
 }
 
-fn json_response(status: u16, v: &Value) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    tiny_http::Response::from_data(v.to_string().into_bytes())
-        .with_status_code(status)
-        .with_header(header("Content-Type", "application/json"))
-        .with_header(header("Cache-Control", "no-store"))
-}
-
-fn header(name: &str, value: &str) -> tiny_http::Header {
-    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid header")
+fn json_response(status: u16, v: &Value) -> Response {
+    Response::new(status, "application/json", v.to_string().into_bytes())
+        .with("Cache-Control", "no-store")
 }
 
 fn handle(
-    mut req: tiny_http::Request,
+    head: &Head,
+    body: &[u8],
+    from: SocketAddr,
     root: Option<&Path>,
     sec: &HostSecurity,
     requests: &Sender<WebRequest>,
-) {
-    let path = req.url().split('?').next().unwrap_or("/").to_owned();
-    let response = match (req.method(), path.as_str()) {
-        (tiny_http::Method::Get, "/api/info") => json_response(
+) -> Response {
+    match (head.method, head.path.as_str()) {
+        (Method::Get, "/api/info") => json_response(
             200,
             &json!({
                 "name": sec.name(),
                 "pairing": sec.pairing_remaining().is_some(),
             }),
         ),
-        (tiny_http::Method::Post, "/api/connect") => {
-            let mut body = Vec::new();
-            let read = req
-                .as_reader()
-                .take(MAX_BODY)
-                .read_to_end(&mut body)
-                .is_ok();
-            let browser = req.remote_addr().copied();
-            match (read, browser) {
-                (true, Some(browser)) => connect(&body, browser, requests),
-                _ => json_response(400, &json!({"error": "bad-request"})),
-            }
-        }
-        (tiny_http::Method::Get | tiny_http::Method::Head, _) => {
-            return serve_file(req, root, &path);
-        }
+        (Method::Post, "/api/connect") => connect(body, from, requests),
+        (Method::Get | Method::Head, path) => serve_file(root, path),
         _ => json_response(404, &json!({"error": "not-found"})),
-    };
-    let _ = req.respond(response);
+    }
 }
 
 /// How long a browser waits for the session to start.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn connect(
-    body: &[u8],
-    browser: SocketAddr,
-    requests: &Sender<WebRequest>,
-) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+fn connect(body: &[u8], browser: SocketAddr, requests: &Sender<WebRequest>) -> Response {
     let bad = || json_response(400, &json!({"error": "bad-request"}));
     let Ok(v) = serde_json::from_slice::<Value>(body) else {
         return bad();
@@ -799,38 +753,32 @@ pub(crate) fn resolve_file(root: &Path, url_path: &str) -> Option<PathBuf> {
         .filter(|f| f.is_file())
 }
 
-fn serve_file(req: tiny_http::Request, root: Option<&Path>, path: &str) {
-    let file = root.and_then(|r| resolve_file(r, path));
-    let Some(file) = file else {
+fn serve_file(root: Option<&Path>, path: &str) -> Response {
+    let Some(file) = root.and_then(|r| resolve_file(r, path)) else {
         let msg = if root.is_none() {
             "Der Web-Viewer ist auf diesem Host nicht installiert (--web-root)."
         } else {
             "Nicht gefunden."
         };
-        let _ = req.respond(
-            tiny_http::Response::from_string(msg)
-                .with_status_code(404)
-                .with_header(header("Content-Type", "text/plain; charset=utf-8")),
-        );
-        return;
+        return Response::new(404, "text/plain; charset=utf-8", msg.as_bytes().to_vec());
     };
-    match std::fs::File::open(&file) {
-        Ok(f) => {
-            // Built assets carry a hash in their name: cache them for good.
-            let cache = if file.parent().is_some_and(|p| p.ends_with("assets")) {
-                "public, max-age=31536000, immutable"
-            } else {
-                "no-cache"
-            };
-            let _ = req.respond(
-                tiny_http::Response::from_file(f)
-                    .with_header(header("Content-Type", content_type(&file)))
-                    .with_header(header("Cache-Control", cache)),
-            );
-        }
-        Err(_) => {
-            let _ = req.respond(tiny_http::Response::empty(500));
-        }
+    let opened = std::fs::File::open(&file).and_then(|f| Ok((f.metadata()?.len(), f)));
+    let Ok((len, f)) = opened else {
+        return Response::new(500, "text/plain", Vec::new());
+    };
+    // Built assets carry a hash in their name: cache them for good.
+    let cache = if file.parent().is_some_and(|p| p.ends_with("assets")) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    Response {
+        status: 200,
+        headers: vec![
+            ("Content-Type", content_type(&file).to_owned()),
+            ("Cache-Control", cache.to_owned()),
+        ],
+        body: Body::File(f, len),
     }
 }
 

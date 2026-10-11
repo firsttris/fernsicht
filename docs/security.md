@@ -75,5 +75,8 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
   intercept and hold back the browser's request could use it first, which HTTPS for the viewer
   would close ([next steps](next-steps.md)).
 - Picture, sound and input then travel over WebRTC, which encrypts with DTLS-SRTP.
+- The host's small web server takes one request per connection with everything bounded: a request
+  head of at most 8 KiB and 32 headers, a body of at most 64 KiB, 10 s to send it, 32 connections
+  at once. A slow or oversized request cannot tie up the root service.
 - **The page and the PIN travel over plain HTTP.** That is acceptable in your own LAN, not over the
   internet. Use a VPN for remote access ([remote access](remote-access.md)).

@@ -489,7 +489,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Where:** `apps/host-agent/src/web.rs:635-653`, tiny_http 0.12 (no release since 2022).
 - **Problem:** unlimited header line length and count, no socket timeouts, a thread per connection.
 - **Fix:** limits and timeouts (or a maintained server), bounded handlers.
-- **Status:** open
+- **Status:** fixed. tiny_http is gone; `apps/host-agent/src/http.rs` is a small HTTP/1.1 server
+  for what the viewer needs, everything bounded: head 8 KiB and 32 headers, body 64 KiB with a
+  required `Content-Length` (no chunked), 10 s per request, 32 connections at once (more get 503),
+  one request per connection. The head parser is a pure function. Tests in `http.rs`, and
+  `the_host_serves_the_viewer_page` sends an endless header to the real host.
 
 ### B7 · The client acts on unauthenticated packets
 
