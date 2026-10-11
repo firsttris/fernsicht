@@ -16,7 +16,9 @@ use fernsicht_capture::{Frame, FrameSource, PixelFormat, TestPattern};
 use fernsicht_codec::vaapi::{
     DEFAULT_RENDER_NODE, VaapiDecoder, VaapiEncoder, VaapiEncoderConfig, upload_as_dmabuf,
 };
-use fernsicht_codec::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder};
+use fernsicht_codec::{
+    CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind,
+};
 use fernsicht_proto::Codec;
 
 fn render_node() -> Option<String> {
@@ -200,6 +202,35 @@ fn keyframe_on_request_and_decoder_recovers() {
     let last = dec.last_frame_nv12().unwrap();
     let psnr = psnr_y(&input[29].data, &last, (w * h) as usize);
     assert!(psnr > 30.0, "{psnr:.1} dB after joining at the keyframe");
+}
+
+#[test]
+fn a_new_stream_size_gives_new_pictures() {
+    // The host switched to a monitor of another shape: a new encoder, and
+    // the client's decoder gets a keyframe of another size. FFmpeg makes a
+    // new surface pool, and the driver may reuse the surface ids: the
+    // exported pictures must be the new ones, under a new pool key.
+    let Some(node) = render_node() else { return };
+    let mut dec = VaapiDecoder::new(&node).unwrap();
+    let mut d = DecodedFrame::default();
+    let mut shown = Vec::new();
+    for (w, h) in [(640, 360), (1280, 536), (640, 360)] {
+        let mut enc = VaapiEncoder::new(&config(&node, w, h, 60, 4_000)).unwrap();
+        for f in &frames(w, h, 3) {
+            let mut out = EncodedFrame::default();
+            enc.encode(f, &mut out).unwrap();
+            dec.decode(&out.data, &mut d).unwrap();
+        }
+        assert_eq!((d.width, d.height), (w, h));
+        match dec.picture(PictureKind::DmaBuf).unwrap() {
+            Some(Picture::DmaBuf { image, key }) => {
+                assert_eq!((image.width, image.height), (w, h));
+                shown.push(key >> 32);
+            }
+            _ => panic!("no DMA-BUF picture"),
+        }
+    }
+    assert!(shown[0] != shown[1] && shown[1] != shown[2], "{shown:?}");
 }
 
 #[test]

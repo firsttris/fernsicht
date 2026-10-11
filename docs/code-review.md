@@ -221,7 +221,11 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** if FFmpeg rebuilds its frame pool, surface IDs are reused and old DMA-BUFs (old
   size) are shown. `forget_imports` is never called when a decoder is replaced.
 - **Fix:** key on (frames context, surface), clear on change; forget imports on decoder change.
-- **Status:** open
+- **Status:** fixed. The decoder holds a reference to the surface pool its exports belong to (so a
+  new pool can never reuse the old one's address); a new pool clears the exports and gets a new id
+  in the upper 32 bits of `Picture::DmaBuf`'s key. The renderer drops all imports when a key of
+  another pool arrives, which also covers a replaced decoder. GPU test:
+  `a_new_stream_size_gives_new_pictures` (`crates/codec/tests/vaapi.rs`, AMD runner).
 
 ### A19 · A failed DMA-BUF export shows black frames forever
 

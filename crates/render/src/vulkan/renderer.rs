@@ -489,6 +489,11 @@ impl Renderer {
         if self.imported.contains_key(&key) {
             return Ok(());
         }
+        // A picture from a new surface pool: the imports of the old one
+        // show old buffers (see `Picture::DmaBuf`).
+        if self.imported.keys().any(|k| k >> 32 != key >> 32) {
+            self.forget_imports();
+        }
         if self.imported.len() >= MAX_IMPORTED {
             for (_, p) in std::mem::take(&mut self.imported) {
                 self.destroy_planes(p);

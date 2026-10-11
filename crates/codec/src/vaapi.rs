@@ -977,8 +977,13 @@ pub struct VaapiDecoder {
     /// Surfaces exported as DMA-BUF so far, by VA surface id. The decoder
     /// cycles through a fixed pool, so each is exported once.
     exported: std::collections::HashMap<ffi::VASurfaceID, DmaBuf>,
-    /// Distinguishes this decoder's surfaces from an earlier one's in
-    /// [`Picture::DmaBuf`] keys.
+    /// The surface pool (`hw_frames_ctx`) the exports belong to. FFmpeg
+    /// makes a new one when the stream's size changes, and the driver may
+    /// hand out the same surface ids again. Held by a reference, so a new
+    /// pool can never have the old one's address.
+    pool: *mut ffi::AVBufferRef,
+    /// Names the pool in [`Picture::DmaBuf`] keys (upper 32 bits), unique
+    /// across decoders.
     id: u64,
     /// The last downloaded picture (CPU NV12).
     nv12: Vec<u8>,
@@ -1017,6 +1022,7 @@ impl VaapiDecoder {
                 decoded: 0,
                 drm: ffi::av_frame_alloc(),
                 exported: Default::default(),
+                pool: ptr::null_mut(),
                 id: NEXT_DECODER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 nv12: Vec::new(),
                 _device: device,
@@ -1133,7 +1139,7 @@ impl Decoder for VaapiDecoder {
     fn picture(&mut self, prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
         // SAFETY: frame is a valid AVFrame; data[3] is its surface id when
         // it holds a decoded VAAPI frame.
-        let (surface, width, height) = unsafe {
+        let (surface, width, height, frames) = unsafe {
             let f = &*self.frame;
             if f.format != ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int {
                 return Ok(None);
@@ -1142,10 +1148,28 @@ impl Decoder for VaapiDecoder {
                 f.data[3] as usize as ffi::VASurfaceID,
                 f.width as u32,
                 f.height as u32,
+                f.hw_frames_ctx,
             )
         };
         match prefer {
             PictureKind::DmaBuf => {
+                // SAFETY: frames is the frame's pool reference (or null);
+                // pool is ours (or null).
+                let same_pool = unsafe {
+                    !frames.is_null() && !self.pool.is_null() && (*frames).data == (*self.pool).data
+                };
+                if !same_pool {
+                    // A new pool: the old exports (and their ids) are stale.
+                    self.exported.clear();
+                    self.id = NEXT_DECODER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // SAFETY: unref takes null; ref of a valid reference.
+                    unsafe {
+                        ffi::av_buffer_unref(&mut self.pool);
+                        if !frames.is_null() {
+                            self.pool = ffi::av_buffer_ref(frames);
+                        }
+                    }
+                }
                 if !self.exported.contains_key(&surface) {
                     // SAFETY: frame holds a VAAPI surface, drm is ours.
                     let image = unsafe { export_surface(self.frame, self.drm, formats::NV12)? };
@@ -1182,6 +1206,7 @@ impl Drop for VaapiDecoder {
             ffi::av_frame_free(&mut self.sw);
             ffi::av_frame_free(&mut self.drm);
             ffi::av_packet_free(&mut self.pkt);
+            ffi::av_buffer_unref(&mut self.pool);
         }
     }
 }

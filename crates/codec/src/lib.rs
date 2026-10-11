@@ -90,7 +90,10 @@ pub enum Picture<'a> {
     },
     /// NV12 on the GPU (fourcc `NV12`, plane 0 Y, plane 1 interleaved UV).
     /// `key` stays the same for the same underlying surface, so presenters
-    /// can keep the import instead of repeating it every frame.
+    /// can keep the import instead of repeating it every frame. Its upper
+    /// 32 bits name the surface pool: a new value means the pool was
+    /// replaced (a new decoder, a new stream size), and imports of older
+    /// pools are stale.
     DmaBuf { image: &'a DmaBuf, key: u64 },
 }
 
