@@ -54,19 +54,37 @@ pub fn unit() -> String {
         + "\n"
 }
 
-/// Run as root: `$1` the AppImage, `$2` the unit's text.
+/// Run as root: `$1` the AppImage, `$2` the unit's text, `$3` where the
+/// AppImage's file system starts (0: unknown). The AppImage is copied
+/// first (a root-owned copy cannot change under us) and unpacked without
+/// running it: with `unsquashfs`, else by mounting its file system (the
+/// AppImage runtime only as a last resort). The tree belongs to root and
+/// is writable by no one else.
 pub const INSTALL_SCRIPT: &str = r#"set -eu
 appimage=$1
 unit=$2
+offset=$3
 dir=/opt/fernsicht
 new=$(mktemp -d /opt/.fernsicht-new.XXXXXX)
 cp "$appimage" "$new/Fernsicht.AppImage"
 chmod 755 "$new/Fernsicht.AppImage"
-(cd "$new" && ./Fernsicht.AppImage --appimage-extract >/dev/null)
-mv "$new/squashfs-root" "$new/app"
+mnt=$(mktemp -d /opt/.fernsicht-mnt.XXXXXX)
+if [ "$offset" != 0 ] && command -v unsquashfs >/dev/null 2>&1; then
+    unsquashfs -no-progress -o "$offset" -d "$new/app" "$new/Fernsicht.AppImage" >/dev/null
+elif [ "$offset" != 0 ] && mount -t squashfs -o loop,ro,nodev,nosuid,offset="$offset" \
+        "$new/Fernsicht.AppImage" "$mnt" 2>/dev/null; then
+    mkdir "$new/app"
+    cp -a "$mnt/." "$new/app/"
+    umount "$mnt"
+else
+    (cd "$new" && ./Fernsicht.AppImage --appimage-extract >/dev/null)
+    mv "$new/squashfs-root" "$new/app"
+fi
+rmdir "$mnt"
 rm -f "$new/Fernsicht.AppImage"
+chown -R root:root "$new/app"
+chmod -R u+rwX,go-w,go+rX "$new/app"
 chmod 755 "$new"
-chmod -R a+rX "$new/app"
 systemctl stop fernsicht-host.service 2>/dev/null || true
 rm -rf "$dir"
 mv "$new" "$dir"
@@ -96,6 +114,32 @@ rm -f /etc/systemd/system/fernsicht-host.service
 rm -rf /opt/fernsicht /usr/local/bin/fernsicht-host-agent /usr/local/share/fernsicht
 systemctl daemon-reload
 "#;
+
+/// Where an AppImage's file system starts: right after its ELF runtime
+/// (the end of the section headers), from the 64-bit little-endian ELF
+/// header in `head`.
+pub fn elf_end(head: &[u8]) -> Option<u64> {
+    if head.len() < 64 || &head[..4] != b"\x7fELF" || head[4] != 2 || head[5] != 1 {
+        return None;
+    }
+    let u16_at = |at: usize| u64::from(u16::from_le_bytes([head[at], head[at + 1]]));
+    let sh_offset = u64::from_le_bytes(head[0x28..0x30].try_into().ok()?);
+    sh_offset.checked_add(u16_at(0x3a).checked_mul(u16_at(0x3c))?)
+}
+
+/// The offset of the AppImage's squashfs, if it is where the ELF header
+/// says (`hsqs` there).
+fn squashfs_offset(appimage: &Path) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(appimage).ok()?;
+    let mut head = [0u8; 64];
+    f.read_exact(&mut head).ok()?;
+    let offset = elf_end(&head)?;
+    let mut magic = [0u8; 4];
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    f.read_exact(&mut magic).ok()?;
+    (&magic == b"hsqs").then_some(offset)
+}
 
 /// "fernsicht-host-agent 0.1.0" → "0.1.0".
 pub fn parse_version(out: &str) -> Option<String> {
@@ -168,7 +212,8 @@ pub fn status() -> HostService {
 /// Runs `script` as root through pkexec (the desktop asks for the admin
 /// password).
 fn as_root(script: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = Command::new("pkexec")
+    // By its path: a PATH the user's session set must not choose it.
+    let out = Command::new("/usr/bin/pkexec")
         .args(["/bin/sh", "-c", script, "fernsicht"])
         .args(args)
         .output()
@@ -191,7 +236,8 @@ fn as_root(script: &str, args: &[&str]) -> anyhow::Result<()> {
 pub fn install() -> anyhow::Result<()> {
     let (appimage, _) = bundle().context("not running from the AppImage")?;
     let path = appimage.to_str().context("odd AppImage path")?;
-    as_root(INSTALL_SCRIPT, &[path, &unit()])
+    let offset = squashfs_offset(&appimage).unwrap_or(0).to_string();
+    as_root(INSTALL_SCRIPT, &[path, &unit(), &offset])
 }
 
 /// Removes the service and the installed host.
@@ -221,6 +267,32 @@ mod tests {
             Path::new("/opt/fernsicht/app/usr/bin/fernsicht-host-agent")
         );
         assert_eq!(exec_start("[Unit]\n"), None);
+    }
+
+    #[test]
+    fn the_appimage_payload_starts_after_its_elf_runtime() {
+        // An ELF64 LE header with 10 section headers of 64 bytes at 1000.
+        let mut head = [0u8; 64];
+        head[..4].copy_from_slice(b"\x7fELF");
+        head[4] = 2;
+        head[5] = 1;
+        head[0x28..0x30].copy_from_slice(&1000u64.to_le_bytes());
+        head[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
+        head[0x3c..0x3e].copy_from_slice(&10u16.to_le_bytes());
+        assert_eq!(elf_end(&head), Some(1640));
+        // A file with the squashfs there.
+        let file = std::env::temp_dir().join(format!("fernsicht-appimage-{}", std::process::id()));
+        let mut bytes = head.to_vec();
+        bytes.resize(1640, 0);
+        bytes.extend_from_slice(b"hsqs....");
+        std::fs::write(&file, &bytes).unwrap();
+        assert_eq!(squashfs_offset(&file), Some(1640));
+        // Not there: unknown, and the script falls back.
+        bytes[1640] = b'x';
+        std::fs::write(&file, &bytes).unwrap();
+        assert_eq!(squashfs_offset(&file), None);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(elf_end(b"#!/bin/sh"), None);
     }
 
     #[test]
