@@ -1,5 +1,5 @@
-//! H.264, HEVC and AV1 decoding with Vulkan Video, via FFmpeg, on our own
-//! Vulkan device.
+//! H.264, HEVC and AV1 with Vulkan Video, via FFmpeg, on our own Vulkan
+//! device.
 //!
 //! FFmpeg's Vulkan decoder runs on the device the presenter draws with
 //! ([`fernsicht_gpu::Gpu`]): it is handed our instance, device and queues
@@ -7,6 +7,10 @@
 //! presenter samples the decoded image in place: no copy, no second API.
 //! Works wherever the driver has Vulkan Video decode (NVIDIA from Pascal,
 //! AMD and Intel with Mesa).
+//!
+//! The encoder takes the screen the same way: our converter turns the RGB
+//! DMA-BUF into NV12 and, in the same submission, copies it into an image
+//! of FFmpeg's encoder pool, which FFmpeg's Vulkan encoder reads.
 //!
 //! Synchronization follows FFmpeg's contract for `AVVkFrame`: a
 //! submission that uses the image waits for its timeline semaphore at the
@@ -19,12 +23,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ash::vk;
 use ash::vk::Handle;
-use fernsicht_gpu::Gpu;
+use fernsicht_capture::{DmaBuf, Frame, PixelFormat};
+use fernsicht_core::now_us;
+use fernsicht_gpu::convert::Converter;
+use fernsicht_gpu::{Gpu, Prefer, Timeline};
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
-use crate::ff::{self, check, eagain, ff_err, is_bt709_limited, nv12_from_frame};
-use crate::{CodecError, DecodedFrame, Decoder, Picture, PictureKind, VkAccess, VkPicture, VkSync};
+use crate::ff::{
+    self, check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame,
+    signal_bt709_limited,
+};
+use crate::{
+    CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind, VkAccess,
+    VkPicture, VkSync,
+};
 
 // FFmpeg's VkPhysicalDeviceFeatures2 is filled with ash's.
 const _: () = assert!(
@@ -57,6 +70,39 @@ pub fn decodes(gpu: &Gpu, codec: Codec) -> bool {
     gpu.decode
         .as_ref()
         .is_some_and(|q| q.operations.contains(op))
+}
+
+/// Whether `gpu` encodes `codec` with Vulkan Video, as far as the driver
+/// says (an encode queue with the codec) and the FFmpeg loaded is
+/// [ready](ffmpeg_is_ready).
+pub fn gpu_encodes(gpu: &Gpu, codec: Codec) -> bool {
+    let op = match codec {
+        Codec::H264 => vk::VideoCodecOperationFlagsKHR::ENCODE_H264,
+        Codec::Hevc => vk::VideoCodecOperationFlagsKHR::ENCODE_H265,
+        // VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR (newer than ash).
+        Codec::Av1 => vk::VideoCodecOperationFlagsKHR::from_raw(0x0004_0000),
+        Codec::Synthetic => return false,
+    };
+    ffmpeg_is_ready()
+        && gpu
+            .encode
+            .as_ref()
+            .is_some_and(|q| q.operations.contains(op))
+}
+
+/// Whether the GPU behind `render_node` encodes `codec` with Vulkan Video:
+/// an encoder for a small picture opens.
+pub fn encodes(render_node: &str, codec: Codec) -> bool {
+    codec != Codec::Synthetic
+        && VulkanEncoder::new(&VulkanEncoderConfig {
+            render_node: render_node.into(),
+            codec,
+            width: 256,
+            height: 256,
+            fps: 30,
+            bitrate_kbps: 1_000,
+        })
+        .is_ok()
 }
 
 /// FFmpeg's Vulkan device context on a [`Gpu`] of ours.
@@ -551,6 +597,448 @@ impl Drop for VulkanDecoder {
             ffi::av_frame_free(&mut self.recv);
             ffi::av_frame_free(&mut self.sw);
             ffi::av_packet_free(&mut self.pkt);
+        }
+    }
+}
+
+/// Frames between two IDR frames unless one is asked for: "endless" as
+/// far as HEVC allows. FFmpeg sizes the picture order count to the GOP
+/// (`vulkan_encode_h265.c`, `log2_max_pic_order_cnt_lsb_minus4`), which
+/// has at most 16 bits; 2^15 frames is an IDR frame every 9 minutes at
+/// 60 fps.
+const GOP: c_int = 1 << 15;
+
+/// An encoder tuning (FFmpeg's `tune` option); `None` is the driver's
+/// default.
+type Tune = Option<&'static std::ffi::CStr>;
+
+/// Tunings to try, lowest latency first.
+const TUNES: [Tune; 3] = [Some(c"ull"), Some(c"ll"), None];
+
+/// Encoder settings.
+#[derive(Clone, Debug)]
+pub struct VulkanEncoderConfig {
+    /// The GPU's DRM render node: the Vulkan device is the one behind it,
+    /// where the screen's DMA-BUFs import.
+    pub render_node: String,
+    /// H.264, HEVC or AV1.
+    pub codec: Codec,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+}
+
+/// Encodes with Vulkan Video. Settings as for the other hardware encoders:
+/// no B-frames, IDR frames on request (else only every [`GOP`] frames),
+/// CBR with a buffer of one frame, one frame in flight (`async_depth` 1),
+/// tuned for the lowest latency the driver offers and desktop content.
+pub struct VulkanEncoder {
+    ctx: *mut ffi::AVCodecContext,
+    frames: *mut ffi::AVBufferRef,
+    /// The frame being encoded (an image of `frames`).
+    hw: *mut ffi::AVFrame,
+    /// CPU NV12 pictures go through it.
+    sw: *mut ffi::AVFrame,
+    pkt: *mut ffi::AVPacket,
+    codec: Codec,
+    width: u32,
+    height: u32,
+    fps: u32,
+    /// Made on the first DMA-BUF frame.
+    converter: Option<Converter>,
+    force_keyframe: bool,
+    next_pts: i64,
+    /// The tuning the driver took (of [`TUNES`]), once known.
+    tune: Option<Tune>,
+    // Last: the contexts above refer to it.
+    device: VulkanDevice,
+}
+
+// SAFETY: all FFmpeg and Vulkan objects are owned by this value and only
+// touched through &mut self.
+unsafe impl Send for VulkanEncoder {}
+
+impl VulkanEncoder {
+    pub fn new(cfg: &VulkanEncoderConfig) -> Result<Self, CodecError> {
+        if !cfg.width.is_multiple_of(2) || !cfg.height.is_multiple_of(2) || cfg.fps == 0 {
+            return Err(CodecError::Backend(
+                "width/height must be even, fps > 0".into(),
+            ));
+        }
+        let backend = |e: String| CodecError::Backend(e);
+        let gpu = Gpu::preferring(Prefer::render_node(&cfg.render_node)).map_err(backend)?;
+        if !gpu_encodes(&gpu, cfg.codec) {
+            return Err(CodecError::Backend(format!(
+                "{} has no Vulkan Video encoder for {:?} (or FFmpeg is older than 7.1)",
+                gpu.name(),
+                cfg.codec
+            )));
+        }
+        let device = VulkanDevice::new(Arc::new(gpu))?;
+        // SAFETY: every pointer is checked before use and released in Drop;
+        // the struct is built first, so Drop sees nulls for anything not
+        // yet created.
+        unsafe {
+            let mut enc = Self {
+                ctx: ptr::null_mut(),
+                frames: ptr::null_mut(),
+                hw: ffi::av_frame_alloc(),
+                sw: ffi::av_frame_alloc(),
+                pkt: ffi::av_packet_alloc(),
+                codec: cfg.codec,
+                width: cfg.width,
+                height: cfg.height,
+                fps: cfg.fps,
+                converter: None,
+                force_keyframe: true,
+                next_pts: 0,
+                tune: None,
+                device,
+            };
+            if enc.hw.is_null() || enc.sw.is_null() || enc.pkt.is_null() {
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            enc.frames = ffi::av_hwframe_ctx_alloc(enc.device.buf);
+            if enc.frames.is_null() {
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            let fc = (*enc.frames).data.cast::<ffi::AVHWFramesContext>();
+            (*fc).format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN;
+            (*fc).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            (*fc).width = cfg.width as c_int;
+            (*fc).height = cfg.height as c_int;
+            // One multi-planar image per frame: the copy below writes both
+            // planes of it.
+            (*(*fc).hwctx.cast::<ffi::AVVulkanFramesContext>()).flags =
+                ffi::AVVkFrameFlags::AV_VK_FRAME_FLAG_NONE;
+            check(
+                "set up the encoder's frame pool",
+                ffi::av_hwframe_ctx_init(enc.frames),
+            )?;
+            enc.ctx = enc.open_codec(cfg.bitrate_kbps)?;
+
+            (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*enc.sw).width = cfg.width as c_int;
+            (*enc.sw).height = cfg.height as c_int;
+            check("allocate upload frame", ffi::av_frame_get_buffer(enc.sw, 0))?;
+            Ok(enc)
+        }
+    }
+
+    /// The codec context: CBR at `kbps`, on this encoder's frame pool.
+    ///
+    /// # Safety
+    /// `self.frames` is an initialised frame pool.
+    unsafe fn open_codec(&mut self, kbps: u32) -> Result<*mut ffi::AVCodecContext, CodecError> {
+        // The lowest-latency tuning the driver takes, found once: NVIDIA's
+        // (GTX 1080) has no ultra-low-latency profile and refuses the
+        // whole profile.
+        let tunes = match self.tune {
+            Some(known) => vec![known],
+            None => TUNES.to_vec(),
+        };
+        let mut tried = Vec::new();
+        for tune in tunes {
+            // SAFETY: passed on.
+            match unsafe { self.open_tuned(kbps, tune) } {
+                Ok(ctx) => {
+                    self.tune = Some(tune);
+                    return Ok(ctx);
+                }
+                Err(e) => tried.push(e.to_string()),
+            }
+        }
+        Err(CodecError::Backend(tried.join("; ")))
+    }
+
+    /// [`Self::open_codec`] with one tuning (`None`: the driver's default).
+    ///
+    /// # Safety
+    /// As for [`Self::open_codec`].
+    unsafe fn open_tuned(
+        &self,
+        kbps: u32,
+        tune: Tune,
+    ) -> Result<*mut ffi::AVCodecContext, CodecError> {
+        let names = ff::names(self.codec, ff::Backend::Vulkan)?;
+        let mut opts = vec![
+            (c"async_depth", c"1"),
+            (c"rc_mode", c"cbr"),
+            (c"content", c"desktop"),
+        ];
+        opts.extend(tune.map(|t| (c"tune", t)));
+        if let Some(profile) = names.profile {
+            opts.push((c"profile", profile));
+        }
+        let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        // SAFETY: open_encoder hands over a fresh context; frames is valid
+        // per the contract.
+        unsafe {
+            ff::open_encoder(names.encoder, &opts, |c| {
+                (*c).width = width as c_int;
+                (*c).height = height as c_int;
+                (*c).time_base = ffi::AVRational {
+                    num: 1,
+                    den: fps as c_int,
+                };
+                (*c).framerate = ffi::AVRational {
+                    num: fps as c_int,
+                    den: 1,
+                };
+                (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN;
+                // The video profile (chroma subsampling, bit depth) comes
+                // from it (vulkan_encode.c, init_profile).
+                (*c).sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+                (*c).hw_frames_ctx = ffi::av_buffer_ref(frames);
+                (*c).max_b_frames = 0;
+                (*c).gop_size = GOP;
+                (*c).keyint_min = GOP;
+                ff::set_cbr(c, kbps, fps);
+                (*c).flags |=
+                    (ffi::AV_CODEC_FLAG_LOW_DELAY | ffi::AV_CODEC_FLAG_CLOSED_GOP) as c_int;
+                (*c).thread_count = 1;
+                // The way the converter makes YCbCr, written into the
+                // stream.
+                signal_bt709_limited(c);
+            })
+        }
+    }
+
+    /// CPU NV12 → `self.hw`.
+    ///
+    /// # Safety
+    /// `self.hw` is an empty frame.
+    unsafe fn upload(&mut self, frame: &Frame) -> Result<(), CodecError> {
+        if frame.format != PixelFormat::Nv12
+            || frame.width != self.width
+            || frame.height != self.height
+            || frame.data.len() < PixelFormat::Nv12.frame_bytes(self.width, self.height)
+        {
+            return Err(CodecError::Backend(
+                "input must be NV12 at the configured size".into(),
+            ));
+        }
+        // SAFETY: as the caller promises; sw was allocated for this size.
+        unsafe {
+            check(
+                "get an encoder image",
+                ffi::av_hwframe_get_buffer(self.frames, self.hw, 0),
+            )?;
+            check(
+                "make upload frame writable",
+                ffi::av_frame_make_writable(self.sw),
+            )?;
+            nv12_into_frame(
+                &frame.data,
+                self.sw,
+                self.width as usize,
+                self.height as usize,
+            );
+            check(
+                "upload to the GPU",
+                ffi::av_hwframe_transfer_data(self.hw, self.sw, 0),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The screen → NV12 → an encoder image, in one submission on the GPU.
+    ///
+    /// # Safety
+    /// `self.hw` is an empty frame.
+    unsafe fn convert_dmabuf(&mut self, image: &DmaBuf) -> Result<(), CodecError> {
+        let backend = |e: String| CodecError::Backend(e);
+        if self.converter.is_none() {
+            let gpu = self.device.gpu.clone();
+            let name = gpu.name().to_string();
+            self.converter =
+                Some(Converter::on_device(gpu, self.width, self.height).map_err(backend)?);
+            log::info!("Vulkan Video takes the screen on {name} without leaving the GPU");
+        }
+        let converter = self.converter.as_mut().expect("made above");
+        let layout = converter.layout();
+        // SAFETY: as the caller promises; the frame is a multi-planar image
+        // of our pool (flags NONE), locked while its state is read and
+        // written around the submission.
+        unsafe {
+            check(
+                "get an encoder image",
+                ffi::av_hwframe_get_buffer(self.frames, self.hw, 0),
+            )?;
+            let sync = FrameSync { frame: self.hw };
+            let (_, vkf) = sync.parts();
+            if (*vkf).img[1] != 0 {
+                return Err(CodecError::Backend(
+                    "the encoder's images have one image per plane".into(),
+                ));
+            }
+            let target = vk::Image::from_raw((*vkf).img[0]);
+            let access = sync.begin();
+            let timeline = Timeline {
+                semaphore: vk::Semaphore::from_raw(access.semaphore),
+                wait: access.wait,
+                signal: access.wait + 1,
+            };
+            let (w, h) = (layout.width, layout.height);
+            let result = converter.convert_with(
+                image,
+                |d, cmd, buffer| {
+                    let range = vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1);
+                    let to_dst = vk::ImageMemoryBarrier::default()
+                        .image(target)
+                        .old_layout(vk::ImageLayout::from_raw(access.layout))
+                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .src_access_mask(vk::AccessFlags::from_raw(access.access as u32))
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .subresource_range(range);
+                    d.cmd_pipeline_barrier(
+                        cmd,
+                        vk::PipelineStageFlags::ALL_COMMANDS,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[to_dst],
+                    );
+                    let plane = |aspect, offset, row_texels, width, height| {
+                        vk::BufferImageCopy::default()
+                            .buffer_offset(offset)
+                            .buffer_row_length(row_texels)
+                            .image_subresource(
+                                vk::ImageSubresourceLayers::default()
+                                    .aspect_mask(aspect)
+                                    .layer_count(1),
+                            )
+                            .image_extent(vk::Extent3D {
+                                width,
+                                height,
+                                depth: 1,
+                            })
+                    };
+                    // Row lengths count texels: one byte for Y, two for UV.
+                    let copies = [
+                        plane(vk::ImageAspectFlags::PLANE_0, 0, layout.pitch, w, h),
+                        plane(
+                            vk::ImageAspectFlags::PLANE_1,
+                            layout.uv_offset,
+                            layout.pitch / 2,
+                            w / 2,
+                            h / 2,
+                        ),
+                    ];
+                    d.cmd_copy_buffer_to_image(
+                        cmd,
+                        buffer,
+                        target,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &copies,
+                    );
+                },
+                Some(timeline),
+            );
+            sync.end(
+                result.is_ok(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL.as_raw(),
+                u64::from(vk::AccessFlags::TRANSFER_WRITE.as_raw()),
+            );
+            result.map_err(backend)
+        }
+    }
+
+    /// Screen buffers whose import is kept (see `DmaBuf::identity`).
+    pub fn cached_imports(&self) -> usize {
+        self.converter.as_ref().map_or(0, Converter::cached_imports)
+    }
+}
+
+impl Encoder for VulkanEncoder {
+    fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
+        out.data.clear();
+        out.keyframe = false;
+        // SAFETY: all pointers were created in new() and stay valid.
+        unsafe {
+            ffi::av_frame_unref(self.hw);
+            match &frame.dmabuf {
+                Some(image) => self.convert_dmabuf(image)?,
+                None => self.upload(frame)?,
+            }
+            (*self.hw).pts = self.next_pts;
+            self.next_pts += 1;
+            if self.force_keyframe {
+                // Makes FFmpeg's hardware encoders emit an IDR frame.
+                (*self.hw).pict_type = ffi::AVPictureType::AV_PICTURE_TYPE_I;
+            }
+            check("send frame", ffi::avcodec_send_frame(self.ctx, self.hw))?;
+            self.force_keyframe = false;
+            loop {
+                let r = ffi::avcodec_receive_packet(self.ctx, self.pkt);
+                if eagain(r) {
+                    break;
+                }
+                check("receive packet", r)?;
+                let p = &*self.pkt;
+                out.data
+                    .extend_from_slice(std::slice::from_raw_parts(p.data, p.size as usize));
+                out.keyframe |= p.flags & ffi::AV_PKT_FLAG_KEY as c_int != 0;
+                ffi::av_packet_unref(self.pkt);
+            }
+        }
+        if out.data.is_empty() {
+            // With no B-frames and async_depth 1 this must not happen; a
+            // buffering encoder would add a frame of latency.
+            return Err(CodecError::Backend(
+                "encoder returned no packet for the frame".into(),
+            ));
+        }
+        out.seq = frame.seq;
+        out.capture_us = frame.capture_us;
+        out.capture_ready_us = frame.ready_us;
+        out.encoded_us = now_us();
+        Ok(())
+    }
+
+    fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError> {
+        // FFmpeg sets the rate control when the codec opens: a new codec
+        // context on the same device and frame pool. It starts with a
+        // keyframe.
+        // SAFETY: frames is initialised (new() succeeded); no frame is in
+        // flight between encode() calls, so the old context can go.
+        unsafe {
+            let ctx = self.open_codec(kbps)?;
+            ffi::avcodec_free_context(&mut self.ctx);
+            self.ctx = ctx;
+        }
+        self.force_keyframe = true;
+        Ok(())
+    }
+}
+
+impl Drop for VulkanEncoder {
+    fn drop(&mut self) {
+        self.converter = None;
+        self.device.gpu.wait_idle();
+        // SAFETY: each pointer is either null or owned by us; the device
+        // context outlives them (dropped after this).
+        unsafe {
+            ffi::avcodec_free_context(&mut self.ctx);
+            ffi::av_frame_free(&mut self.hw);
+            ffi::av_frame_free(&mut self.sw);
+            ffi::av_packet_free(&mut self.pkt);
+            ffi::av_buffer_unref(&mut self.frames);
         }
     }
 }

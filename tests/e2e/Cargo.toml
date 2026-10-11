@@ -12,8 +12,8 @@ publish.workspace = true
 vaapi = ["fernsicht-host-agent/vaapi", "fernsicht-client/vaapi"]
 # The same on the NVIDIA runner, with NVENC/NVDEC.
 nvidia = ["fernsicht-host-agent/nvidia", "fernsicht-client/nvidia"]
-# The client decodes with Vulkan Video (tests/gpu.rs, with one of the above).
-vulkan = ["fernsicht-client/vulkan"]
+# Vulkan Video on both sides (tests/gpu.rs, with one of the above).
+vulkan = ["fernsicht-host-agent/vulkan", "fernsicht-client/vulkan"]
 
 [dependencies]
 fernsicht-client.workspace = true
@@ -28,6 +28,8 @@ fernsicht-proto.workspace = true
 escargot.workspace = true
 # tests/web_gpu.rs decodes what the browser side received.
 fernsicht-codec.workspace = true
+# tests/gpu.rs asks the GPU what it does with Vulkan Video.
+fernsicht-gpu.workspace = true
 serde_json.workspace = true
 str0m.workspace = true
 

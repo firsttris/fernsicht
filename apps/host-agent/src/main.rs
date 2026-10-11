@@ -41,11 +41,12 @@ struct Args {
     #[arg(long, default_value_t = 400)]
     pace_mbit: u64,
     /// Video encoder: "auto" (the GPU's: VAAPI on AMD/Intel, NVENC on
-    /// NVIDIA), "vaapi", "nvenc" or "synthetic" (no GPU, no real picture);
-    /// the hardware ones need the build features "vaapi"/"nvidia".
+    /// NVIDIA), "vaapi", "nvenc", "vulkan" (Vulkan Video on any GPU) or
+    /// "synthetic" (no GPU, no real picture); the hardware ones need the
+    /// build features "vaapi"/"nvidia"/"vulkan".
     #[arg(long, value_enum, default_value_t = EncoderArg::Synthetic)]
     encoder: EncoderArg,
-    /// GPU render node for --encoder vaapi.
+    /// GPU render node for --encoder vaapi and vulkan.
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: String,
     /// Picture source: "test-pattern" or "kms" (the monitor; needs a build
@@ -181,6 +182,7 @@ enum EncoderArg {
     Synthetic,
     Vaapi,
     Nvenc,
+    Vulkan,
 }
 
 fn hostname() -> String {
@@ -225,6 +227,9 @@ fn main() -> anyhow::Result<()> {
         },
         EncoderArg::Nvenc => EncoderKind::Nvenc {
             gpu: args.cuda_device,
+        },
+        EncoderArg::Vulkan => EncoderKind::Vulkan {
+            render_node: args.render_node,
         },
     };
     let cfg = HostConfig {

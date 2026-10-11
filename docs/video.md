@@ -58,6 +58,26 @@ display or no root, e.g. in CI.
     on 256 bytes); CUDA imports that memory once, and NVENC reads it as its input frame, without a
     copy. Measured on the GTX 1080: 2.26 ms per 1080p frame for import, conversion and encode.
 
+=== "Any GPU (Vulkan Video)"
+
+    ```text
+    DMA-BUF (RGB) ──import──► Vulkan image ──compute shader──► NV12 buffer ──copy──► encoder image ──► h264/hevc/av1_vulkan
+    ```
+
+    `--encoder vulkan`: the same import and compute shader as on NVIDIA, but the buffer stays on the
+    device: in the same submission it is copied into an image of the pool of FFmpeg's Vulkan encoder
+    (both planes of one multi-planar image), which waits for and signals the image's timeline
+    semaphore. No CUDA, no second API. FFmpeg 7.1 or newer at runtime. Measured on the GTX 1080:
+    1.7 ms per 1080p H.264 frame for import, conversion, copy and encode (NVENC through CUDA: 2.25
+    ms), 2.1 ms for HEVC. Its rate control keeps less strictly to one frame: a keyframe at 20 Mbit/s
+    is about 1.6 frames' worth (NVENC: one). Not chosen by `--encoder auto` yet; intra refresh is
+    NVENC's only.
+
+    Tuning: the lowest-latency mode the driver takes (ultra-low latency, else low latency; NVIDIA's
+    driver on the GTX 1080 refuses the first for the whole profile). IDR frames come on request, and
+    else every 2^15 frames (9 minutes at 60 fps): FFmpeg sizes HEVC's picture order count to the
+    GOP, which has at most 16 bits (`vulkan_encode_h265.c`).
+
 === "No GPU (synthetic)"
 
     The synthetic codec makes frames of realistic size for the bitrate, with a checksum instead of a

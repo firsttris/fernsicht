@@ -909,9 +909,26 @@ renderer samples the decoded image in place, waiting for and signalling its time
 picture against 0.31 ms for NVDEC's CUDA copy, the same decode time (same engine), no decode errors
 through a 300 ms blackout with and without intra refresh. Tests: the renderer draws Vulkan-decoded
 H.264 and HEVC like the CPU path, and end to end NVENC → Vulkan Video at 1080p60. It needs FFmpeg
-7.1 at runtime; the AppImage still carries Ubuntu 24.04's FFmpeg 6.1, so there "auto" stays with
-VAAPI/NVDEC until the release build gets a newer FFmpeg. Left: encoding with Vulkan Video on the
-host.
+7.1 at runtime.
+
+D1, second part: the host encodes with Vulkan Video (`--encoder vulkan`). The converter writes NV12
+into a buffer that stays on the device and, in the same submission, copies it into an image of
+FFmpeg's encoder pool, waiting for and signalling its timeline semaphore; no CUDA. On the GTX 1080
+at 1080p: 1.7 ms from the screen's DMA-BUF to an H.264 frame against 2.25 ms with NVENC through CUDA,
+and 3.6 ms glass-to-glass (without the display) with Vulkan Video on both sides against 4.8 ms with
+NVENC and NVDEC. Two details from FFmpeg's source: the video profile comes from `sw_pix_fmt`
+(`vulkan_encode.c`), and HEVC's picture order count is sized to the GOP, at most 16 bits
+(`vulkan_encode_h265.c`), so the "endless" GOP is 2^15 frames. NVIDIA's driver refuses the
+ultra-low-latency tuning, so the encoder takes the lowest-latency one the driver offers. `auto`
+stays with VAAPI/NVENC for now: Vulkan Video's keyframes are about 1.6 frames' worth (NVENC keeps
+to one) and intra refresh is NVENC's. Tests: H.264 and HEVC round trips from CPU pictures and from
+DMA-BUFs (colours against BT.709), keyframes on request and a bitrate change, and end to end with
+Vulkan Video on both sides through 1 % loss.
+
+The AppImage gets FFmpeg 8.1: the release still builds on Ubuntu 24.04 (glibc 2.39, so it starts
+on Ubuntu 24.04, Mint 22 and Debian 13 as well), whose FFmpeg 6.1 is too old, and builds its own
+(`packaging/ffmpeg.sh`: pinned sources, only what Fernsicht uses, LGPL, 5 MB, cached per version).
+The GPU tests pass against that build as well.
 
 ## E. Clean code and consistency
 

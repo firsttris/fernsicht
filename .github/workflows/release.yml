@@ -24,18 +24,18 @@ jobs:
   build:
     name: Build · AppImage
     needs: checks
-    # The oldest Ubuntu the app builds on (FFmpeg 6.1): the AppImage then
-    # runs on distributions with this glibc or newer.
+    # An old Ubuntu: the AppImage runs on distributions with this glibc or
+    # newer. Its FFmpeg (6.1) is too old for Vulkan Video, so the AppImage
+    # carries one of its own (packaging/ffmpeg.sh).
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: System packages (FFmpeg, VAAPI, WebKitGTK for the bundler)
+      - name: System packages (VAAPI, WebKitGTK for the bundler)
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev \
-            libswscale-dev libswresample-dev libva-dev libdrm-dev \
+            libva-dev libdrm-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev patchelf file
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable branch, 2026-09-11
@@ -51,7 +51,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Built once per version (the script's content), then from the cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/ffmpeg
+          key: ffmpeg-ubuntu-24.04-${{ hashFiles('packaging/ffmpeg.sh') }}
+      - run: ./packaging/ffmpeg.sh target/ffmpeg
+      # The programs link against it, and the bundler takes it along.
       - run: ./packaging/appimage.sh
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/target/ffmpeg/lib/pkgconfig
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/ffmpeg/lib
       - name: Collect release files
         run: |
           set -euo pipefail

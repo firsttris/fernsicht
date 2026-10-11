@@ -240,7 +240,9 @@ impl HostAgent {
     /// The encoder's GPU at full clocks while the session runs.
     fn gpu_boost(&self) -> Option<crate::power::GpuBoost> {
         match &self.cfg.encoder {
-            EncoderKind::Vaapi { render_node } if self.cfg.settings.gpu_boost() => {
+            EncoderKind::Vaapi { render_node } | EncoderKind::Vulkan { render_node }
+                if self.cfg.settings.gpu_boost() =>
+            {
                 let plan = crate::power::plan(Path::new("/sys"), render_node);
                 Some(crate::power::GpuBoost::apply(
                     plan,

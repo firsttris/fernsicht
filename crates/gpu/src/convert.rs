@@ -1,10 +1,13 @@
 //! RGB DMA-BUF → NV12 for hardware encoders that take neither RGB nor
-//! foreign DMA-BUFs directly (NVENC).
+//! foreign DMA-BUFs directly (NVENC, Vulkan Video).
 //!
 //! A compute shader samples the imported picture (scaling it to the stream
-//! size) and writes NV12, BT.709 limited range, into a linear buffer whose
-//! memory can be exported as an opaque file descriptor. CUDA imports that
-//! buffer once and copies each frame into the encoder's input on the GPU.
+//! size) and writes NV12, BT.709 limited range, into a linear buffer. For
+//! NVENC its memory is exported as an opaque file descriptor: CUDA imports
+//! that buffer once and copies each frame into the encoder's input on the
+//! GPU. For Vulkan Video the buffer stays on the device and the caller
+//! copies it into the encoder's image in the same submission
+//! ([`Converter::convert_with`]).
 
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::Arc;
@@ -14,8 +17,7 @@ use fernsicht_capture::DmaBuf;
 use fernsicht_capture::dmabuf::BufferIdentity;
 
 use crate::Gpu;
-use crate::device::err;
-use crate::device::submit_and_wait;
+use crate::device::{Timeline, err, submit_and_wait, submit_timeline, wait_fence};
 use crate::import;
 
 /// The conversion shader (`convert.wgsl`), compiled by the build script.
@@ -78,6 +80,9 @@ pub struct Converter {
     output: vk::Buffer,
     output_memory: vk::DeviceMemory,
     output_allocation: u64,
+    /// The output is exported to another API (CUDA), which takes it over
+    /// after each conversion.
+    exported: bool,
     /// Recently imported pictures, the most recent last.
     imports: Vec<(BufferIdentity, import::Plane)>,
 }
@@ -91,8 +96,19 @@ const MAX_IMPORTS: usize = 4;
 unsafe impl Send for Converter {}
 
 impl Converter {
-    /// Converts to `width`×`height`. The GPU must have DMA-BUF import.
+    /// Converts to `width`×`height` into memory CUDA can import
+    /// ([`Self::export_output`]). The GPU must have DMA-BUF import.
     pub fn new(gpu: Arc<Gpu>, width: u32, height: u32) -> Result<Self, String> {
+        Self::create(gpu, width, height, true)
+    }
+
+    /// Converts to `width`×`height` into a buffer that stays on the device,
+    /// for a copy recorded with [`Self::convert_with`].
+    pub fn on_device(gpu: Arc<Gpu>, width: u32, height: u32) -> Result<Self, String> {
+        Self::create(gpu, width, height, false)
+    }
+
+    fn create(gpu: Arc<Gpu>, width: u32, height: u32, exported: bool) -> Result<Self, String> {
         let layout = Nv12Layout::new(width, height)?;
         if !gpu.can_import_dmabuf() {
             return Err(format!("{} cannot import DMA-BUFs", gpu.name()));
@@ -114,6 +130,7 @@ impl Converter {
             output: vk::Buffer::null(),
             output_memory: vk::DeviceMemory::null(),
             output_allocation: 0,
+            exported,
             imports: Vec::new(),
         };
         // SAFETY: object creation on a valid device; Drop destroys whatever
@@ -225,39 +242,35 @@ impl Converter {
         Ok(c)
     }
 
-    /// The output buffer, in memory another API (CUDA) can import.
+    /// The output buffer, in memory another API (CUDA) can import if
+    /// exported.
     unsafe fn create_output(&mut self) -> Result<(), String> {
         let d = &self.gpu.device;
         let handle = vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD;
         // SAFETY: valid device; Drop frees the objects.
         unsafe {
             let mut external = vk::ExternalMemoryBufferCreateInfo::default().handle_types(handle);
-            self.output = d
-                .create_buffer(
-                    &vk::BufferCreateInfo::default()
-                        .size(self.layout.len())
-                        .usage(
-                            vk::BufferUsageFlags::STORAGE_BUFFER
-                                | vk::BufferUsageFlags::TRANSFER_SRC,
-                        )
-                        .push_next(&mut external),
-                    None,
-                )
-                .map_err(err("output buffer"))?;
+            let mut info = vk::BufferCreateInfo::default()
+                .size(self.layout.len())
+                .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC);
+            if self.exported {
+                info = info.push_next(&mut external);
+            }
+            self.output = d.create_buffer(&info, None).map_err(err("output buffer"))?;
             let req = d.get_buffer_memory_requirements(self.output);
             let ty = self
                 .gpu
                 .memory_type(req.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)
                 .ok_or("no device-local memory for the output buffer")?;
             let mut export = vk::ExportMemoryAllocateInfo::default().handle_types(handle);
+            let mut info = vk::MemoryAllocateInfo::default()
+                .allocation_size(req.size)
+                .memory_type_index(ty);
+            if self.exported {
+                info = info.push_next(&mut export);
+            }
             self.output_memory = d
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::default()
-                        .allocation_size(req.size)
-                        .memory_type_index(ty)
-                        .push_next(&mut export),
-                    None,
-                )
+                .allocate_memory(&info, None)
                 .map_err(err("output memory"))?;
             self.output_allocation = req.size;
             d.bind_buffer_memory(self.output, self.output_memory, 0)
@@ -355,6 +368,19 @@ impl Converter {
     /// through two or three, and capture hands out a new descriptor for
     /// the same buffer every frame.
     pub fn convert(&mut self, image: &DmaBuf) -> Result<(), String> {
+        self.convert_with(image, |_, _, _| {}, None)
+    }
+
+    /// [`Self::convert`], then `after` records more commands into the same
+    /// submission (given the output buffer, ready to be read by
+    /// transfers), which waits for and signals `timeline`. Returns when
+    /// the GPU is done.
+    pub fn convert_with(
+        &mut self,
+        image: &DmaBuf,
+        after: impl FnOnce(&ash::Device, vk::CommandBuffer, vk::Buffer),
+        timeline: Option<Timeline>,
+    ) -> Result<(), String> {
         let key = image.identity();
         let cached = key
             .as_ref()
@@ -365,7 +391,7 @@ impl Converter {
         };
         // SAFETY: the plane and our objects are valid; a plane is destroyed
         // only after the GPU finished with it (or the device idled).
-        let result = unsafe { self.run(plane.image, plane.view) };
+        let result = unsafe { self.run(plane.image, plane.view, after, timeline) };
         if result.is_err() {
             self.gpu.wait_idle();
         }
@@ -387,7 +413,13 @@ impl Converter {
         self.imports.len()
     }
 
-    unsafe fn run(&mut self, image: vk::Image, view: vk::ImageView) -> Result<(), String> {
+    unsafe fn run(
+        &mut self,
+        image: vk::Image,
+        view: vk::ImageView,
+        after: impl FnOnce(&ash::Device, vk::CommandBuffer, vk::Buffer),
+        timeline: Option<Timeline>,
+    ) -> Result<(), String> {
         let d = &self.gpu.device;
         let family = self.gpu.queue_family;
         // SAFETY: see convert().
@@ -426,8 +458,8 @@ impl Converter {
                 .level_count(1)
                 .layer_count(1);
             // Take the picture over from its producer (the display engine);
-            // GENERAL keeps its contents. The output buffer comes back from
-            // CUDA.
+            // GENERAL keeps its contents. An exported output buffer comes
+            // back from CUDA.
             let acquire_image = vk::ImageMemoryBarrier::default()
                 .image(image)
                 .subresource_range(range)
@@ -442,13 +474,14 @@ impl Converter {
                 .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
                 .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
                 .dst_queue_family_index(family);
+            let acquire_output = [acquire_output];
             d.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
-                &[acquire_output],
+                if self.exported { &acquire_output } else { &[] },
                 &[acquire_image],
             );
             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
@@ -488,18 +521,33 @@ impl Converter {
                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                 .src_queue_family_index(family)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
+            // Kept on the device: written, then read by the caller's
+            // transfers.
+            let written = vk::BufferMemoryBarrier::default()
+                .buffer(self.output)
+                .size(vk::WHOLE_SIZE)
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED);
             d.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::BOTTOM_OF_PIPE,
                 vk::DependencyFlags::empty(),
                 &[],
-                &[release_output],
+                &[if self.exported {
+                    release_output
+                } else {
+                    written
+                }],
                 &[release_image],
             );
+            after(d, cmd, self.output);
             d.end_command_buffer(cmd)
                 .map_err(err("end command buffer"))?;
-            submit_and_wait(&self.gpu, &[cmd], self.fence)
+            submit_timeline(&self.gpu, &[cmd], None, None, timeline, self.fence)?;
+            wait_fence(&self.gpu, self.fence)
         }
     }
 }

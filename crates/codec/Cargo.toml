@@ -16,7 +16,7 @@ vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc", "dep:log"]
 # through Vulkan.
 nvidia = ["dep:ffmpeg-next", "dep:libc", "dep:libloading", "dep:log", "dep:fernsicht-gpu"]
 # AV1, HEVC and H.264 with Vulkan Video via FFmpeg, on our own Vulkan
-# device (any GPU whose driver has it). Needs FFmpeg built with Vulkan.
+# device (any GPU whose driver has it); FFmpeg 7.1 or newer at runtime.
 vulkan = [
     "dep:ffmpeg-next",
     "dep:ffmpeg-sys-next",
@@ -40,7 +40,7 @@ fernsicht-proto.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-# The NVIDIA tests put RGB pictures on the GPU as DMA-BUFs.
+# The NVIDIA and Vulkan tests put RGB pictures on the GPU as DMA-BUFs.
 fernsicht-gpu.workspace = true
 proptest.workspace = true
 

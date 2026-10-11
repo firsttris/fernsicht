@@ -118,7 +118,9 @@ impl HostDescription {
     /// This machine, encoding with `encoder`.
     pub fn of_this_machine(encoder: &EncoderKind) -> Self {
         let node = match encoder {
-            EncoderKind::Vaapi { render_node } => Some(render_node.clone()),
+            EncoderKind::Vaapi { render_node } | EncoderKind::Vulkan { render_node } => {
+                Some(render_node.clone())
+            }
             EncoderKind::Nvenc { .. } => render_nodes(Path::new("/sys"))
                 .into_iter()
                 .find(|(_, v)| *v == NVIDIA)
@@ -161,6 +163,8 @@ fn best_codec(encoder: &EncoderKind) -> Option<Codec> {
             EncoderKind::Vaapi { render_node } => fernsicht_codec::vaapi::encodes(render_node, c),
             #[cfg(feature = "nvidia")]
             EncoderKind::Nvenc { gpu } => fernsicht_codec::nvidia::encodes(*gpu, c),
+            #[cfg(feature = "vulkan")]
+            EncoderKind::Vulkan { render_node } => fernsicht_codec::vulkan::encodes(render_node, c),
             _ => false,
         })
 }
@@ -228,6 +232,9 @@ pub enum EncoderKind {
     /// Hardware AV1, HEVC or H.264 with NVENC (needs the `nvidia` feature
     /// and an NVIDIA GPU; `gpu` is the CUDA device index).
     Nvenc { gpu: u32 },
+    /// Hardware AV1, HEVC or H.264 with Vulkan Video on the GPU behind the
+    /// render node (needs the `vulkan` feature and FFmpeg 7.1).
+    Vulkan { render_node: String },
 }
 
 impl Default for HostConfig {

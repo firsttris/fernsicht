@@ -84,12 +84,24 @@ jobs:
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-codec --features vaapi --test vaapi -- --test-threads=1 --nocapture
+      # Vulkan Video through FFmpeg on our own device, on both GPUs (each
+      # test skips what its driver does not do).
+      - name: Vulkan Video encode/decode on the GPU
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        env:
+          FERNSICHT_GPU: ${{ matrix.gpu }}
+        run: >
+          scripts/annotate-failures.sh
+          cargo test -p fernsicht-codec --features vulkan --test vulkan -- --test-threads=1 --nocapture
       - name: Real video end to end (host → impaired link → client; web viewer)
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}
         timeout-minutes: 10
         env:
           FERNSICHT_GPU: amd
-        run: cargo test -p fernsicht-e2e --features vaapi,vulkan --no-fail-fast --test gpu --test web_gpu -- --nocapture
+        run: >
+          scripts/annotate-failures.sh
+          cargo test -p fernsicht-e2e --features vaapi,vulkan --no-fail-fast --test gpu --test web_gpu -- --nocapture
       - name: NVENC/NVDEC on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
         timeout-minutes: 10
@@ -101,4 +113,6 @@ jobs:
         timeout-minutes: 10
         env:
           FERNSICHT_GPU: nvidia
-        run: cargo test -p fernsicht-e2e --features nvidia,vulkan --no-fail-fast --test gpu --test web_gpu -- --nocapture
+        run: >
+          scripts/annotate-failures.sh
+          cargo test -p fernsicht-e2e --features nvidia,vulkan --no-fail-fast --test gpu --test web_gpu -- --nocapture

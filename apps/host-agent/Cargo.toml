@@ -17,6 +17,9 @@ path = "src/main.rs"
 vaapi = ["fernsicht-codec/vaapi"]
 # Hardware AV1, HEVC and H.264 with NVENC (NVIDIA); CUDA is loaded at runtime.
 nvidia = ["fernsicht-codec/nvidia"]
+# Hardware AV1, HEVC and H.264 with Vulkan Video (any GPU whose driver has
+# it); FFmpeg 7.1 or newer at runtime.
+vulkan = ["fernsicht-codec/vulkan"]
 # Screen capture over KMS (needs CAP_SYS_ADMIN at runtime).
 kms = ["fernsicht-capture/kms"]
 # TypeScript types of what goes to the app and the web viewer (ts-rs).

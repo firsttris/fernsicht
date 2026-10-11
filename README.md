@@ -79,7 +79,7 @@ the [installation guide](https://firsttris.github.io/fernsicht/installation.html
 |---|---|
 | 🖥️ **Remote desktop** | Mouse and keyboard reliably over UDP, every event exactly once; the pointer drawn by the client so it never lags; several monitors with switching in the session; system keys (Meta, Alt+Tab, Ctrl+Alt+Del) in fullscreen or from a menu |
 | 🎮 **Game streaming** | Gaming mode with a captured pointer (relative mouse), up to four controllers that appear on the host as Xbox 360 pads Steam knows, 60 to 144 fps |
-| ⚡ **Low latency** | KMS capture at vblank, zero-copy into VAAPI or NVENC, low-latency encoder settings, Reed-Solomon FEC instead of retransmits, paced UDP, decoded pictures straight into Vulkan, a per-stage latency overlay |
+| ⚡ **Low latency** | KMS capture at vblank, zero-copy into VAAPI, NVENC or Vulkan Video, low-latency encoder settings, Reed-Solomon FEC instead of retransmits, paced UDP, decoded pictures drawn where the GPU decoded them (Vulkan Video), a per-stage latency overlay |
 | 🎞️ **AV1, HEVC, H.264** | Each session takes the best codec both sides do in hardware; switchable in the settings |
 | 🔊 **Sound** | What the host plays, Opus with 5 ms frames, a 15 ms jitter buffer that hides loss |
 | 🔐 **Pairing and encryption** | Pair once with a PIN (SPAKE2, no offline guessing), Noise IK per session, ChaCha20-Poly1305 for every packet, only paired devices get in |

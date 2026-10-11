@@ -13,7 +13,7 @@ if [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null 2>&1; then
 fi
 
 pnpm install --frozen-lockfile
-cargo build --release --locked -p fernsicht-host-agent --features vaapi,kms,nvidia
+cargo build --release --locked -p fernsicht-host-agent --features vaapi,kms,nvidia,vulkan
 cargo build --release --locked -p fernsicht-client --features vaapi,nvidia,vulkan,window
 
 # Tauri takes extra programs as "sidecars", named with the target triple.
@@ -35,6 +35,17 @@ appdir=target/release/bundle/appimage/Fernsicht.AppDir
 for lib in libva.so libva-drm.so libva-x11.so libva-wayland.so libdrm.so libdrm_ \
     libvdpau.so libvulkan.so libgbm.so libEGL.so libGL.so libGLX.so libcuda.so libnvidia; do
     rm -f "$appdir/usr/lib/$lib"*
+done
+# The FFmpeg the programs were built against must be in the image (the
+# release builds its own: packaging/ffmpeg.sh).
+for bin in fernsicht-client fernsicht-host-agent; do
+    for lib in $(readelf -d "../../target/release/$bin" |
+        sed -n 's/.*(NEEDED).*\[\(libav[a-z]*\.so\.[0-9]*\)\]/\1/p'); do
+        if [ ! -e "$appdir/usr/lib/$lib" ]; then
+            echo "$lib ($bin) is not in the AppImage" >&2
+            exit 1
+        fi
+    done
 done
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)

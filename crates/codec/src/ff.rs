@@ -1,8 +1,5 @@
 //! FFmpeg helpers shared by the hardware backends.
 
-// The Vulkan backend only decodes so far.
-#![cfg_attr(not(any(feature = "vaapi", feature = "nvidia")), allow(dead_code))]
-
 use std::ffi::{CStr, c_int};
 use std::ptr;
 

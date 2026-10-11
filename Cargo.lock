@@ -1277,6 +1277,7 @@ dependencies = [
  "fernsicht-client",
  "fernsicht-codec",
  "fernsicht-core",
+ "fernsicht-gpu",
  "fernsicht-host-agent",
  "fernsicht-input",
  "fernsicht-net",

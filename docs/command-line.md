@@ -21,7 +21,7 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 | `--max-width`, `--max-height` | `3840`, `2160` | upper bound for the stream size; a client asking for the host's size gets the screen's, scaled down to fit |
 | `--max-fps` | `144` | upper bound for the frame rate a client may ask for |
 | `--max-bitrate` | `80000` | upper bound for the bitrate, kbit/s |
-| `--encoder` | `synthetic` | `auto` (the GPU's: VAAPI on AMD/Intel, NVENC on NVIDIA; with several GPUs the one that drives a monitor), `vaapi`, `nvenc`, or `synthetic` (no GPU, no real picture). The service uses `auto`. The hardware encoders need the build features `vaapi` / `nvidia` |
+| `--encoder` | `synthetic` | `auto` (the GPU's: VAAPI on AMD/Intel, NVENC on NVIDIA; with several GPUs the one that drives a monitor), `vaapi`, `nvenc`, `vulkan` (Vulkan Video on the GPU behind `--render-node`, [encoding](video.md#conversion-and-encoding)), or `synthetic` (no GPU, no real picture). The service uses `auto`. The hardware encoders need the build features `vaapi` / `nvidia` / `vulkan` |
 | `--render-node` | `/dev/dri/renderD128` | GPU render node for VAAPI |
 | `--cuda-device` | `0` | CUDA device index for NVENC |
 | `--capture` | `test-pattern` | `test-pattern` or `kms` (the monitor; build feature `kms`, needs `CAP_SYS_ADMIN`, see [KMS capture](kms-capture.md)) |

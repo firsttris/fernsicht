@@ -258,11 +258,42 @@ fn intra_refresh_rides_out_a_blackout() {
     assert!(k.frames_awaiting_keyframe > 0, "{k:?}");
 }
 
+/// Whether this GPU decodes (`encode` false) or encodes `codec` with
+/// Vulkan Video; says so when not.
+#[cfg(feature = "vulkan")]
+fn vulkan_video(gpu: &Gpu, codec: Codec, encode: bool) -> bool {
+    use fernsicht_codec::vulkan;
+    let does = if encode {
+        vulkan::encodes(&gpu.render_node, codec)
+    } else {
+        fernsicht_gpu::Gpu::preferring(fernsicht_gpu::Prefer::render_node(&gpu.render_node))
+            .is_ok_and(|g| vulkan::decodes(&g, codec))
+    };
+    if !does {
+        let what = if encode { "encode" } else { "decode" };
+        eprintln!("skipped: no Vulkan Video {what} of {codec:?} here");
+    }
+    does
+}
+
+#[cfg(feature = "vulkan")]
+fn chosen(codec: Codec) -> CodecChoice {
+    match codec {
+        Codec::Hevc => CodecChoice::Hevc,
+        Codec::Av1 => CodecChoice::Av1,
+        _ => CodecChoice::H264,
+    }
+}
+
 #[cfg(feature = "vulkan")]
 #[test]
 fn vulkan_video_decodes_end_to_end() {
     let Some(gpu) = gpu() else { return };
-    for codec in [CodecChoice::H264, CodecChoice::Hevc] {
+    for codec in [Codec::H264, Codec::Hevc] {
+        if !vulkan_video(&gpu, codec, false) {
+            continue;
+        }
+        let codec = chosen(codec);
         let (s, overflows) = stream_with(&gpu, codec, Impairment::none(), |c| {
             c.decoder = DecoderChoice::Vulkan;
         });
@@ -279,6 +310,9 @@ fn vulkan_video_decodes_end_to_end() {
 
     // Losses: a gap the decoder has to wait out (keyframe), and one it
     // decodes across (intra refresh, NVENC only).
+    if !vulkan_video(&gpu, Codec::H264, false) {
+        return;
+    }
     let down = || Impairment {
         blackout: Some((Duration::from_secs(1), Duration::from_millis(300))),
         ..Impairment::none()
@@ -298,5 +332,59 @@ fn vulkan_video_decodes_end_to_end() {
         assert_eq!(s.frames_awaiting_keyframe, 0, "{s:?}");
         assert_eq!(s.decode_errors, 0, "{s:?}");
         assert!(s.frames_presented >= 4 * 60 * 6 / 10, "{s:?}");
+    }
+}
+
+/// The whole way in Vulkan Video: the host encodes with it, the client
+/// decodes with it.
+#[cfg(feature = "vulkan")]
+#[test]
+fn vulkan_video_on_both_sides() {
+    let Some(gpu) = gpu() else { return };
+    let _serial = exclusive();
+    for codec in [Codec::H264, Codec::Hevc] {
+        if !(vulkan_video(&gpu, codec, true) && vulkan_video(&gpu, codec, false)) {
+            continue;
+        }
+        let codec = chosen(codec);
+        let host = Host::start(HostConfig {
+            encoder: EncoderKind::Vulkan {
+                render_node: gpu.render_node.clone(),
+            },
+            ..HostConfig::default()
+        });
+        let stats = host.stats();
+        let link = ImpairedLink::start(host.addr(), Impairment::loss(0.01), Impairment::none(), 7);
+        let s = run(
+            ClientConfig {
+                host: link.addr().to_string(),
+                width: 1920,
+                height: 1080,
+                fps: 60,
+                bitrate_kbps: 20_000,
+                duration: Some(Duration::from_secs(4)),
+                render_node: gpu.render_node.clone(),
+                decoder: DecoderChoice::Vulkan,
+                codec,
+                ..ClientConfig::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("client failed");
+        drop(link);
+        host.stop();
+        let overflows = HostStats::get(&stats.send_overflows);
+        report(
+            &format!("{codec:?} (Vulkan Video → Vulkan Video) 1080p60, 1 % Paketverlust"),
+            &s,
+        );
+        assert_eq!(s.decode_errors, 0, "{s:?}");
+        assert!(s.receiver.packets_recovered > 0, "{s:?}");
+        assert!(
+            u64::from(s.receiver.frames_dropped) <= overflows,
+            "FEC must hide 1 % loss: {s:?}"
+        );
+        assert!(s.frames_presented >= 4 * 60 * 8 / 10, "{s:?}");
+        assert!(s.total.p95 < 50_000, "{:?}", s.total);
     }
 }

@@ -25,7 +25,10 @@ web viewer.
 
 The AppImage bundles its own libraries (FFmpeg, WebKit). It takes the
 graphics drivers (Mesa/VAAPI, NVIDIA, Vulkan) from the system, so that
-hardware encoding matches the installed drivers.
+hardware encoding matches the installed drivers. Its FFmpeg (8.1) is built
+for it with only what Fernsicht uses (`packaging/ffmpeg.sh`): the
+distribution it is built on (Ubuntu 24.04, for a wide range of systems)
+has one too old for Vulkan Video.
 
 ## From source
 

@@ -236,5 +236,22 @@ fn make_hardware_encoder(
         EncoderKind::Nvenc { .. } => {
             anyhow::bail!("this build has no NVENC support (cargo feature \"nvidia\")")
         }
+        #[cfg(feature = "vulkan")]
+        EncoderKind::Vulkan { render_node } => {
+            Ok(Box::new(fernsicht_codec::vulkan::VulkanEncoder::new(
+                &fernsicht_codec::vulkan::VulkanEncoderConfig {
+                    render_node: render_node.clone(),
+                    codec,
+                    width: u32::from(p.width),
+                    height: u32::from(p.height),
+                    fps: u32::from(p.fps),
+                    bitrate_kbps: p.bitrate_kbps,
+                },
+            )?))
+        }
+        #[cfg(not(feature = "vulkan"))]
+        EncoderKind::Vulkan { .. } => {
+            anyhow::bail!("this build has no Vulkan Video support (cargo feature \"vulkan\")")
+        }
     }
 }
