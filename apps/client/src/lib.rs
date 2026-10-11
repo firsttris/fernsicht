@@ -689,6 +689,7 @@ pub fn run_with(
         let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
         let cursor = cursor.clone();
         let monitors = cfg.monitors.clone();
+        let input = cfg.input.clone();
         let print = cfg.print_overlay;
         let hw = Hw {
             render_node: cfg.render_node.clone(),
@@ -710,6 +711,7 @@ pub fn run_with(
                 presenter.as_mut(),
                 &cursor,
                 &monitors,
+                input.as_deref(),
             );
             if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
                 log::error!("recording: {e}");
@@ -1274,6 +1276,7 @@ fn present_loop(
     presenter: &mut dyn Presenter,
     cursor: &Mutex<CursorTracker>,
     monitors: &MonitorControl,
+    input: Option<&InputHandle>,
 ) -> PresentResult {
     // Created on the first frame, from the codec the host announced.
     let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
@@ -1320,6 +1323,14 @@ fn present_loop(
             match result {
                 Ok(()) => {
                     r.keyframes += u64::from(decoded.keyframe);
+                    // The host's stream takes the shape of the monitor shown;
+                    // clicks map onto the picture as it is now.
+                    if decoded.keyframe
+                        && decoded.width > 0
+                        && let Some(input) = input
+                    {
+                        input.set_stream((decoded.width, decoded.height));
+                    }
                     // Latest frame wins at presentation: if a newer frame is
                     // already queued, showing this one would only add latency.
                     if !queue.is_empty() {

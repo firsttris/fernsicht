@@ -1214,13 +1214,20 @@ impl HostAgent {
         }
     }
 
-    /// Fills in what the client left to the host (see [`Self::negotiate`]).
-    fn resolve(&self, mut p: SessionParams, native: (u32, u32)) -> SessionParams {
+    /// The box a session's stream is fitted into: the size the client
+    /// asked for, or the host's limits when it left the size to the host.
+    fn bounds(&self, p: &SessionParams) -> (u16, u16) {
         if p.width == 0 || p.height == 0 {
-            let (w, h) = fit(native, (self.cfg.max_width, self.cfg.max_height));
-            p.width = w;
-            p.height = h;
+            (self.cfg.max_width, self.cfg.max_height)
+        } else {
+            (p.width, p.height)
         }
+    }
+
+    /// Fills in what the client left to the host (see [`Self::negotiate`]):
+    /// the monitor's size fitted into the box, aspect ratio kept.
+    fn resolve(&self, mut p: SessionParams, native: (u32, u32)) -> SessionParams {
+        (p.width, p.height) = fit(native, self.bounds(&p));
         if p.bitrate_kbps == 0 {
             p.bitrate_kbps = default_bitrate_kbps(p.width, p.height, p.fps)
                 .min(self.cfg.max_bitrate_kbps)
@@ -1257,6 +1264,7 @@ impl HostAgent {
         // source tells the size of the screen, for a client that asked for
         // the host's own resolution.
         let source = make_source(&self.cfg.capture, &params)?;
+        let bounds = self.bounds(&params);
         let params = self.resolve(params, (source.width(), source.height()));
         let source = match &self.cfg.capture {
             // The test pattern is drawn at whatever size the session uses.
@@ -1283,15 +1291,17 @@ impl HostAgent {
         shared
             .target_kbps
             .store(params.bitrate_kbps, Ordering::Relaxed);
-        // A new encoder at another bitrate, for encoders that cannot change
-        // it while running.
+        // A new encoder at another bitrate (for encoders that cannot change
+        // it while running) or size (another monitor).
         let rebuild: Rebuild = {
             let kind = self.cfg.encoder.clone();
-            Box::new(move |kbps| {
+            Box::new(move |kbps, (width, height)| {
                 make_encoder(
                     &kind,
                     &SessionParams {
                         bitrate_kbps: kbps,
+                        width,
+                        height,
                         ..params
                     },
                 )
@@ -1361,6 +1371,7 @@ impl HostAgent {
                     encoder,
                     rebuild,
                     params.bitrate_kbps,
+                    ((params.width, params.height), bounds),
                     &shared,
                     &in_slot,
                     &send_tx,
@@ -2106,14 +2117,16 @@ impl RepeatedError {
     }
 }
 
-/// Makes an encoder for another bitrate (kbit/s).
-type Rebuild = Box<dyn FnMut(u32) -> anyhow::Result<Box<dyn Encoder>> + Send>;
+/// Makes an encoder for another bitrate (kbit/s) or stream size.
+type Rebuild = Box<dyn FnMut(u32, (u16, u16)) -> anyhow::Result<Box<dyn Encoder>> + Send>;
 
 #[allow(clippy::too_many_arguments)]
 fn encode_loop(
     mut encoder: Box<dyn Encoder>,
     mut rebuild: Rebuild,
     mut kbps: u32,
+    // The stream's size now, and the box it is fitted into.
+    (mut size, bounds): ((u16, u16), (u16, u16)),
     shared: &Shared,
     in_slot: &Slot<Frame>,
     send_tx: &Sender<EncodedFrame>,
@@ -2123,12 +2136,29 @@ fn encode_loop(
 ) {
     let mut next_frame_id = 0u32;
     let mut errors = RepeatedError::default();
-    // A bitrate the encoder could not be rebuilt for; tried again only
-    // when the target changes, not on every frame.
-    let mut failed_kbps = 0;
+    // A bitrate or size the encoder could not be rebuilt for; tried again
+    // only when the wish changes, not on every frame.
+    let (mut failed_kbps, mut failed_size) = (0, (0, 0));
     while let Some(frame) = in_slot.take() {
         if !shared.running.load(Ordering::Acquire) {
             break;
+        }
+        // Another monitor (switched to) has its own size: the stream takes
+        // its shape instead of squeezing it into the old one. The new
+        // encoder starts with a keyframe that carries the new size.
+        let wanted = fit((frame.width, frame.height), bounds);
+        if wanted != size && wanted != failed_size {
+            match rebuild(kbps, wanted) {
+                Ok(e) => {
+                    log::info!("stream now {}×{}", wanted.0, wanted.1);
+                    encoder = e;
+                    size = wanted;
+                }
+                Err(e) => {
+                    log::warn!("stream size {}×{}: {e:#}", wanted.0, wanted.1);
+                    failed_size = wanted;
+                }
+            }
         }
         let target = shared.target_kbps.load(Ordering::Relaxed);
         if target != kbps && target != failed_kbps && target > 0 {
@@ -2136,7 +2166,7 @@ fn encode_loop(
                 encoder.set_bitrate(target);
                 kbps = target;
             } else {
-                match rebuild(target) {
+                match rebuild(target, size) {
                     // A fresh encoder starts with a keyframe.
                     Ok(e) => {
                         encoder = e;
@@ -2165,6 +2195,7 @@ fn encode_loop(
                     HostStats::bump(&shared.stats.keyframes_encoded);
                 }
                 out.frame_id = next_frame_id;
+                (out.width, out.height) = size;
                 next_frame_id = next_frame_id.wrapping_add(1);
                 match send_tx.try_send(out) {
                     Ok(()) => {}
@@ -2422,6 +2453,58 @@ mod tests {
         // The synthetic encoder does not care what the client decodes.
         let synthetic = make_encoder(&EncoderKind::Synthetic, &params(CodecSet::EMPTY)).unwrap();
         assert_eq!(synthetic.codec(), Codec::Synthetic);
+    }
+
+    #[test]
+    fn the_stream_takes_the_shape_of_the_monitor_shown() {
+        let shared = Arc::new(shared());
+        let slot = Arc::new(Slot::new());
+        let (send_tx, send_rx) = bounded(16);
+        let (free_frames_tx, _free_frames) = bounded(16);
+        let (free_enc_tx, free_enc_rx) = bounded(16);
+        for _ in 0..8 {
+            free_enc_tx.send(EncodedFrame::default()).unwrap();
+        }
+        let rebuilt = Arc::new(Mutex::new(Vec::new()));
+        let rebuild: Rebuild = {
+            let rebuilt = rebuilt.clone();
+            Box::new(move |kbps, size| {
+                rebuilt.lock().unwrap().push(size);
+                Ok(Box::new(SyntheticEncoder::new(kbps, 60)) as Box<dyn Encoder>)
+            })
+        };
+        let encoder = {
+            let (shared, slot) = (shared.clone(), slot.clone());
+            std::thread::spawn(move || {
+                encode_loop(
+                    Box::new(SyntheticEncoder::new(2000, 60)),
+                    rebuild,
+                    2000,
+                    ((1920, 1080), (1920, 1080)),
+                    &shared,
+                    &slot,
+                    &send_tx,
+                    &free_frames_tx,
+                    &free_enc_rx,
+                    &free_enc_tx,
+                );
+            })
+        };
+        // A 16:9 monitor, a 21:9 one, and back.
+        let mut sizes = Vec::new();
+        for (w, h) in [(2560, 1440), (3440, 1440), (3440, 1440), (2560, 1440)] {
+            slot.put(Frame::new(w, h, fernsicht_capture::PixelFormat::Nv12));
+            let out: EncodedFrame = send_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            sizes.push((out.width, out.height));
+        }
+        slot.close();
+        encoder.join().unwrap();
+        assert_eq!(
+            sizes,
+            [(1920, 1080), (1920, 804), (1920, 804), (1920, 1080)]
+        );
+        // Rebuilt only when the shape changed (each with a keyframe).
+        assert_eq!(*rebuilt.lock().unwrap(), [(1920, 804), (1920, 1080)]);
     }
 
     #[test]

@@ -37,6 +37,9 @@ pub struct EncodedFrame {
     pub capture_us: u64,
     pub capture_ready_us: u64,
     pub encoded_us: u64,
+    /// The picture's size (set by the host's encode loop).
+    pub width: u16,
+    pub height: u16,
 }
 
 /// Decoder output: for now metadata only; GPU backends will hand out a

@@ -586,9 +586,14 @@ pub(crate) fn send_loop(
 ) {
     let mut window = Instant::now();
     let (mut frames, mut bytes, mut capture_us, mut encode_us) = (0u64, 0u64, 0u64, 0u64);
+    // The picture's size changes with the monitor shown.
+    let mut size = (params.width, params.height);
     while let Ok(enc) = queue.recv() {
         if !shared.running.load(Ordering::Acquire) {
             break;
+        }
+        if enc.width > 0 && enc.height > 0 {
+            size = (enc.width, enc.height);
         }
         frames += 1;
         bytes += enc.data.len() as u64;
@@ -612,8 +617,8 @@ pub(crate) fn send_loop(
                 "encodeUs": encode_us / frames,
                 "fps": frames as f64 / secs,
                 "bitrateBps": (bytes as f64 * 8.0 / secs) as u64,
-                "width": params.width,
-                "height": params.height,
+                "width": size.0,
+                "height": size.1,
                 "codec": codec,
             });
             let _ = out.try_send(WebOut::Text(stats.to_string()));

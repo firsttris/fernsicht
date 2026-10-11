@@ -78,8 +78,11 @@ compensates the drift between the two sound cards' clocks.
 
 The host announces its active monitors (connector name and size) and the one shown when the session
 starts, after each switch and every 2 s (a lost list heals). The client answers with SelectMonitor; the
-host's capture thread opens the other monitor on the same card, sends a keyframe and maps input onto
-the new monitor. A browser gets the list as JSON on its data channel.
+host's capture thread opens the other monitor on the same card and maps input onto it. A monitor of
+another shape gets its own stream size: the stream is the monitor fitted into the size the client
+asked for (or the host's limits), aspect ratio kept, never scaled up. The host rebuilds the encoder
+for it, and the new stream starts with a keyframe that carries the size; decoders and the client's
+mouse mapping follow the decoded size. A browser gets the list as JSON on its data channel.
 
 ## Discovery
 

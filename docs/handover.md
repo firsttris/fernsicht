@@ -213,9 +213,11 @@ Confirmed live (2026-10-10, according to the user):
     the toolbar (from two monitors up), in the app window
     Ctrl+Alt+Shift+←/→. Check on the zentrale (DP-2 left, DP-1 right):
     switching in both directions, the mouse lands on the monitor shown,
-    the pointer is in the right place. A monitor of a different size is
-    scaled to the stream size from the start of the session (distorted
-    if the aspect ratio differs).
+    the pointer is in the right place. A monitor of a different size
+    gets its own stream size (fitted into the size the client asked for,
+    aspect ratio kept): the host rebuilds the encoder, the keyframe
+    carries the new size, and the client's picture and mouse mapping
+    follow it. Check this with monitors of different shapes, too.
 11. **Web viewer on a phone.** Built, never seen live: gestures
     (`web/viewer/src/lib/touch.ts`), touchpad mode, local zoom,
     on-screen keyboard (`lib/textkeys.ts`, layout from the browser

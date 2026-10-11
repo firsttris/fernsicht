@@ -96,7 +96,14 @@ the limits FFmpeg puts on the next latency step.
   aspect ratio: a 21:9 monitor is squeezed into 16:9.
 - **Fix:** fit the new monitor into the stream size with letterboxing in the converter (VAAPI and
   the Vulkan shader); later, renegotiate the size.
-- **Status:** open
+- **Status:** fixed, by renegotiating rather than letterboxing (`pad_vaapi` needs FFmpeg 7, the
+  AppImage ships 6.1). The stream size is `fit(source frame size, session box)`, computed per frame
+  in the encode loop; when it changes, the encoder is rebuilt at the new size and its keyframe
+  carries it. Pointer and input stay right because the monitor fills the picture again; the native
+  client maps clicks onto the decoded size, the browser already used `videoWidth`. Explicit client
+  sizes are now fitted too (no more stretching at session start, no upscaling). Test:
+  `the_stream_takes_the_shape_of_the_monitor_shown`. Makes A18 reachable (FFmpeg rebuilds its
+  frame pool on a size change), so A18 comes next.
 
 ### A6 · Session frame rate is not limited to the monitor's refresh rate
 

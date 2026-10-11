@@ -15,7 +15,8 @@ Desktops scan out in one of eight RGB formats: 8 or 10 bit, RGB or BGR order, wi
 (KDE on AMD uses the 10-bit `AB30`). All eight are supported on every path below.
 
 With several monitors the host lists them to the client; a switch opens the other monitor on the same
-card and sends a keyframe (see [protocol](protocol.md#monitors)).
+card, and the stream takes that monitor's shape (a new encoder at the fitted size, starting with a
+keyframe; see [protocol](protocol.md#monitors)).
 
 A **test pattern** (a moving bar and a circling pointer) replaces the screen where there is no
 display or no root, e.g. in CI.
