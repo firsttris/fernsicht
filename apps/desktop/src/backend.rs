@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use fernsicht_client::discover::{FoundHost, broadcast_targets, discover};
-use fernsicht_client::{DEFAULT_PORT, Identity, Trusted, pair, refresh_addresses};
+use fernsicht_client::{DEFAULT_PORT, Identity, Trusted, pair};
 use fernsicht_host_agent::control;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -209,6 +209,11 @@ pub struct Backend {
     /// This device's name for hosts it pairs with.
     pub name: String,
     session: Mutex<Option<Running>>,
+    /// Where discovery last found each host (by key fingerprint): tried
+    /// first when connecting, but not stored. Anyone can answer in a
+    /// host's name; the client keeps an address once a session with it
+    /// went through.
+    found: Mutex<std::collections::HashMap<String, SocketAddr>>,
 }
 
 /// The machine's hostname.
@@ -244,6 +249,7 @@ impl Backend {
             discovery_wait: Duration::from_millis(800),
             name: hostname(),
             session: Mutex::new(None),
+            found: Mutex::default(),
         }
     }
 
@@ -260,9 +266,9 @@ impl Backend {
     }
 
     /// Paired hosts and hosts in the LAN: paired ones first, then by name.
-    /// Paired hosts that moved get their new address.
+    /// Paired hosts that moved are shown (and tried) at their new address.
     pub fn devices(&self) -> anyhow::Result<Vec<Device>> {
-        let mut trusted = self.trusted()?;
+        let trusted = self.trusted()?;
         let mut targets = broadcast_targets(DEFAULT_PORT);
         targets.extend(self.extra_targets.iter().copied());
         targets.extend(
@@ -272,9 +278,10 @@ impl Backend {
                 .filter_map(|p| p.address.as_deref()?.parse::<SocketAddr>().ok()),
         );
         let mut found = discover(&targets, self.discovery_wait).context("looking for hosts")?;
-        if refresh_addresses(&mut trusted, &found) {
-            self.save(&trusted)?;
-        }
+        self.found
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(found.iter().map(|f| (f.key.fingerprint(), f.addr)));
         // The host on this computer answers too; it is "Dieser Rechner",
         // not a device to connect to.
         let own = self.own_host_key();
@@ -336,7 +343,17 @@ impl Backend {
             .iter()
             .find(|p| p.key.fingerprint() == id)
             .with_context(|| format!("not paired with {id}"))?;
-        let target = peer.address.clone().unwrap_or_else(|| peer.name.clone());
+        // Where discovery just found it (a new address from DHCP), else
+        // where it was last, else its name.
+        let found = self
+            .found
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .map(SocketAddr::to_string);
+        let target = found
+            .or_else(|| peer.address.clone())
+            .unwrap_or_else(|| peer.name.clone());
         // Stopped outside the lock: it may take seconds, and the UI asks
         // for the session state meanwhile.
         let old = self

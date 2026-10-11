@@ -196,20 +196,21 @@ pub fn find_host<'a>(trusted: &'a Trusted, what: &str) -> Option<&'a Peer> {
     })
 }
 
-/// Updates the addresses of paired hosts that were found elsewhere (a new
-/// address from DHCP), matched by key. Returns whether anything changed.
-pub fn refresh_addresses(trusted: &mut Trusted, found: &[discover::FoundHost]) -> bool {
-    let mut changed = false;
-    for f in found {
-        let addr = f.addr.to_string();
-        if let Some(p) = trusted.peers.iter_mut().find(|p| p.key == f.key)
-            && p.address.as_deref() != Some(addr.as_str())
-        {
-            p.address = Some(addr);
-            changed = true;
-        }
+/// The paired hosts with `key`'s address set to `addr`, after a session
+/// with that address went through (the handshake proved it is the host);
+/// `None` if nothing changes. Discovery answers are not proof: anyone can
+/// answer in a host's name with its (public) key.
+pub fn remember_address(trusted: &Trusted, key: &PublicKey, addr: &str) -> Option<Trusted> {
+    let peer = trusted.get(key)?;
+    if peer.address.as_deref() == Some(addr) {
+        return None;
     }
-    changed
+    let mut next = trusted.clone();
+    next.peers
+        .iter_mut()
+        .filter(|p| p.key == *key)
+        .for_each(|p| p.address = Some(addr.to_owned()));
+    Some(next)
 }
 
 /// How long pairing waits for the host.
@@ -1734,7 +1735,7 @@ mod tests {
     }
 
     #[test]
-    fn found_hosts_update_addresses_by_key() {
+    fn an_address_is_kept_only_after_a_session_with_it() {
         let key = Identity::generate().public;
         let mut t = Trusted::default();
         t.add(Peer {
@@ -1743,29 +1744,12 @@ mod tests {
             address: Some("192.168.178.87:47800".into()),
             paired_at: 0,
         });
-        let found = |addr: &str, key| discover::FoundHost {
-            addr: addr.parse().unwrap(),
-            name: "zentrale".into(),
-            key,
-            pairing: false,
-            busy: false,
-            os: String::new(),
-            gpu: String::new(),
-        };
-        assert!(!refresh_addresses(
-            &mut t,
-            &[found("192.168.178.87:47800", key)]
-        ));
-        // Another host claiming the name changes nothing: the key counts.
+        // Nothing new, or not a paired host: nothing to keep.
+        assert!(remember_address(&t, &key, "192.168.178.87:47800").is_none());
         let other = Identity::generate().public;
-        assert!(!refresh_addresses(
-            &mut t,
-            &[found("192.168.178.66:47800", other)]
-        ));
-        assert!(refresh_addresses(
-            &mut t,
-            &[found("192.168.178.90:47800", key)]
-        ));
+        assert!(remember_address(&t, &other, "192.168.178.66:47800").is_none());
+        // A session at a new address (DHCP) went through: that one is kept.
+        let t = remember_address(&t, &key, "192.168.178.90:47800").unwrap();
         assert_eq!(t.peers[0].address.as_deref(), Some("192.168.178.90:47800"));
     }
 

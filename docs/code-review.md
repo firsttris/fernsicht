@@ -468,7 +468,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Problem:** any Announce with a paired host's (public) key is stored; the host's announce budget
   is global, so 20 Discover/s silence the real host.
 - **Fix:** store an address only after a successful handshake; budget per source.
-- **Status:** open
+- **Status:** fixed. Discovery answers are shown and tried first (the app keeps them in memory),
+  never stored; the client stores a host's address after a session with it went through
+  (`remember_address`). The host's answers are limited per asking address (20/s) and in total
+  (200/s) with `limits::PerSource`. Tests: `an_address_is_kept_only_after_a_session_with_it`,
+  `one_flooding_source_does_not_silence_the_others` and the other `limits.rs` tests.
 
 ### B5 · Unpairing does not end a running session
 

@@ -7,7 +7,7 @@ use clap::Parser;
 use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
     AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice, Identity,
-    OverlayOutput, Trusted, default_state_dir, find_host, pair, refresh_addresses, run,
+    OverlayOutput, Trusted, default_state_dir, find_host, pair, remember_address, run,
     with_default_port,
 };
 use fernsicht_render::overlay::ms;
@@ -223,9 +223,6 @@ fn manage(command: Command, dir: &std::path::Path) -> anyhow::Result<()> {
                     notes.join(", ")
                 );
             }
-            if refresh_addresses(&mut hosts, &found) {
-                hosts.save(&hosts_path).map_err(anyhow::Error::msg)?;
-            }
         }
         Command::Forget { host } => {
             let key = find_host(&hosts, &host)
@@ -350,6 +347,7 @@ fn main() -> anyhow::Result<()> {
     }
     #[cfg(not(feature = "window"))]
     let _ = commands;
+    let target = cfg.host.clone();
     let s = if args.headless || !cfg!(feature = "window") {
         if !args.headless {
             log::info!("built without the \"window\" feature: running headless");
@@ -372,6 +370,18 @@ fn main() -> anyhow::Result<()> {
         #[cfg(not(feature = "window"))]
         unreachable!()
     };
+    // The handshake went through at `target`: it is the host's address now
+    // (a new one from DHCP, say). Read again: the app may have changed the
+    // list meanwhile.
+    if s.session_id.is_some() {
+        let path = dir.join("hosts.json");
+        if let Ok(now) = Trusted::load(&path)
+            && let Some(next) = remember_address(&now, &host.key, &target)
+            && let Err(e) = next.save(&path)
+        {
+            log::warn!("remembering the host's address: {e}");
+        }
+    }
     println!();
     println!("── Zusammenfassung ──");
     println!(

@@ -14,6 +14,7 @@
 pub mod control;
 mod health;
 mod layout;
+mod limits;
 pub mod power;
 mod web;
 
@@ -185,37 +186,10 @@ impl HostDescription {
     }
 }
 
-/// Answers to "which hosts are there?" a host sends per second at most:
-/// plenty for a LAN, useless for flooding anyone.
-const ANNOUNCE_RATE: f64 = 20.0;
-
-/// A token bucket for those answers.
-#[derive(Debug)]
-struct AnnounceBudget {
-    tokens: f64,
-    at: Instant,
-}
-
-impl AnnounceBudget {
-    fn new(now: Instant) -> Self {
-        Self {
-            tokens: ANNOUNCE_RATE,
-            at: now,
-        }
-    }
-
-    fn take(&mut self, now: Instant) -> bool {
-        let refill = now.saturating_duration_since(self.at).as_secs_f64() * ANNOUNCE_RATE;
-        self.tokens = (self.tokens + refill).min(ANNOUNCE_RATE);
-        self.at = now;
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
-}
+/// Discovery answers a second per asking address, and in total (each answer
+/// is a little work; Discover is padded so answers never amplify).
+const ANNOUNCE_PER_SOURCE: f64 = 20.0;
+const ANNOUNCE_TOTAL: f64 = 200.0;
 
 /// Where the sound comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -807,7 +781,8 @@ impl HostAgent {
         let mut out = [0u8; MAX_DATAGRAM];
         let mut session: Option<Session> = None;
         let mut pairing: Option<PairingExchange> = None;
-        let mut announce_budget = AnnounceBudget::new(Instant::now());
+        let mut announce_budget =
+            limits::PerSource::new(ANNOUNCE_PER_SOURCE, ANNOUNCE_TOTAL, Instant::now());
         let control_stop = Arc::new(AtomicBool::new(false));
         let control = match (&self.cfg.control, &self.cfg.security) {
             (Some(path), Some(sec)) => {
@@ -938,7 +913,7 @@ impl HostAgent {
                 }
                 Packet::Pair(p) => self.on_pair(p, from, &mut pairing, &mut out),
                 Packet::Discover(d) => {
-                    if announce_budget.take(Instant::now()) {
+                    if announce_budget.take(from.ip(), Instant::now()) {
                         self.announce(d, from, session.is_some(), &mut out);
                     }
                 }
@@ -2811,25 +2786,6 @@ mod tests {
         if !cfg!(any(feature = "vaapi", feature = "nvidia")) {
             assert!(here.unwrap_err().to_string().contains("--encoder"));
         }
-    }
-
-    #[test]
-    fn announcements_are_rationed() {
-        let t0 = Instant::now();
-        let mut b = AnnounceBudget::new(t0);
-        let burst = (0..100).filter(|_| b.take(t0)).count();
-        assert_eq!(burst, ANNOUNCE_RATE as usize);
-        assert!(
-            !b.take(t0 + Duration::from_millis(10)),
-            "a fifth of a token"
-        );
-        assert!(b.take(t0 + Duration::from_millis(60)));
-        // A long pause refills to the burst, not beyond.
-        let later = t0 + Duration::from_secs(60);
-        assert_eq!(
-            (0..100).filter(|_| b.take(later)).count(),
-            ANNOUNCE_RATE as usize
-        );
     }
 
     #[test]
