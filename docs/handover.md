@@ -180,7 +180,9 @@ Confirmed live (2026-10-10, according to the user):
    zentrale and choose “Diesen Rechner freigeben” (KDE asks for the
    password). Then check: Is `fernsicht-host` running (`systemctl status
    fernsicht-host`)? Is there picture, sound and input? Then “Freigabe
-   beenden” and share again.
+   beenden” and share again. Since review B11 the AppImage is unpacked
+   without running it (unsquashfs, else a loop mount of its squashfs):
+   check that `/opt/fernsicht/app` belongs to root.
 6. **Gaming mode and gamepad.** Choose “Gaming” in the app. A click into
    the window captures the pointer, Ctrl+Alt+Shift+M releases it. Check a
    game with mouse control. A controller on the client shows up on the

@@ -556,7 +556,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Problem:** pkexec runs an opaque `/bin/sh -c`; root executes the user-writable AppImage; the
   extracted tree's permissions are not normalised; `pkexec` comes from `PATH`.
 - **Fix:** `/usr/bin/pkexec`; normalise ownership and modes; extract without running the image.
-- **Status:** open
+- **Status:** fixed. pkexec by its path; the AppImage is unpacked from a root-owned copy without
+  running it: `unsquashfs` at the squashfs offset (`elf_end`, checked for the `hsqs` magic), else
+  a read-only loop mount of it (Bazzite has no unsquashfs), the AppImage runtime only as a last
+  resort; the tree is then root's and writable by no one else. The unit text still comes from the
+  app (the admin approves the installation as a whole); a dedicated polkit action with its own
+  message would need a policy file installed first. Test: `the_appimage_payload_starts_after_its_elf_runtime`;
+  the installation itself is in the live tests (handover, item 5).
 
 ### B12 · Names chosen by the other side are used as identifiers
 
