@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use fernsicht_client::{Failure, FailureCode, failure_of};
 use fernsicht_desktop::backend::{
     Backend, Device, SessionState, StreamSettings, ThisMachine, default_dir, keys_command,
 };
@@ -13,31 +14,34 @@ use tauri::State;
 
 type Shared<'a> = State<'a, Arc<Backend>>;
 
-/// Runs blocking work (network, processes) off the UI thread; errors
-/// become the message the UI shows.
+/// What a command answers: its value, or a failure with a code the UI
+/// tells apart.
+type Answer<T> = Result<T, Failure>;
+
+/// Runs blocking work (network, processes) off the UI thread.
 async fn blocking<T: Send + 'static>(
     backend: &Shared<'_>,
     f: impl FnOnce(&Backend) -> anyhow::Result<T> + Send + 'static,
-) -> Result<T, String> {
+) -> Answer<T> {
     let backend = Arc::clone(backend);
     tauri::async_runtime::spawn_blocking(move || f(&backend))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("{e:#}"))
+        .map_err(|e| Failure::new(FailureCode::Other, e.to_string()))?
+        .map_err(|e| failure_of(&e))
 }
 
 #[tauri::command]
-async fn devices(backend: Shared<'_>) -> Result<Vec<Device>, String> {
+async fn devices(backend: Shared<'_>) -> Answer<Vec<Device>> {
     blocking(&backend, Backend::devices).await
 }
 
 #[tauri::command]
-async fn pair(backend: Shared<'_>, address: String, pin: String) -> Result<Device, String> {
+async fn pair(backend: Shared<'_>, address: String, pin: String) -> Answer<Device> {
     blocking(&backend, move |b| b.pair(&address, &pin)).await
 }
 
 #[tauri::command]
-async fn forget(backend: Shared<'_>, id: String) -> Result<(), String> {
+async fn forget(backend: Shared<'_>, id: String) -> Answer<()> {
     blocking(&backend, move |b| b.forget(&id)).await
 }
 
@@ -46,7 +50,7 @@ async fn connect(
     backend: Shared<'_>,
     id: String,
     settings: Option<StreamSettings>,
-) -> Result<SessionState, String> {
+) -> Answer<SessionState> {
     blocking(&backend, move |b| {
         b.connect(&id, &settings.unwrap_or_default())
     })
@@ -54,7 +58,7 @@ async fn connect(
 }
 
 #[tauri::command]
-async fn set_muted(backend: Shared<'_>, muted: bool) -> Result<(), String> {
+async fn set_muted(backend: Shared<'_>, muted: bool) -> Answer<()> {
     blocking(&backend, move |b| {
         b.command(if muted { "mute" } else { "unmute" })
     })
@@ -62,17 +66,17 @@ async fn set_muted(backend: Shared<'_>, muted: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn send_keys(backend: Shared<'_>, codes: Vec<u16>) -> Result<(), String> {
+async fn send_keys(backend: Shared<'_>, codes: Vec<u16>) -> Answer<()> {
     blocking(&backend, move |b| b.command(&keys_command(&codes)?)).await
 }
 
 #[tauri::command]
-async fn select_monitor(backend: Shared<'_>, index: u8) -> Result<(), String> {
+async fn select_monitor(backend: Shared<'_>, index: u8) -> Answer<()> {
     blocking(&backend, move |b| b.command(&format!("monitor {index}"))).await
 }
 
 #[tauri::command]
-async fn set_mode(backend: Shared<'_>, gaming: bool) -> Result<(), String> {
+async fn set_mode(backend: Shared<'_>, gaming: bool) -> Answer<()> {
     blocking(&backend, move |b| {
         b.command(if gaming { "gaming" } else { "desktop" })
     })
@@ -80,12 +84,12 @@ async fn set_mode(backend: Shared<'_>, gaming: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn session(backend: Shared<'_>) -> Result<SessionState, String> {
+async fn session(backend: Shared<'_>) -> Answer<SessionState> {
     blocking(&backend, |b| Ok(b.session())).await
 }
 
 #[tauri::command]
-async fn disconnect(backend: Shared<'_>) -> Result<(), String> {
+async fn disconnect(backend: Shared<'_>) -> Answer<()> {
     blocking(&backend, |b| {
         b.disconnect();
         Ok(())
@@ -94,34 +98,34 @@ async fn disconnect(backend: Shared<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn this_machine(backend: Shared<'_>) -> Result<ThisMachine, String> {
+async fn this_machine(backend: Shared<'_>) -> Answer<ThisMachine> {
     blocking(&backend, |b| Ok(b.this_machine())).await
 }
 
 #[tauri::command]
-async fn open_pairing(backend: Shared<'_>) -> Result<Value, String> {
+async fn open_pairing(backend: Shared<'_>) -> Answer<Value> {
     blocking(&backend, Backend::open_pairing).await
 }
 
 #[tauri::command]
-async fn set_gpu_boost(backend: Shared<'_>, on: bool) -> Result<(), String> {
+async fn set_gpu_boost(backend: Shared<'_>, on: bool) -> Answer<()> {
     blocking(&backend, move |b| b.set_gpu_boost(on)).await
 }
 
 /// "Diesen Rechner freigeben": installs the host from the AppImage.
 #[tauri::command]
-async fn share_this_machine(backend: Shared<'_>) -> Result<(), String> {
+async fn share_this_machine(backend: Shared<'_>) -> Answer<()> {
     blocking(&backend, |_| fernsicht_desktop::share::install()).await
 }
 
 /// "Freigabe beenden": removes the host service.
 #[tauri::command]
-async fn stop_sharing(backend: Shared<'_>) -> Result<(), String> {
+async fn stop_sharing(backend: Shared<'_>) -> Answer<()> {
     blocking(&backend, |_| fernsicht_desktop::share::uninstall()).await
 }
 
 #[tauri::command]
-async fn unpair_from_host(backend: Shared<'_>, device: String) -> Result<(), String> {
+async fn unpair_from_host(backend: Shared<'_>, device: String) -> Answer<()> {
     blocking(&backend, move |b| b.unpair_from_host(&device)).await
 }
 

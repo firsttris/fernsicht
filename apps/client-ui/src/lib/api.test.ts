@@ -38,19 +38,24 @@ describe("api", () => {
     await expect(actions.disconnect()).resolves.toBeUndefined();
   });
 
-  it("puts the backend's errors in the UI's words", () => {
-    expect(errorText(new Error("wrong PIN"))).toBe("Falsche PIN.");
+  it("puts the backend's failures in the UI's words by their code", () => {
+    expect(errorText({ code: "wrong-pin", message: "wrong PIN" })).toBe("Falsche PIN.");
     expect(
-      errorText(
-        "192.0.2.1:47800: too many wrong PINs: pairing mode closed; open it again on the host",
-      ),
+      errorText({
+        code: "too-many-attempts",
+        message: "192.0.2.1:47800: too many wrong PINs: pairing mode closed; open it again",
+      }),
     ).toBe("Zu viele falsche PINs. Kopplung am Host neu öffnen.");
-    expect(errorText("192.0.2.1:47800: this device is not paired with the host (…)")).toBe(
+    expect(errorText({ code: "not-paired", message: "…" })).toBe(
       "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
     );
-    expect(errorText("192.0.2.1:47800: the host could not start a session (no picture or …)")).toBe(
-      "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
+    // No words of its own: the message.
+    expect(errorText({ code: "other", message: "starting fernsicht-client: not found" })).toBe(
+      "starting fernsicht-client: not found",
     );
-    expect(errorText("something else")).toBe("something else");
+    // Not a failure: as it is.
+    expect(errorText({ code: "unknown-code", message: "x" })).toBe("[object Object]");
+    expect(errorText(new Error("something else"))).toBe("something else");
+    expect(errorText("plain")).toBe("plain");
   });
 });

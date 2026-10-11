@@ -62,7 +62,7 @@ export interface SessionState {
   /** The client's overlay; with the host's monitors once it listed them. */
   stats?: (SessionStats & { monitors?: HostMonitors }) | null;
   /** Why it ended, if it failed. */
-  error?: string | null;
+  error?: Failure | null;
 }
 
 export const devicesQuery = queryOptions({
@@ -184,23 +184,51 @@ export const actions = {
   stopSharing: () => invoke<void>("stop_sharing"),
 };
 
-/** The backend's (English) errors in the UI's words. */
+/** What went wrong, as the backend says it (`fernsicht_client::Failure`):
+ * the code tells which, the message has the details. */
+export type FailureCode =
+  | "wrong-pin"
+  | "too-many-attempts"
+  | "pairing-closed"
+  | "not-paired"
+  | "unavailable"
+  | "no-answer"
+  | "host-silent"
+  | "cancelled"
+  | "pkexec-missing"
+  | "other";
+
+export interface Failure {
+  code: FailureCode;
+  message: string;
+}
+
+/** Each failure in the UI's words; `null`: the message says it best. */
+const FAILURE_TEXT: Record<FailureCode, string | null> = {
+  "wrong-pin": "Falsche PIN.",
+  "too-many-attempts": "Zu viele falsche PINs. Kopplung am Host neu öffnen.",
+  "pairing-closed": "Am Host ist keine Kopplung offen.",
+  "not-paired": "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
+  unavailable:
+    "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
+  "no-answer": "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?",
+  "host-silent": "Der Host antwortet nicht. Läuft er noch?",
+  cancelled: "Abgebrochen.",
+  "pkexec-missing": "Es fehlt pkexec (polkit), um als Administrator einzurichten.",
+  other: null,
+};
+
+/** Whether `e` is a failure the backend sent (a command's rejection). */
+export function isFailure(e: unknown): e is Failure {
+  if (typeof e !== "object" || e === null) return false;
+  const { code, message } = e as Record<string, unknown>;
+  return (
+    typeof code === "string" && Object.hasOwn(FAILURE_TEXT, code) && typeof message === "string"
+  );
+}
+
+/** A failure (or any other error) in the UI's words. */
 export function errorText(e: unknown): string {
-  const raw = e instanceof Error ? e.message : String(e);
-  // The more specific first: "too many wrong PINs" contains "wrong PIN".
-  const known: [string, string][] = [
-    ["too many wrong PINs", "Zu viele falsche PINs. Kopplung am Host neu öffnen."],
-    ["wrong PIN", "Falsche PIN."],
-    ["not in pairing mode", "Am Host ist keine Kopplung offen."],
-    [
-      "could not start a session",
-      "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
-    ],
-    ["no answer from", "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?"],
-    ["not paired with the host", "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln."],
-    ["no packets from", "Der Host antwortet nicht. Läuft er noch?"],
-    ["cancelled", "Abgebrochen."],
-    ["pkexec is missing", "Es fehlt pkexec (polkit), um als Administrator einzurichten."],
-  ];
-  return known.find(([needle]) => raw.includes(needle))?.[1] ?? raw;
+  if (isFailure(e)) return FAILURE_TEXT[e.code] ?? e.message;
+  return e instanceof Error ? e.message : String(e);
 }

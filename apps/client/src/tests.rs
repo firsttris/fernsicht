@@ -9,6 +9,7 @@ use fernsicht_render::overlay::StreamInfo;
 
 use super::*;
 use crate::config::{CodecChoice, offered_codecs};
+use crate::failure::{Failure, FailureCode, failure_of};
 use crate::hosts::{
     default_state_dir, find_host, is_address, printable, remember_address, with_default_port,
 };
@@ -18,7 +19,7 @@ use crate::input::{
 };
 use crate::monitors::{Monitor, MonitorList, MonitorRequest, parse_monitor_command};
 use crate::network::{RateWindow, ReceivedFrame, ratio};
-use crate::present::{AppStats, timings};
+use crate::present::{AppLine, AppStats, timings};
 
 #[test]
 fn gamepads_follow_the_focus() {
@@ -391,4 +392,37 @@ fn the_app_gets_the_overlay_and_the_monitors_in_one_object() {
     let text = serde_json::to_string(&with).unwrap();
     assert!(text.contains(r#""monitors":{"current":0,"list":[{"name":"DP-1""#));
     assert_eq!(serde_json::from_str::<AppStats>(&text).unwrap(), with);
+}
+
+#[test]
+fn failures_keep_their_code_through_context_and_the_app_line() {
+    let e = anyhow::Error::new(Failure::rejected(fernsicht_proto::RejectReason::NotPaired))
+        .context("192.0.2.1:47800");
+    let f = failure_of(&e);
+    assert_eq!(f.code, FailureCode::NotPaired);
+    assert!(
+        f.message
+            .starts_with("192.0.2.1:47800: this device is not paired"),
+        "{f}"
+    );
+    assert_eq!(failure_of(&anyhow::anyhow!("odd")).code, FailureCode::Other);
+
+    let line = serde_json::to_string(&AppLine::Failed { failure: f.clone() }).unwrap();
+    assert!(
+        line.starts_with(r#"{"failure":{"code":"not-paired","#),
+        "{line}"
+    );
+    assert_eq!(
+        serde_json::from_str::<AppLine>(&line).unwrap(),
+        AppLine::Failed { failure: f }
+    );
+    let stats = serde_json::to_string(&AppStats {
+        overlay: Default::default(),
+        monitors: None,
+    })
+    .unwrap();
+    assert!(matches!(
+        serde_json::from_str::<AppLine>(&stats).unwrap(),
+        AppLine::Stats(_)
+    ));
 }

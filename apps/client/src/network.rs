@@ -23,7 +23,7 @@ use fernsicht_secure::session::{Initiator, Transport};
 use crate::audio::AudioPacket;
 use crate::config::{ClientConfig, CodecChoice, offered_codecs};
 use crate::cursor::CursorTracker;
-use crate::hosts::reject_text;
+use crate::failure::{Failure, FailureCode};
 use crate::input::InputLink;
 use crate::monitors::{Monitor, MonitorList};
 use crate::present::Hw;
@@ -255,7 +255,11 @@ fn check_host(cfg: &ClientConfig, net: &mut Net) -> anyhow::Result<()> {
         net.video_seen = true; // warn once
     }
     if net.last_packet.elapsed() > cfg.host_timeout {
-        anyhow::bail!("no packets from {} for {:?}", cfg.host, cfg.host_timeout);
+        return Err(Failure::new(
+            FailureCode::HostSilent,
+            format!("no packets from {} for {:?}", cfg.host, cfg.host_timeout),
+        )
+        .into());
     }
     Ok(())
 }
@@ -484,7 +488,7 @@ fn authentic<'a>(
         // Not authenticated: believed only while asking for a session, never
         // during one (anyone could end it with five bytes).
         Packet::Reject(r) if net.session.is_none() => {
-            anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+            Err(anyhow::Error::new(Failure::rejected(r)).context(cfg.host.clone()))
         }
         _ => Ok(None),
     }
@@ -505,7 +509,7 @@ fn on_packet(
     match packet {
         // Plain mode (tests): the host could not start the session.
         Packet::Reject(r) if net.session.is_none() => {
-            anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+            return Err(anyhow::Error::new(Failure::rejected(r)).context(cfg.host.clone()));
         }
         Packet::HelloAck(ack) => on_hello_ack(cfg, socket, net, &ack),
         Packet::ClockPong(pong) => {

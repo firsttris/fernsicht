@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
+use fernsicht_client::{Failure, FailureCode};
 use serde::Serialize;
 
 pub const SERVICE: &str = "fernsicht-host.service";
@@ -217,11 +218,16 @@ fn as_root(script: &str, args: &[&str]) -> anyhow::Result<()> {
         .args(["/bin/sh", "-c", script, "fernsicht"])
         .args(args)
         .output()
-        .context("pkexec is missing")?;
+        .map_err(|e| {
+            Failure::new(
+                FailureCode::PkexecMissing,
+                format!("pkexec is missing: {e}"),
+            )
+        })?;
     match out.status.code() {
         Some(0) => Ok(()),
         // Dismissed or not authorized.
-        Some(126 | 127) => anyhow::bail!("cancelled"),
+        Some(126 | 127) => Err(Failure::new(FailureCode::Cancelled, "cancelled").into()),
         _ => anyhow::bail!(
             "{}",
             String::from_utf8_lossy(&out.stderr)

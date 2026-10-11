@@ -109,6 +109,15 @@ pub struct AppStats {
     pub monitors: Option<MonitorList>,
 }
 
+/// A line the client prints for the app (`--app`): the overlay once a
+/// second, and why the session failed as its last line.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AppLine {
+    Failed { failure: crate::Failure },
+    Stats(AppStats),
+}
+
 #[derive(Default)]
 pub(crate) struct PresentResult {
     pub(crate) stats: LatencyStats,

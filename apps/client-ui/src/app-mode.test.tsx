@@ -6,14 +6,14 @@ import type { Device } from "@fernsicht/ui";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { HostService, HostStatus, SessionState, ThisMachine } from "./lib/api";
+import type { Failure, HostService, HostStatus, SessionState, ThisMachine } from "./lib/api";
 import { renderApp } from "./test-utils";
 
 const backend = vi.hoisted(() => ({
   devices: [] as Device[],
   thisMachine: { name: "bazzite", host: null } as ThisMachine,
   session: { active: false } as SessionState,
-  fail: {} as Record<string, string>,
+  fail: {} as Record<string, Failure>,
   calls: [] as [string, unknown][],
 }));
 
@@ -176,7 +176,7 @@ describe("Desktop-App", () => {
   });
 
   it("explains a wrong PIN", async () => {
-    backend.fail.pair = "wrong PIN";
+    backend.fail.pair = { code: "wrong-pin", message: "wrong PIN" };
     const { user } = await renderApp("/devices");
     await screen.findByText(/Kein Fernsicht-Host/);
     await user.click(screen.getByRole("button", { name: "Gerät hinzufügen" }));
@@ -265,7 +265,10 @@ describe("Desktop-App", () => {
 
   it("shows why a connection failed", async () => {
     backend.devices = [zentrale()];
-    backend.fail.connect = "starting fernsicht-client: No such file or directory";
+    backend.fail.connect = {
+      code: "other",
+      message: "starting fernsicht-client: No such file or directory",
+    };
     const { user } = await renderApp("/devices");
     const card = (await screen.findByText("zentrale")).closest("article")!;
     await user.click(within(card).getByRole("button", { name: "Desktop" }));
@@ -293,7 +296,10 @@ describe("Desktop-App", () => {
       active: false,
       deviceId: "k1",
       deviceName: "zentrale",
-      error: "192.168.178.87:47800: this device is not paired with the host (…)",
+      error: {
+        code: "not-paired",
+        message: "192.168.178.87:47800: this device is not paired with the host (…)",
+      },
     };
     expect(
       await screen.findByRole(
@@ -384,7 +390,7 @@ describe("Desktop-App", () => {
 
   it("says the password prompt was cancelled", async () => {
     backend.thisMachine = { name: "zentrale", host: null, service: service() };
-    backend.fail.share_this_machine = "cancelled";
+    backend.fail.share_this_machine = { code: "cancelled", message: "cancelled" };
     const { user } = await renderApp("/devices");
     await user.click(await screen.findByRole("button", { name: "Diesen Rechner freigeben" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Abgebrochen.");
@@ -410,7 +416,10 @@ describe("Desktop-App", () => {
 
   it("explains a failed pairing request on this computer", async () => {
     backend.thisMachine = { name: "zentrale", host: host() };
-    backend.fail.open_pairing = "not allowed: only root and the desktop's user";
+    backend.fail.open_pairing = {
+      code: "other",
+      message: "not allowed: only root and the desktop's user",
+    };
     const { user } = await renderApp("/devices");
     await user.click(await screen.findByRole("button", { name: "Gerät koppeln" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("not allowed");

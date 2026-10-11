@@ -121,6 +121,14 @@ fn find_pair_connect_and_forget() {
             .iter()
             .any(|d| d.id == id && d.pairing)
     );
+    // A wrong PIN is told apart by its code, not its words.
+    let wrong = if pin == "000000" { "000001" } else { "000000" };
+    let e = remote.pair(&addr.to_string(), wrong).unwrap_err();
+    assert_eq!(
+        fernsicht_client::failure_of(&e).code,
+        fernsicht_client::FailureCode::WrongPin,
+        "{e:#}"
+    );
     let paired = remote.pair(&addr.to_string(), &pin).unwrap();
     assert_eq!((paired.id.as_str(), paired.paired), (id.as_str(), true));
     assert_eq!(sec.paired().len(), 1);
@@ -157,7 +165,7 @@ fn find_pair_connect_and_forget() {
     remote.connect(&id, &Default::default()).unwrap();
     wait_for("the client to give up", || !remote.session().active);
     let err = remote.session().error.unwrap();
-    assert!(err.contains("not paired"), "{err}");
+    assert_eq!(err.code, fernsicht_client::FailureCode::NotPaired, "{err}");
 
     // Forgotten here as well: listed as not paired.
     remote.forget(&id).unwrap();

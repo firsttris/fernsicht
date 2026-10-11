@@ -6,9 +6,9 @@ use std::time::Duration;
 use clap::Parser;
 use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
-    AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice, Identity,
-    OverlayOutput, Peer, RunSummary, Trusted, default_state_dir, find_host, pair, printable,
-    remember_address, run, with_default_port,
+    AppLine, AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice,
+    Failure, FailureCode, Identity, OverlayOutput, Peer, RunSummary, Trusted, default_state_dir,
+    failure_of, find_host, pair, printable, remember_address, run, with_default_port,
 };
 use fernsicht_render::overlay::ms;
 
@@ -259,11 +259,27 @@ enum CodecArg {
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let args = Args::parse();
+    let mut args = Args::parse();
     let dir = args.state_dir.clone().unwrap_or_else(default_state_dir);
-    if let Some(command) = args.command {
+    if let Some(command) = args.command.take() {
         return manage(command, &dir);
     }
+    let app = args.app;
+    let result = stream(args, &dir);
+    // The app tells failures apart by the last line's code.
+    if app
+        && let Err(e) = &result
+        && let Ok(line) = serde_json::to_string(&AppLine::Failed {
+            failure: failure_of(e),
+        })
+    {
+        println!("{line}");
+    }
+    result
+}
+
+/// Streams from the host `args` name until the session ends.
+fn stream(args: Args, dir: &std::path::Path) -> anyhow::Result<()> {
     let wanted = args.host.clone().expect("required by clap");
     let hosts = Trusted::load(&dir.join("hosts.json")).map_err(anyhow::Error::msg)?;
     let found = match &args.key {
@@ -271,10 +287,14 @@ fn main() -> anyhow::Result<()> {
         None => find_host(&hosts, &wanted),
     };
     let Some(host) = found.cloned() else {
-        anyhow::bail!(
-            "not paired with {wanted}. On the host run \"fernsicht-host-agent pair\", \
-             then here: fernsicht-client pair {wanted} PIN"
-        );
+        return Err(Failure::new(
+            FailureCode::NotPaired,
+            format!(
+                "not paired with {wanted}. On the host run \"fernsicht-host-agent pair\", \
+                 then here: fernsicht-client pair {wanted} PIN"
+            ),
+        )
+        .into());
     };
     let identity =
         Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;

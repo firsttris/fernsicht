@@ -436,6 +436,16 @@ fn an_unpaired_host_is_refused_with_a_hint() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("not paired with 192.0.2.1"), "{err}");
     assert!(err.contains("fernsicht-client pair"), "{err}");
+    // For the app, the last line on stdout says it with a code.
+    let out = bin("fernsicht-client")
+        .args(["192.0.2.1", "--app", "--duration", "1", "--state-dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let last: serde_json::Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(last["failure"]["code"], "not-paired", "{stdout}");
     // A wrong PIN is said plainly.
     let host = spawn_host(&state_dir("host-wrong-pin"));
     let wrong = if host.pin == "000000" {

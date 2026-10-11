@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use fernsicht_client::discover::{FoundHost, broadcast_targets, discover};
-use fernsicht_client::{AppStats, DEFAULT_PORT, Identity, Trusted, pair};
+use fernsicht_client::{
+    AppLine, AppStats, DEFAULT_PORT, Failure, FailureCode, Identity, Trusted, pair,
+};
 use fernsicht_host_agent::control;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -125,7 +127,7 @@ pub struct SessionState {
     /// The client's latest overlay and the host's monitors.
     pub stats: Option<AppStats>,
     /// Why it ended, if it failed.
-    pub error: Option<String>,
+    pub error: Option<Failure>,
 }
 
 /// This computer: its name and, if a host runs here, the host's status
@@ -148,6 +150,8 @@ struct Running {
     /// Closing it ends the client (it runs with `--app`).
     stdin: Option<ChildStdin>,
     stats: Arc<Mutex<Option<AppStats>>>,
+    /// Why it failed, as the client said on its last line.
+    failure: Arc<Mutex<Option<Failure>>>,
     log: Arc<Mutex<VecDeque<String>>>,
 }
 
@@ -169,10 +173,20 @@ impl Running {
         let _ = self.child.wait();
     }
 
-    /// The line that best says why the client failed.
-    fn error(&self) -> String {
+    /// Why the client failed: as it said, else the line of its log that
+    /// says it best.
+    fn error(&self) -> Failure {
+        if let Some(f) = self
+            .failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return f;
+        }
         let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
-        log.iter()
+        let line = log
+            .iter()
             .rev()
             .find_map(|l| l.strip_prefix("Error: "))
             .or_else(|| {
@@ -182,8 +196,8 @@ impl Running {
                     .map(String::as_str)
             })
             .or_else(|| log.back().map(String::as_str))
-            .unwrap_or("the client ended unexpectedly")
-            .to_owned()
+            .unwrap_or("the client ended unexpectedly");
+        Failure::new(FailureCode::Other, line)
     }
 }
 
@@ -381,15 +395,20 @@ impl Backend {
             .spawn()
             .with_context(|| format!("starting {}", self.client.display()))?;
         let stats = Arc::new(Mutex::new(None));
+        let failure = Arc::new(Mutex::new(None));
         let log = Arc::new(Mutex::new(VecDeque::new()));
         let stdout = child.stdout.take().expect("piped");
-        let into = stats.clone();
+        let (into, failed) = (stats.clone(), failure.clone());
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.starts_with('{')
-                    && let Ok(s) = serde_json::from_str::<AppStats>(&line)
-                {
-                    *into.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
+                match serde_json::from_str::<AppLine>(&line) {
+                    Ok(AppLine::Stats(s)) => {
+                        *into.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
+                    }
+                    Ok(AppLine::Failed { failure }) => {
+                        *failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure);
+                    }
+                    Err(_) => {}
                 }
             }
         });
@@ -414,6 +433,7 @@ impl Backend {
                 stdin: child.stdin.take(),
                 child,
                 stats,
+                failure,
                 log,
             });
         // A connect that raced this one: its session goes.

@@ -17,6 +17,7 @@ mod audio;
 mod config;
 mod cursor;
 pub mod discover;
+mod failure;
 mod hosts;
 mod input;
 mod monitors;
@@ -50,6 +51,7 @@ pub use config::{
     AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DecoderChoice, OverlayOutput,
     offered_codecs,
 };
+pub use failure::{Failure, FailureCode, failure_of};
 pub use hosts::{
     DEFAULT_PORT, PAIR_TIMEOUT, default_state_dir, find_host, is_address, pair, printable,
     reject_text, remember_address, with_default_port,
@@ -59,7 +61,7 @@ pub use input::{
     window_to_stream,
 };
 pub use monitors::{Monitor, MonitorControl, MonitorList, MonitorRequest, parse_monitor_command};
-pub use present::AppStats;
+pub use present::{AppLine, AppStats};
 pub use summary::{AudioSummary, RunSummary};
 
 /// Completed frames waiting for the decoder.

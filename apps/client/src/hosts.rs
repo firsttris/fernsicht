@@ -8,6 +8,7 @@ use fernsicht_proto::{MAX_DATAGRAM, Packet, Pair as PairMsg, RejectReason};
 use fernsicht_secure::pairing::{ClientPairing, PairError};
 use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
 
+use crate::failure::{Failure, FailureCode};
 use crate::network::HELLO_INTERVAL;
 
 /// Where this device keeps its key and paired hosts:
@@ -113,9 +114,13 @@ pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::R
     let mut last_sent: Option<Instant> = None;
     loop {
         if Instant::now() >= deadline {
-            anyhow::bail!(
-                "no answer from {host} (is the host running, and pairing open: \"fernsicht-host-agent pair\"?)"
-            );
+            return Err(Failure::new(
+                FailureCode::NoAnswer,
+                format!(
+                    "no answer from {host} (is the host running, and pairing open: \"fernsicht-host-agent pair\"?)"
+                ),
+            )
+            .into());
         }
         if last_sent.is_none_or(|t| t.elapsed() >= HELLO_INTERVAL) {
             let n = PairMsg {
@@ -132,7 +137,7 @@ pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::R
         match Packet::decode(&buf[..n]) {
             Ok(Packet::Pair(p)) if p.step == 2 && sending.0 == 1 => {
                 let msg3 = pairing.on_reply(p.message).map_err(|e| match e {
-                    PairError::WrongPin => anyhow::anyhow!("wrong PIN"),
+                    PairError::WrongPin => Failure::new(FailureCode::WrongPin, "wrong PIN").into(),
                     other => anyhow::anyhow!("pairing failed: {other}"),
                 })?;
                 sending = (3, msg3);
@@ -143,7 +148,7 @@ pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::R
                 peer.address = Some(host.to_owned());
                 return Ok(peer);
             }
-            Ok(Packet::Reject(r)) => anyhow::bail!("{}", reject_text(r)),
+            Ok(Packet::Reject(r)) => return Err(Failure::rejected(r).into()),
             _ => {}
         }
     }
