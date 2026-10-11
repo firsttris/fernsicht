@@ -62,7 +62,8 @@ ID shows it, and the client asks for a keyframe.
 The host writes the capture time and the offsets to "capture ready" and "encode done" into every
 packet header. The client measures arrival, decode and display itself and converts everything to one
 time axis with the estimated clock offset. For the offset, the probe with the smallest round-trip time
-among the last 16 counts (NTP-style: ping, pong with the host's receive and send times). The stages
+among the last 64 counts (NTP-style: ping, pong with the host's receive and send times), carried
+forward by the clocks' measured skew. The stages
 have the same names as in the UI: Capture, Encode, “Netz” (network), Decode, “Anzeige” (display).
 
 The overlay measures up to the hand-off to the window. The monitor's scan-out is not included; the

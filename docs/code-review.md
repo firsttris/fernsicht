@@ -848,7 +848,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `crates/net/src/clock_sync.rs`.
 - **Fix:** kernel receive timestamps (`SO_TIMESTAMPNS`); fit offset and skew.
-- **Status:** open
+- **Status:** fixed, without the kernel timestamps. The window holds 64 samples (half a minute);
+  the best samples of its older and newer half give the skew (at most ±200 ppm, once they are 5 s
+  apart), and `offset_at(now)` carries the best recent offset forward. Simulated 50 ppm with
+  0–1 ms queueing each way: 37 µs off instead of 1.1 ms from the best, stale sample. Kernel
+  timestamps come only in wall-clock time (`SO_TIMESTAMPNS`); converting them to the monotonic
+  clock adds its own error, and the min-RTT filter already drops the samples a late wake-up spoils.
 
 ## D. Strategic steps
 

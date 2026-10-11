@@ -1224,7 +1224,7 @@ fn network_loop(
                             seq: h.seq,
                             frame,
                             previous,
-                            captured_local: h.capture_us as i64 - clock.offset_us(),
+                            captured_local: h.capture_us as i64 - clock.offset_at(now),
                         });
                     }
                 }
@@ -1279,7 +1279,7 @@ fn network_loop(
                             continue;
                         }
                         rf.completed_us = completed_us;
-                        rf.offset_us = clock.offset_us();
+                        rf.offset_us = clock.offset_at(now);
                         if let Err(TrySendError::Full(rf) | TrySendError::Disconnected(rf)) =
                             pipe.decode_tx.try_send(rf)
                         {
@@ -1324,7 +1324,7 @@ fn network_loop(
         receiver: reassembler.totals(),
         overflowed,
         session,
-        clock_offset_us: clock.offset_us(),
+        clock_offset_us: clock.offset_at(now_us()),
         rtt_us: clock.rtt_us(),
     })
 }

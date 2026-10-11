@@ -85,8 +85,10 @@ is encoded completely ([next steps](next-steps.md)).
 
 NTP-style: the client sends ClockPing with its time `t0`, the host answers with its receive time `t1`
 and send time `t2`, the client notes arrival `t3`. The offset is estimated from the probe with the
-smallest round-trip time among the last 16. Pings go fast while the offset settles, then slowly to
-follow drift. With the offset, the host's timestamps in every video packet give the latency of each
+smallest round-trip time among the last 64 (half a minute). Two clocks drift apart by tens of ppm,
+a millisecond a minute: the best probes of the older and of the newer half give the skew, and the
+offset is carried forward to the moment it is used. Pings go fast while the offset settles, then
+every 500 ms. With the offset, the host's timestamps in every video packet give the latency of each
 stage on the client.
 
 ## Input
