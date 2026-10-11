@@ -37,15 +37,19 @@ pub trait Presenter {
         None
     }
 
-    /// Shows `frame`; returns once it has been handed to the display.
-    /// `picture` is `None` for codecs without pictures (synthetic) or when
-    /// [`Self::wants`] is `None`.
+    /// Shows `frame`; returns once it has been handed to the display (the
+    /// GPU may still be drawing it). `picture` is `None` for codecs without
+    /// pictures (synthetic) or when [`Self::wants`] is `None`.
     fn present(
         &mut self,
         frame: &DecodedFrame,
         picture: Option<&Picture<'_>>,
         cursor: Option<&CursorOverlay>,
     ) -> Result<(), String>;
+
+    /// Waits until the GPU is done with the last picture shown: the
+    /// decoder may reuse its memory afterwards.
+    fn settle(&mut self) {}
 
     /// The latency overlay, about once per second.
     fn overlay(&mut self, _lines: &[String]) {}

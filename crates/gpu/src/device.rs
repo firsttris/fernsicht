@@ -112,14 +112,10 @@ fn pick(candidates: &[Candidate], prefer: &Prefer) -> Option<usize> {
 pub const GPU_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Submits `cmds` (waiting on `wait` at colour output, signalling
-/// `signal`) and waits for `fence`, at most [`GPU_TIMEOUT`]. The fence is
-/// unsignalled again afterwards, also after a timeout (the device is
-/// idled first), so the next submission can use it
-/// (VUID-vkQueueSubmit-fence-00063).
+/// `signal`) and waits for `fence` ([`wait_fence`]).
 ///
 /// # Safety
-/// The command buffers, semaphores and fence belong to `gpu`'s device and
-/// the fence is unsignalled.
+/// As for [`submit`].
 pub unsafe fn submit_with(
     gpu: &Gpu,
     cmds: &[vk::CommandBuffer],
@@ -127,7 +123,27 @@ pub unsafe fn submit_with(
     signal: Option<vk::Semaphore>,
     fence: vk::Fence,
 ) -> Result<(), String> {
-    let d = &gpu.device;
+    // SAFETY: passed on.
+    unsafe {
+        submit(gpu, cmds, wait, signal, fence)?;
+        wait_fence(gpu, fence)
+    }
+}
+
+/// Submits `cmds` (waiting on `wait` at colour output, signalling
+/// `signal`, then `fence`) without waiting: [`wait_fence`] before the
+/// fence or anything the commands use is touched again.
+///
+/// # Safety
+/// The command buffers, semaphores and fence belong to `gpu`'s device and
+/// the fence is unsignalled.
+pub unsafe fn submit(
+    gpu: &Gpu,
+    cmds: &[vk::CommandBuffer],
+    wait: Option<vk::Semaphore>,
+    signal: Option<vk::Semaphore>,
+    fence: vk::Fence,
+) -> Result<(), String> {
     let waits: Vec<vk::Semaphore> = wait.into_iter().collect();
     let stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; waits.len()];
     let signals: Vec<vk::Semaphore> = signal.into_iter().collect();
@@ -139,11 +155,24 @@ pub unsafe fn submit_with(
     // SAFETY: as the caller promises; submissions are serialized by the
     // queue lock.
     unsafe {
-        {
-            let _queue = gpu.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
-            d.queue_submit(gpu.queue, &[submit], fence)
-                .map_err(|e| format!("submit: {e}"))?;
-        }
+        let _queue = gpu.queue_lock.lock().unwrap_or_else(|e| e.into_inner());
+        gpu.device
+            .queue_submit(gpu.queue, &[submit], fence)
+            .map_err(|e| format!("submit: {e}"))
+    }
+}
+
+/// Waits for a submission's `fence`, at most [`GPU_TIMEOUT`]. The fence is
+/// unsignalled again afterwards, also after a timeout (the device is idled
+/// first), so the next submission can use it
+/// (VUID-vkQueueSubmit-fence-00063).
+///
+/// # Safety
+/// `fence` belongs to `gpu`'s device and was submitted.
+pub unsafe fn wait_fence(gpu: &Gpu, fence: vk::Fence) -> Result<(), String> {
+    let d = &gpu.device;
+    // SAFETY: as the caller promises.
+    unsafe {
         let waited = d.wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64);
         if waited == Err(vk::Result::TIMEOUT) {
             // Let the work finish (or the device be lost), so the fence

@@ -186,6 +186,8 @@ pub struct Renderer {
     cmd_pool: vk::CommandPool,
     cmd: vk::CommandBuffer,
     fence: vk::Fence,
+    /// A frame was submitted and not waited for yet (see [`Self::settle`]).
+    in_flight: bool,
     cpu: Option<CpuPlanes>,
     shared: Option<Shared>,
     imported: HashMap<u64, Planes>,
@@ -215,6 +217,7 @@ impl Renderer {
                 cmd_pool: vk::CommandPool::null(),
                 cmd: vk::CommandBuffer::null(),
                 fence: vk::Fence::null(),
+                in_flight: false,
                 cpu: None,
                 shared: None,
                 imported: HashMap::new(),
@@ -617,7 +620,19 @@ impl Renderer {
         after: impl FnOnce(&ash::Device, vk::CommandBuffer),
     ) -> Result<(), RenderError> {
         let frame = self.prepare(picture, cursor, target.format)?;
-        self.submit(frame, target, wait, signal, after)
+        self.submit(frame, target, wait, signal, after)?;
+        self.settle()
+    }
+
+    /// Waits until the GPU is done with the last submitted frame: the
+    /// decoder may reuse its picture afterwards. A window presents before
+    /// this; the next frame's [`Self::prepare`] waits anyway.
+    pub fn settle(&mut self) -> Result<(), RenderError> {
+        if !std::mem::take(&mut self.in_flight) {
+            return Ok(());
+        }
+        // SAFETY: the fence was submitted with the last frame.
+        unsafe { fernsicht_gpu::wait_fence(&self.gpu, self.fence) }.map_err(RenderError::Other)
     }
 
     /// Stages or imports `picture` and the pointer and finds the pipelines
@@ -628,6 +643,8 @@ impl Renderer {
         cursor: Option<&'c CursorOverlay>,
         format: vk::Format,
     ) -> Result<Prepared<'c>, RenderError> {
+        // The last frame's commands, staging and imports are free again.
+        self.settle()?;
         let (source, size) = match picture {
             None => (Source::None, (1, 1)),
             Some(Picture::Nv12 {
@@ -674,8 +691,8 @@ impl Renderer {
         })
     }
 
-    /// Records and submits a prepared frame into `target` and waits until
-    /// the GPU is done.
+    /// Records and submits a prepared frame into `target`, without waiting
+    /// for the GPU ([`Self::settle`] does).
     pub(crate) fn submit(
         &mut self,
         frame: Prepared<'_>,
@@ -1067,11 +1084,11 @@ impl Renderer {
             d.end_command_buffer(cmd)
                 .map_err(other("end command buffer"))?;
 
-            // Waits at most GPU_TIMEOUT; the fence is ready for the next
-            // frame either way.
-            fernsicht_gpu::submit_with(&self.gpu, &[cmd], wait, signal, self.fence)
+            // Not waited for here: a window presents first (see settle).
+            fernsicht_gpu::submit(&self.gpu, &[cmd], wait, signal, self.fence)
                 .map_err(RenderError::Other)?;
         }
+        self.in_flight = true;
         Ok(())
     }
 
@@ -1257,6 +1274,9 @@ impl Renderer {
     /// Forgets imported decoder surfaces and shared memory (the decoder
     /// was replaced).
     pub fn forget_imports(&mut self) {
+        if let Err(e) = self.settle() {
+            log::debug!("forgetting imports: {e}");
+        }
         for (_, p) in std::mem::take(&mut self.imported) {
             self.destroy_planes(p);
         }

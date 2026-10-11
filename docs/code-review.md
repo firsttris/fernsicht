@@ -814,7 +814,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Problem:** the compositor and the wait for the refresh are missing, so "show immediately" can't
   be measured and the comparison with Sunshine is skewed. The fence wait delays the present.
 - **Fix:** `VK_KHR_present_id` + `VK_KHR_present_wait`; present right after submit.
-- **Status:** open
+- **Status:** partly fixed. The window presents right after the submit: the renderer no longer
+  waits for its fence there (`fernsicht_gpu::submit` and `wait_fence`); the next frame's
+  `prepare` waits, and `Presenter::settle` before the decoder's next picture, so it never writes
+  memory the GPU still reads. Open: measuring the moment a frame is on screen with
+  `VK_KHR_present_wait` (the GTX 1080 has it, llvmpipe not). It needs a window on a real display
+  to test, which is not opened without the user's OK.
 
 ### C18 · Allocations on hot paths
 

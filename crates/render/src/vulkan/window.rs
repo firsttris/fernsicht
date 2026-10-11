@@ -389,6 +389,12 @@ impl Presenter for WindowPresenter {
         }
     }
 
+    fn settle(&mut self) {
+        if let Err(e) = self.renderer.settle() {
+            log::warn!("waiting for the GPU: {e}");
+        }
+    }
+
     fn overlay(&mut self, lines: &[String]) {
         // The first line is the glass-to-glass summary; it fits a title.
         if let Some(first) = lines.first() {

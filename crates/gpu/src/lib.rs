@@ -7,6 +7,8 @@
 mod device;
 pub mod import;
 
-pub use device::{DEVICE_ENV, GPU_TIMEOUT, Gpu, Prefer, submit_and_wait, submit_with};
+pub use device::{
+    DEVICE_ENV, GPU_TIMEOUT, Gpu, Prefer, submit, submit_and_wait, submit_with, wait_fence,
+};
 pub mod convert;
 pub mod testimage;

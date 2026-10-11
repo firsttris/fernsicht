@@ -46,7 +46,9 @@ comments and commit messages where it settles a detail.
 Update what the change affects, in the same commit, and only that:
 
 - the tests: unit, property, integration or E2E tests for what changed (GPU paths also in
-  `crates/codec/tests`, `tests/e2e/tests/gpu.rs`, which run on the GPU runners);
+  `crates/codec/tests`, `tests/e2e/tests/gpu.rs`, which run on the GPU runners). A timing bound in
+  a test must hold on CI's coverage job too (instrumented, two cores, forty hosts at once): assert
+  the property a change is about, keep the others loose;
 - the docs in `docs/` that describe it (and `code-review.md`'s status when it fixes a finding);
 - the README when a feature a user sees is added, changed or removed, or a number it quotes changes.
 

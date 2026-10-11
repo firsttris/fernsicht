@@ -1531,6 +1531,9 @@ fn present_loop(
                     if !queue.is_empty() {
                         r.skipped += 1;
                     } else {
+                        // The last picture's memory is free for the decoder
+                        // once the GPU has shown it (long done by now).
+                        presenter.settle();
                         let picture = match presenter.wants() {
                             Some(kind) => decoder.picture(kind).unwrap_or_else(|e| {
                                 log::debug!("picture: {e}");
