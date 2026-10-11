@@ -1096,6 +1096,9 @@ pub enum RejectReason {
     PairingClosed = 2,
     /// Too many wrong PINs: pairing mode was closed.
     TooManyAttempts = 3,
+    /// The host could not start a session (no picture, no encoder); its
+    /// log says why. Older clients ignore the unknown reason.
+    Unavailable = 4,
 }
 
 impl RejectReason {
@@ -1104,6 +1107,7 @@ impl RejectReason {
             1 => RejectReason::NotPaired,
             2 => RejectReason::PairingClosed,
             3 => RejectReason::TooManyAttempts,
+            4 => RejectReason::Unavailable,
             _ => return None,
         })
     }

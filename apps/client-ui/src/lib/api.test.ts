@@ -48,6 +48,9 @@ describe("api", () => {
     expect(errorText("192.0.2.1:47800: this device is not paired with the host (…)")).toBe(
       "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
     );
+    expect(errorText("192.0.2.1:47800: the host could not start a session (no picture or …)")).toBe(
+      "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
+    );
     expect(errorText("something else")).toBe("something else");
   });
 });

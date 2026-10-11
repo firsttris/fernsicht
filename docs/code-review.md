@@ -206,7 +206,11 @@ the limits FFmpeg puts on the next latency step.
   still shows the old session. A replaced client gets no Bye and sees a frozen picture for 5 s.
 - **Fix:** record and replace only after a successful start; clear the status on every path; send
   Bye to the replaced client.
-- **Status:** open
+- **Status:** fixed. The old session still goes first (screen and encoder may not be had twice),
+  but through `replace_session`: the old client gets Bye and the status is cleared. The handshake
+  time is noted only after a successful start. A start that fails is answered with the new
+  `RejectReason::Unavailable`, so the client stops asking and says why (older clients ignore the
+  unknown reason). Tests: `new_peer_replaces_the_session`, `a_session_that_cannot_start_is_refused_with_a_reason`.
 
 ### A15 · Error paths in `start_session` leak running threads
 

@@ -279,6 +279,9 @@ pub fn reject_text(r: RejectReason) -> &'static str {
             "the host is not in pairing mode (on the host: \"fernsicht-host-agent pair\")"
         }
         RejectReason::TooManyAttempts => "too many wrong PINs: pairing mode closed; open it again",
+        RejectReason::Unavailable => {
+            "the host could not start a session (no picture or no video encoder; the host agent's log says why)"
+        }
     }
 }
 
@@ -1019,6 +1022,10 @@ fn network_loop(
             (p, false) => p,
         };
         match packet {
+            // Plain mode (tests): the host could not start the session.
+            Packet::Reject(r) if session.is_none() => {
+                anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+            }
             Packet::HelloAck(ack) => {
                 if session.is_none() {
                     acked_at = Some(Instant::now());

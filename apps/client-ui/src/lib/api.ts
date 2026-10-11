@@ -192,6 +192,10 @@ export function errorText(e: unknown): string {
     ["too many wrong PINs", "Zu viele falsche PINs. Kopplung am Host neu öffnen."],
     ["wrong PIN", "Falsche PIN."],
     ["not in pairing mode", "Am Host ist keine Kopplung offen."],
+    [
+      "could not start a session",
+      "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
+    ],
     ["no answer from", "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?"],
     ["not paired with the host", "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln."],
     ["no packets from", "Der Host antwortet nicht. Läuft er noch?"],

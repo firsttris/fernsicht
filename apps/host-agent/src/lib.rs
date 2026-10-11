@@ -822,8 +822,7 @@ impl HostAgent {
                 Packet::Hello(hello) if self.cfg.security.is_none() => {
                     if !from_peer {
                         if let Some(old) = session.take() {
-                            log::info!("session {:08x}: replaced by {from}", old.params.session_id);
-                            old.stop();
+                            self.replace_session(old, &from.to_string(), &mut out);
                         }
                         let params = self.negotiate(&hello);
                         match self.start_session(params, from, None, None) {
@@ -833,8 +832,8 @@ impl HostAgent {
                                 session = Some(s);
                             }
                             Err(e) => {
-                                // No ack: the client keeps asking and times out.
                                 log::error!("session {:08x}: {e:#}", params.session_id);
+                                self.refuse_unavailable(from, &mut out);
                                 continue;
                             }
                         }
@@ -960,13 +959,8 @@ impl HostAgent {
             }
         };
         if let Some(old) = session.take() {
-            log::info!(
-                "session {:08x}: replaced by a browser at {}",
-                old.params.session_id,
-                req.browser.ip()
-            );
-            old.stop();
-            self.set_status(None, "");
+            let mut out = [0u8; MAX_DATAGRAM];
+            self.replace_session(old, &format!("a browser at {}", req.browser.ip()), &mut out);
         }
         let params = SessionParams {
             session_id: new_session_id(),
@@ -1075,14 +1069,17 @@ impl HostAgent {
             log::warn!("{from}: replayed handshake of {} dropped", client.name);
             return;
         }
-        times.insert(client.key, sent_ms);
+        // The old session goes first: screen and encoder may not be had
+        // twice.
         if let Some(old) = session.take() {
-            log::info!("session {:08x}: replaced by {from}", old.params.session_id);
-            old.stop();
+            self.replace_session(old, &from.to_string(), out);
         }
         let params = self.negotiate(&hello);
         match self.start_session(params, from, Some(responder), None) {
             Ok((mut s, Some(reply))) => {
+                // Noted only now: had the start failed, a later try with
+                // the same handshake would count as a replay.
+                times.insert(client.key, sent_ms);
                 log_session(&s, &format!("{} ({from})", client.name));
                 self.set_status(Some(&s), &client.name);
                 let n = Handshake {
@@ -1095,8 +1092,28 @@ impl HostAgent {
                 *session = Some(s);
             }
             Ok((s, None)) => s.stop(),
-            Err(e) => log::error!("session {:08x}: {e:#}", params.session_id),
+            Err(e) => {
+                log::error!("session {:08x}: {e:#}", params.session_id);
+                self.refuse_unavailable(from, out);
+            }
         }
+    }
+
+    /// Ends the running session for a new client: the old client is told
+    /// (instead of watching a frozen picture until its timeout), and the
+    /// status shows no session until the new one runs.
+    fn replace_session(&self, old: Session, by: &str, out: &mut [u8]) {
+        log::info!("session {:08x}: replaced by {by}", old.params.session_id);
+        say_bye(&old, out);
+        old.stop();
+        self.set_status(None, "");
+    }
+
+    /// Tells a client its session could not start, so it stops asking (each
+    /// try would open screen and encoder again) and says why.
+    fn refuse_unavailable(&self, to: SocketAddr, out: &mut [u8]) {
+        let n = RejectReason::Unavailable.encode(out);
+        let _ = self.socket.send_to(&out[..n], to);
     }
 
     /// Answers "which hosts are there?" with name, key, OS and GPU. Only

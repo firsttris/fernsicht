@@ -338,8 +338,34 @@ fn new_peer_replaces_the_session() {
     b.hello(320, 240, 60, 1_000);
     let ack_b = b.ack();
     assert_ne!(ack_a.session_id, ack_b.session_id);
+    // The replaced client is told, instead of watching a frozen picture
+    // until its timeout.
+    let bye = a.wait_for(Duration::from_secs(1), |p| match p {
+        Packet::Bye(b) => Some(b),
+        _ => None,
+    });
+    assert_eq!(bye.map(|b| b.session_id), Some(ack_a.session_id));
     assert!(b.video_flows(Duration::from_secs(1)));
     assert!(!a.video_flows(Duration::from_millis(400)));
+    host.shutdown();
+}
+
+#[test]
+fn a_session_that_cannot_start_is_refused_with_a_reason() {
+    // An encoder this build cannot make: the session fails to start.
+    let host = Host::start(HostConfig {
+        encoder: EncoderKind::Vaapi {
+            render_node: "/nonexistent/renderD999".into(),
+        },
+        ..HostConfig::default()
+    });
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 240, 60, 1_000);
+    let reason = peer.wait_for(Duration::from_secs(2), |p| match p {
+        Packet::Reject(r) => Some(r),
+        _ => None,
+    });
+    assert_eq!(reason, Some(RejectReason::Unavailable));
     host.shutdown();
 }
 
