@@ -218,10 +218,8 @@ pub const PAIR_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pairs with the host at `host` using the PIN it shows. Returns the host
 /// to remember (with its address).
 pub fn pair(host: &str, pin: &str, identity: &Identity, name: &str) -> anyhow::Result<Peer> {
-    let socket = fernsicht_net::socket::bind_udp("0.0.0.0:0").context("bind")?;
-    socket
-        .connect(host)
-        .with_context(|| format!("connect {host}"))?;
+    let socket =
+        fernsicht_net::socket::connect_udp(host).with_context(|| format!("connect {host}"))?;
     socket.set_read_timeout(Some(Duration::from_millis(50)))?;
     let (mut pairing, msg1) = ClientPairing::start(pin, identity, name);
     let mut out = [0u8; MAX_DATAGRAM];
@@ -690,9 +688,7 @@ pub fn run_with(
     stop: Arc<AtomicBool>,
     make_presenter: PresenterFactory,
 ) -> anyhow::Result<RunSummary> {
-    let socket = fernsicht_net::socket::bind_udp("0.0.0.0:0").context("bind")?;
-    socket
-        .connect(&cfg.host)
+    let socket = fernsicht_net::socket::connect_udp(&cfg.host)
         .with_context(|| format!("connect {}", cfg.host))?;
     socket.set_read_timeout(Some(Duration::from_millis(2)))?;
 

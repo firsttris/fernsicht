@@ -348,7 +348,9 @@ the limits FFmpeg puts on the next latency step.
 - **Where:** `apps/client/src/lib.rs:218, 667, 171-183`.
 - **Problem:** `pair()` and `run_with` bind `0.0.0.0:0`; a v6 address fails.
 - **Fix:** bind the family of the resolved address.
-- **Status:** open
+- **Status:** fixed for sessions and pairing: `fernsicht_net::socket::connect_udp` resolves the host
+  and binds a socket of its family. Discovery stays IPv4 (broadcast; v6 would need multicast).
+  Tests: `the_local_side_takes_the_peers_family`, `talks_to_a_v6_host`.
 
 ### A28 · The receive-buffer warning is off by a factor of two
 
