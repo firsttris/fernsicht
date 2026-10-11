@@ -67,8 +67,16 @@ export interface LiveSession {
   stream: MediaStream;
   width: number;
   height: number;
-  /** Sends an input message (see apps/host-agent/src/web.rs). */
+  /**
+   * Sends an input message (see apps/host-agent/src/web.rs) on the
+   * reliable, ordered channel.
+   */
   send(msg: Record<string, unknown>): void;
+  /**
+   * Sends a pointer move on the unordered channel without retransmits: a
+   * lost one is not waited for, the next replaces it.
+   */
+  move(msg: Record<string, unknown>): void;
   /** Says goodbye and closes the connection (once; later calls do nothing). */
   close(): void;
 }
@@ -130,6 +138,8 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
   };
   const channel = pc.createDataChannel("fernsicht");
   channel.binaryType = "arraybuffer";
+  // Pointer moves: one lost on the network must not hold up the next.
+  const moves = pc.createDataChannel("moves", { ordered: false, maxRetransmits: 0 });
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -151,8 +161,17 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
     };
     if (!r.ok || !body.answer) throw new ConnectError(body.error ?? "failed");
     await pc.setRemoteDescription(body.answer);
+    // Positions carry a number from one counter on both channels: the host
+    // drops one older than the last it applied (unordered delivery).
+    let seq = 0;
+    const stamp = (msg: Record<string, unknown>) =>
+      msg.t === "m" ? { ...msg, s: (seq = (seq + 1) >>> 0) } : msg;
     const send = (msg: Record<string, unknown>) => {
-      if (channel.readyState === "open") channel.send(JSON.stringify(msg));
+      if (channel.readyState === "open") channel.send(JSON.stringify(stamp(msg)));
+    };
+    const move = (msg: Record<string, unknown>) => {
+      if (moves.readyState === "open") moves.send(JSON.stringify(stamp(msg)));
+      else send(msg);
     };
     let closed = false;
     const session: LiveSession = {
@@ -163,6 +182,7 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
       width: body.width ?? 0,
       height: body.height ?? 0,
       send,
+      move,
       close: () => {
         if (closed) return;
         closed = true;

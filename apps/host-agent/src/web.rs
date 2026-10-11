@@ -234,7 +234,10 @@ struct RtcSession {
     codec: Codec,
     video: Option<(Mid, Pt)>,
     audio: Option<(Mid, Pt)>,
+    /// The reliable channel: input, and our pointer and stats out.
     channel: Option<ChannelId>,
+    /// Number of the last pointer position applied (see `Command::Position`).
+    last_position: Option<u32>,
     /// RTP time of the next Opus frame.
     audio_time: u64,
     /// The round trip the browser's receiver reports tell.
@@ -258,6 +261,7 @@ impl RtcSession {
             video: None,
             audio: None,
             channel: None,
+            last_position: None,
             audio_time: 0,
             rtt: Duration::ZERO,
         }
@@ -366,16 +370,21 @@ impl RtcSession {
                     self.rtt = rtt;
                 }
             }
+            // "moves" brings pointer moves only (unordered, no retransmits);
+            // the other one carries everything else, both ways.
+            Event::ChannelOpen(_, label) if label == "moves" => {}
             Event::ChannelOpen(id, _) => {
                 self.channel = Some(id);
                 self.shared.cursor_requested.store(true, Ordering::Relaxed);
             }
             Event::ChannelData(d) if !d.binary => match parse_input(&d.data) {
-                Some(Command::Event(event)) => {
-                    if let Some(sink) = self.input.as_mut()
-                        && let Err(e) = sink.inject(&event)
-                    {
-                        log::debug!("web input: {e}");
+                Some(Command::Event(event)) => self.inject(&event),
+                // Over two channels, one unordered: an older position must
+                // not undo a newer one.
+                Some(Command::Position(event, seq)) => {
+                    if self.last_position.is_none_or(|last| newer(seq, last)) {
+                        self.last_position = Some(seq);
+                        self.inject(&event);
                     }
                 }
                 Some(Command::ReleaseAll) => {
@@ -426,6 +435,14 @@ impl RtcSession {
             }
             WebOut::Packet(p) => self.write_channel(true, &p),
             WebOut::Text(t) => self.write_channel(false, t.as_bytes()),
+        }
+    }
+
+    fn inject(&mut self, event: &InputEvent) {
+        if let Some(sink) = self.input.as_mut()
+            && let Err(e) = sink.inject(event)
+        {
+            log::debug!("web input: {e}");
         }
     }
 
@@ -509,6 +526,8 @@ fn pick_video(params: &[str0m::format::PayloadParams], codec: Codec) -> Option<P
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
     Event(InputEvent),
+    /// A numbered pointer position: applied only if newer than the last.
+    Position(InputEvent, u32),
     /// Let go of everything (the page lost focus).
     ReleaseAll,
     Keyframe,
@@ -521,7 +540,7 @@ pub(crate) enum Command {
 /// Parses one input message:
 ///
 /// ```text
-/// {"t":"m","x":0..65535,"y":0..65535}   pointer at a position
+/// {"t":"m","x":0..65535,"y":0..65535,"s":n}  pointer at a position (n numbers them)
 /// {"t":"r","dx":..,"dy":..}             pointer moved (captured)
 /// {"t":"b","c":272,"p":true}            button (Linux BTN_* code)
 /// {"t":"w","dx":0,"dy":120}             wheel, 120 per notch
@@ -539,10 +558,16 @@ pub(crate) fn parse_input(data: &[u8]) -> Option<Command> {
     const MOVE: i64 = 1 << 16;
     const WHEEL: i64 = 120 * 100;
     let event = match v.get("t")?.as_str()? {
-        "m" => InputEvent::MouseAbs {
-            x: int("x", 0, 65535)? as u16,
-            y: int("y", 0, 65535)? as u16,
-        },
+        "m" => {
+            let at = InputEvent::MouseAbs {
+                x: int("x", 0, 65535)? as u16,
+                y: int("y", 0, 65535)? as u16,
+            };
+            return Some(match v.get("s") {
+                Some(_) => Command::Position(at, int("s", 0, i64::from(u32::MAX))? as u32),
+                None => Command::Event(at),
+            });
+        }
         "r" => InputEvent::MouseRel {
             dx: int("dx", -MOVE, MOVE)? as i32,
             dy: int("dy", -MOVE, MOVE)? as i32,
@@ -583,6 +608,11 @@ pub(crate) fn parse_input(data: &[u8]) -> Option<Command> {
         _ => return None,
     };
     Some(Command::Event(event))
+}
+
+/// Whether position number `a` came after `b` (they wrap around).
+fn newer(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) > 0
 }
 
 /// Forwards a web session's encoded frames to the WebRTC thread, with the
@@ -915,6 +945,24 @@ mod tests {
         let odd = "a=rtpmap:41 av1/90000\r\na=fmtp:100 apt=AV1/90000\r\n";
         assert_eq!(codecs_in_offer(odd), CodecSet::of(&[Codec::Av1]));
         assert_eq!(codecs_in_offer(""), CodecSet::EMPTY);
+    }
+
+    #[test]
+    fn positions_are_numbered_and_old_ones_known() {
+        let p = |s: &str| parse_input(s.as_bytes());
+        let at = InputEvent::MouseAbs { x: 1, y: 2 };
+        assert_eq!(
+            p(r#"{"t":"m","x":1,"y":2,"s":7}"#),
+            Some(Command::Position(at, 7))
+        );
+        assert_eq!(
+            p(r#"{"t":"m","x":1,"y":2,"s":4294967295}"#),
+            Some(Command::Position(at, u32::MAX))
+        );
+        assert_eq!(p(r#"{"t":"m","x":1,"y":2,"s":-1}"#), None);
+        assert_eq!(p(r#"{"t":"m","x":1,"y":2,"s":"7"}"#), None);
+        assert!(newer(8, 7) && !newer(7, 7) && !newer(6, 7));
+        assert!(newer(0, u32::MAX), "numbers wrap");
     }
 
     #[test]

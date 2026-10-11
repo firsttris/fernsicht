@@ -44,8 +44,9 @@ describe("host API", () => {
       ["video", "recvonly"],
       ["audio", "recvonly"],
     ]);
-    expect(pc.label).toBe("fernsicht");
+    expect([...pc.channels.keys()]).toEqual(["fernsicht", "moves"]);
     expect(pc.channel.binaryType).toBe("arraybuffer");
+    expect(pc.moves.init).toEqual({ ordered: false, maxRetransmits: 0 });
     expect(api).toHaveBeenCalledWith("/api/connect", expect.objectContaining({ method: "POST" }));
     expect(JSON.parse(api.mock.calls[0]![1]!.body as string)).toEqual({
       pin: "482913",
@@ -62,6 +63,22 @@ describe("host API", () => {
     s.send({ t: "k", c: 30, p: false });
     expect(pc.channel.sent).toHaveLength(1);
     pc.channel.readyState = "open";
+
+    // Moves take the unordered channel; positions are numbered on both
+    // channels from one counter, so the host can drop stale ones.
+    s.move({ t: "m", x: 1, y: 2 });
+    s.send({ t: "m", x: 3, y: 4 });
+    s.move({ t: "r", dx: 5, dy: 0 });
+    expect(pc.moves.sent).toEqual([
+      { t: "m", x: 1, y: 2, s: 1 },
+      { t: "r", dx: 5, dy: 0 },
+    ]);
+    expect(pc.channel.sent.at(-1)).toEqual({ t: "m", x: 3, y: 4, s: 2 });
+    // Until the moves channel is open, they go the reliable way.
+    pc.moves.readyState = "connecting";
+    s.move({ t: "m", x: 7, y: 8 });
+    expect(pc.channel.sent.at(-1)).toEqual({ t: "m", x: 7, y: 8, s: 3 });
+    pc.moves.readyState = "open";
 
     vi.useFakeTimers();
     s.close();

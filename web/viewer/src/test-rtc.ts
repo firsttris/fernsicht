@@ -7,6 +7,7 @@ import { vi } from "vitest";
 export class FakeChannel extends EventTarget {
   readyState: RTCDataChannelState = "open";
   binaryType = "blob";
+  init: RTCDataChannelInit | undefined;
   sent: Record<string, unknown>[] = [];
   send(data: string) {
     this.sent.push(JSON.parse(data) as Record<string, unknown>);
@@ -20,8 +21,8 @@ export class FakeChannel extends EventTarget {
 export class FakePeerConnection extends EventTarget {
   static last: FakePeerConnection | undefined;
   transceivers: [string, string | undefined][] = [];
-  channel = new FakeChannel();
-  label = "";
+  /** Data channels by label, in the order they were made. */
+  channels = new Map<string, FakeChannel>();
   remote: RTCSessionDescriptionInit | undefined;
   closed = false;
   connectionState: RTCPeerConnectionState = "connected";
@@ -38,9 +39,19 @@ export class FakePeerConnection extends EventTarget {
   getReceivers() {
     return [{}, Object.freeze({})];
   }
-  createDataChannel(label: string) {
-    this.label = label;
-    return this.channel;
+  createDataChannel(label: string, init?: RTCDataChannelInit) {
+    const c = new FakeChannel();
+    c.init = init;
+    this.channels.set(label, c);
+    return c;
+  }
+  /** The reliable channel: everything but pointer moves. */
+  get channel(): FakeChannel {
+    return this.channels.get("fernsicht") ?? new FakeChannel();
+  }
+  /** Pointer moves: unordered, no retransmits. */
+  get moves(): FakeChannel {
+    return this.channels.get("moves") ?? new FakeChannel();
   }
   createOffer() {
     return Promise.resolve({ type: "offer" as const, sdp: "v=0 offer" });

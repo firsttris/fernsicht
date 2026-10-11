@@ -20,7 +20,10 @@ network. The host serves the page itself.
   paired and needs a new PIN next time.
 - **Transport:** Video (AV1 if the browser and the host's graphics card
   support it, otherwise H.264), audio and input are sent encrypted over
-  WebRTC.
+  WebRTC. Input takes two data channels: pointer moves an unordered one
+  without retransmits (a lost move is not waited for, the next one
+  replaces it), everything else a reliable, ordered one. Positions are
+  numbered across both, so an old one never undoes a newer one.
 - **Input:** In **Desktop** mode the mouse controls the host directly. In
   **Gaming** mode a click into the video captures the mouse pointer, and
   Esc releases it. Controllers work through the Gamepad API; some browsers

@@ -332,9 +332,9 @@ export function RemoteScreen({
         return;
       }
       if (locked()) {
-        session.send({ t: "r", dx: e.movementX, dy: e.movementY });
+        session.move({ t: "r", dx: e.movementX, dy: e.movementY });
       } else if (mode === "desktop") {
-        session.send({ t: "m", ...toAbsolute(e.clientX, e.clientY, picture()) });
+        session.move({ t: "m", ...toAbsolute(e.clientX, e.clientY, picture()) });
       }
     };
     const onButton = (e: PointerEvent) => {

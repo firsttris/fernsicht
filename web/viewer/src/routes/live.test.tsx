@@ -127,9 +127,14 @@ describe("Web-Viewer am Host", () => {
     const capture = vi.fn();
     Object.assign(screenEl, { setPointerCapture: capture });
     fireEvent.pointerMove(screenEl, { clientX: 0, clientY: 0 });
-    expect(sent().at(-1)).toEqual({ t: "m", x: 0, y: 0 });
+    // Moves go unordered, without retransmits.
+    expect(pc.moves.sent.at(-1)).toMatchObject({ t: "m", x: 0, y: 0 });
     fireEvent.pointerDown(screenEl, { button: 0, pointerId: 7 });
-    expect(sent().at(-1)).toEqual({ t: "b", c: 0x110, p: true });
+    // A click brings its position on the reliable channel, in order.
+    expect(sent().slice(-2)).toEqual([
+      { t: "m", x: 0, y: 0, s: expect.any(Number) },
+      { t: "b", c: 0x110, p: true },
+    ]);
     // The release comes to the picture even over the toolbar.
     expect(capture).toHaveBeenCalledWith(7);
     fireEvent.pointerUp(screenEl, { button: 2 });
@@ -214,6 +219,7 @@ describe("Web-Viewer am Host", () => {
     Object.assign(screenEl, { requestPointerLock: lock });
     fireEvent.pointerMove(screenEl, { clientX: 5, clientY: 5 });
     expect(pc.channel.sent).toEqual([]);
+    expect(pc.moves.sent).toEqual([]);
     fireEvent.pointerDown(screenEl, { button: 0 });
     expect(lock).toHaveBeenCalled();
     expect(pc.channel.sent).toEqual([]);
@@ -222,7 +228,7 @@ describe("Web-Viewer am Host", () => {
       get: () => screenEl,
     });
     fireEvent.pointerMove(screenEl, { movementX: 3, movementY: -2 });
-    expect(pc.channel.sent.at(-1)).toMatchObject({ t: "r" });
+    expect(pc.moves.sent.at(-1)).toMatchObject({ t: "r" });
     fireEvent.pointerDown(screenEl, { button: 0 });
     expect(pc.channel.sent.at(-1)).toEqual({ t: "b", c: 0x110, p: true });
     Reflect.deleteProperty(document, "pointerLockElement");
@@ -240,7 +246,7 @@ describe("Web-Viewer am Host", () => {
     fireEvent.pointerDown(screenEl, finger);
     fireEvent.pointerUp(screenEl, finger);
     expect(sent().slice(before)).toEqual([
-      { t: "m", x: 0, y: 0 },
+      { t: "m", x: 0, y: 0, s: expect.any(Number) },
       { t: "b", c: 0x110, p: true },
       { t: "b", c: 0x110, p: false },
     ]);

@@ -759,7 +759,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   `apps/host-agent/src/lib.rs:1651-1653, 1718-1728`.
 - **Problem:** one lost SCTP packet stalls every later move, key and pointer position.
 - **Fix:** a second unordered channel without retransmits for moves and pointer positions.
-- **Status:** open
+- **Status:** fixed. The viewer opens `moves` (`ordered: false, maxRetransmits: 0`) for mouse moves
+  (absolute and, captured, relative); clicks keep their position on the reliable channel, in
+  order with the button. Positions are numbered from one counter across both channels and the
+  host drops one older than the last applied. Touch input stays on the reliable channel (its taps
+  need the position before the button).
 
 ### C13 · The web viewer's pointer re-renders React every frame
 
