@@ -71,13 +71,27 @@ pub struct NvencEncoder {
 }
 
 /// Screen capture input: the DMA-BUF is converted to NV12 by Vulkan into a
-/// buffer CUDA imported once; each frame is then copied on the GPU into
-/// the encoder's input.
+/// buffer CUDA imported once, and NVENC reads that buffer as its input
+/// frame (no copy).
 struct GpuInput {
+    /// The buffer as FFmpeg refers to a frame's memory: refcounted, never
+    /// freed by FFmpeg (CUDA owns the mapping, Vulkan the memory).
+    frame_buf: *mut ffi::AVBufferRef,
     // Drop order: CUDA lets go of the memory before Vulkan frees it.
     buffer: cuda::ImportedBuffer,
     converter: Converter,
 }
+
+impl Drop for GpuInput {
+    fn drop(&mut self) {
+        // SAFETY: created in setup_gpu_input(); FFmpeg's references are
+        // gone once a packet is out (encode() waits for it).
+        unsafe { ffi::av_buffer_unref(&mut self.frame_buf) };
+    }
+}
+
+/// FFmpeg's free callback for memory it must not free.
+unsafe extern "C" fn keep_memory(_opaque: *mut std::ffi::c_void, _data: *mut u8) {}
 
 // SAFETY: all FFmpeg objects are owned exclusively by this value and only
 // touched through &mut self.
@@ -232,61 +246,67 @@ impl NvencEncoder {
             converter.allocation_size(),
             converter.layout().len(),
         )?;
+        // SAFETY: wraps the imported memory for FFmpeg without handing it
+        // over (keep_memory frees nothing).
+        let frame_buf = unsafe {
+            ffi::av_buffer_create(
+                buffer.ptr as *mut u8,
+                converter.layout().len() as usize,
+                Some(keep_memory),
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if frame_buf.is_null() {
+            return Err(CodecError::Backend("out of memory".into()));
+        }
         log::info!("NVENC takes the screen from Vulkan on {name} without a CPU copy");
-        Ok(GpuInput { buffer, converter })
+        Ok(GpuInput {
+            frame_buf,
+            buffer,
+            converter,
+        })
     }
 
-    /// DMA-BUF → NV12 into `self.hw`, all on the GPU.
+    /// DMA-BUF → NV12 on the GPU, into the buffer `self.hw` then points
+    /// at: NVENC reads it as it is.
     unsafe fn convert_dmabuf(&mut self, image: &DmaBuf) -> Result<(), CodecError> {
         if self.gpu_input.is_none() {
             self.gpu_input = Some(self.setup_gpu_input().map_err(|e| e.to_string()));
         }
-        let (ctx, stream) = self.cuda();
         let input = match self.gpu_input.as_mut().expect("set above") {
             Ok(input) => input,
             // Set up once; the same error for every frame.
             Err(e) => return Err(CodecError::Backend(format!("screen input for NVENC: {e}"))),
         };
+        // Waits for Vulkan: the picture is complete when NVENC reads it.
         input
             .converter
             .convert(image)
             .map_err(CodecError::Backend)?;
         let l = input.converter.layout();
-        let current = cuda::Current::push(ctx)?;
-        // SAFETY: hw holds a CUDA NV12 surface from the pool.
-        let (dst, pitch) = unsafe {
-            let f = &*self.hw;
-            (
-                [
-                    f.data[0] as cuda::CuDevicePtr,
-                    f.data[1] as cuda::CuDevicePtr,
-                ],
-                [f.linesize[0] as usize, f.linesize[1] as usize],
-            )
-        };
-        let (w, h) = (self.width as usize, self.height as usize);
-        cuda::copy_2d(
-            &current,
-            stream,
-            &[
-                cuda::Copy2D {
-                    src: input.buffer.ptr,
-                    src_pitch: l.pitch as usize,
-                    dst: dst[0],
-                    dst_pitch: pitch[0],
-                    width_bytes: w,
-                    rows: h,
-                },
-                cuda::Copy2D {
-                    src: input.buffer.ptr + l.uv_offset,
-                    src_pitch: l.pitch as usize,
-                    dst: dst[1],
-                    dst_pitch: pitch[1],
-                    width_bytes: w,
-                    rows: h / 2,
-                },
-            ],
-        )
+        // SAFETY: hw is an empty frame (encode() unrefs it); the buffer
+        // outlives the references FFmpeg takes (dropped with the packet).
+        unsafe {
+            let buf = ffi::av_buffer_ref(input.frame_buf);
+            let frames = ffi::av_buffer_ref(self.frames);
+            let f = &mut *self.hw;
+            f.buf[0] = buf;
+            f.hw_frames_ctx = frames;
+            if buf.is_null() || frames.is_null() {
+                ffi::av_frame_unref(self.hw);
+                return Err(CodecError::Backend("out of memory".into()));
+            }
+            f.format = ffi::AVPixelFormat::AV_PIX_FMT_CUDA as c_int;
+            f.width = self.width as c_int;
+            f.height = self.height as c_int;
+            // NVENC finds UV at pitch × height after Y, where it is.
+            f.data[0] = input.buffer.ptr as *mut u8;
+            f.data[1] = (input.buffer.ptr + l.uv_offset) as *mut u8;
+            f.linesize[0] = l.pitch as c_int;
+            f.linesize[1] = l.pitch as c_int;
+        }
+        Ok(())
     }
 
     /// CPU NV12 → `self.hw`.
@@ -300,8 +320,13 @@ impl NvencEncoder {
                 "input must be NV12 at the configured size".into(),
             ));
         }
-        // SAFETY: sw was allocated for this size in new().
+        // SAFETY: sw was allocated for this size in new(); hw is an empty
+        // frame (encode() unrefs it).
         unsafe {
+            check(
+                "get CUDA surface",
+                ffi::av_hwframe_get_buffer(self.frames, self.hw, 0),
+            )?;
             check(
                 "make upload frame writable",
                 ffi::av_frame_make_writable(self.sw),
@@ -332,10 +357,6 @@ impl Encoder for NvencEncoder {
         // SAFETY: all pointers were created in new() and stay valid.
         unsafe {
             ffi::av_frame_unref(self.hw);
-            check(
-                "get CUDA surface",
-                ffi::av_hwframe_get_buffer(self.frames, self.hw, 0),
-            )?;
             match &frame.dmabuf {
                 Some(image) => self.convert_dmabuf(image)?,
                 None => self.upload(frame)?,

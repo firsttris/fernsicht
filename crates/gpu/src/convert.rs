@@ -34,12 +34,13 @@ pub struct Nv12Layout {
 }
 
 impl Nv12Layout {
-    /// Even sizes only (NV12 subsamples 2×2); rows padded to 4 bytes.
+    /// Even sizes only (NV12 subsamples 2×2). Rows start on 256 bytes, as
+    /// in FFmpeg's CUDA frames: NVENC reads the buffer as its input.
     pub fn new(width: u32, height: u32) -> Result<Self, String> {
         if width < 2 || height < 2 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(format!("NV12 needs an even size, not {width}×{height}"));
         }
-        let pitch = width.next_multiple_of(4);
+        let pitch = width.next_multiple_of(256);
         Ok(Self {
             width,
             height,
@@ -507,7 +508,7 @@ impl Converter {
                 &params,
             );
             // 8×8 invocations per group, each a 4×2 block.
-            d.cmd_dispatch(cmd, l.pitch.div_ceil(32), l.height.div_ceil(16), 1);
+            d.cmd_dispatch(cmd, l.width.div_ceil(32), l.height.div_ceil(16), 1);
             let release_image = vk::ImageMemoryBarrier::default()
                 .image(image)
                 .subresource_range(range)
@@ -570,14 +571,15 @@ mod tests {
     }
 
     #[test]
-    fn layout_pads_rows_to_four_bytes() {
+    fn layout_aligns_rows_to_256_bytes() {
         let l = Nv12Layout::new(1920, 1080).unwrap();
         assert_eq!(
             (l.pitch, l.uv_offset, l.len()),
-            (1920, 1920 * 1080, 1920 * 1620)
+            (2048, 2048 * 1080, 2048 * 1620)
         );
         let odd_rows = Nv12Layout::new(1366, 768).unwrap();
-        assert_eq!(odd_rows.pitch, 1368);
+        assert_eq!(odd_rows.pitch, 1536);
+        assert_eq!(Nv12Layout::new(2560, 1440).unwrap().pitch, 2560);
         assert!(Nv12Layout::new(1365, 768).is_err());
         assert!(Nv12Layout::new(0, 0).is_err());
     }

@@ -45,9 +45,9 @@ display or no root, e.g. in CI.
 
     NVENC takes neither foreign DMA-BUFs nor RGB in the format KMS hands out. The `gpu` crate imports
     the DMA-BUF into Vulkan (with its tiling modifier), a compute shader converts RGB to NV12
-    (BT.709, scaled to the stream size) into a buffer whose memory is exported as an opaque fd; CUDA
-    imports that memory once and copies each frame device to device into NVENC's input. Measured on
-    the GTX 1080: 2.46 ms per 1080p frame for import, conversion, copy and encode.
+    (BT.709, scaled to the stream size) into a buffer whose memory is exported as an opaque fd (rows
+    on 256 bytes); CUDA imports that memory once, and NVENC reads it as its input frame, without a
+    copy. Measured on the GTX 1080: 2.26 ms per 1080p frame for import, conversion and encode.
 
 === "No GPU (synthetic)"
 

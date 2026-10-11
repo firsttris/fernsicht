@@ -699,7 +699,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Where:** `crates/gpu/src/convert.rs:540, 564`, `crates/codec/src/cuda.rs:286-288`,
   `crates/codec/src/nvidia.rs:248-269`.
 - **Fix:** external semaphores between Vulkan and CUDA; no `cuStreamSynchronize`; possibly no copy.
-- **Status:** open
+- **Status:** fixed: no copy, and with it no `cuStreamSynchronize`. NVENC's input frame now points
+  at the buffer Vulkan writes and CUDA imported (rows aligned to 256 bytes as in FFmpeg's CUDA
+  pool; FFmpeg registers the pointer once). Measured on the GTX 1080 first, per 1080p frame:
+  Vulkan conversion with its fence wait 0.27 ms, the copy with its stream sync 0.11 ms, NVENC
+  2.14 ms. Now 2.26 ms median for all of it instead of 2.31 (p95 2.35 instead of 2.45). The
+  Vulkan fence wait stays: an external semaphore would save only the thread's wake-up (some
+  10 µs), the conversion itself is GPU work NVENC has to wait for anyway.
 
 ### C8 · The VAAPI encoder imports the screen buffer anew every frame
 

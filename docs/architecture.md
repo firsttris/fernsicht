@@ -26,7 +26,7 @@ flowchart LR
   primary plane shows and exports it as a DMA-BUF. No pixel is copied ([KMS capture](kms-capture.md)).
 - **Encode.** The DMA-BUF goes straight to the hardware encoder: on AMD/Intel the VAAPI video
   processor converts RGB to NV12 and scales; on NVIDIA a Vulkan compute shader converts into memory
-  CUDA has imported, and CUDA copies it into NVENC's input ([video path](video.md)).
+  CUDA has imported, which NVENC reads as its input ([video path](video.md)).
 - **Transport.** Each encoded frame is split into datagrams, protected by Reed-Solomon FEC sized from
   the measured loss, spread over time by the pacer and sealed with the session key
   ([protocol](protocol.md)).

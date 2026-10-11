@@ -440,7 +440,7 @@ fn dmabuf_without_a_cpu_copy_bt709_and_latency() {
     summary("### NVENC H.264 aus DMA-BUF (Vulkan → CUDA, ohne CPU-Kopie), 1080p60");
     summary("| Messung | Wert |\n|---|---|");
     summary(&format!(
-        "| Import + RGB→NV12 + Kopie + Encode, Median / p95 | {:.2} / {:.2} ms |",
+        "| Import + RGB→NV12 + Encode, Median / p95 | {:.2} / {:.2} ms |",
         percentile(steady.clone(), 0.5),
         percentile(steady.clone(), 0.95)
     ));

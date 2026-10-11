@@ -11,9 +11,9 @@ This works on both machines:
 - **AMD/Intel** (`--encoder vaapi`): the GPU's video processor
   (`scale_vaapi`) does the conversion.
 - **NVIDIA** (`--encoder nvenc`): a Vulkan compute shader does the
-  conversion into GPU memory that CUDA imports. CUDA copies the image on
-  the GPU into the NVENC input. On the GTX 1080 all of this together takes
-  2.5 ms at 1080p.
+  conversion into GPU memory that CUDA imports, and NVENC reads that memory
+  as its input. On the GTX 1080 all of this together takes 2.3 ms at
+  1080p.
 
 `--encoder auto` picks the encoder that matches the graphics card. With
 several GPUs (a laptop's iGPU and dGPU) it takes the one that drives a
