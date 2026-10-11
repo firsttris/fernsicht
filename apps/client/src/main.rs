@@ -519,6 +519,28 @@ mod window {
         })
     }
 
+    /// Runs its function when dropped, also when the thread unwinds.
+    struct OnDrop<F: FnOnce()>(Option<F>);
+
+    impl<F: FnOnce()> Drop for OnDrop<F> {
+        fn drop(&mut self) {
+            if let Some(f) = self.0.take() {
+                f();
+            }
+        }
+    }
+
+    #[test]
+    fn a_panicking_session_still_closes_the_window() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = std::thread::spawn(move || {
+            let _done = OnDrop(Some(move || tx.send("done").unwrap()));
+            panic!("the session broke");
+        });
+        assert!(t.join().is_err());
+        assert_eq!(rx.recv().unwrap(), "done");
+    }
+
     impl App {
         fn close(&mut self, event_loop: &ActiveEventLoop) {
             if let Some(input) = &self.input {
@@ -677,9 +699,12 @@ mod window {
             });
             let (stop, proxy) = (self.stop.clone(), self.proxy.clone());
             self.client = Some(std::thread::spawn(move || {
-                let r = run_with(cfg, stop, factory);
-                let _ = proxy.send_event(UserEvent::Done);
-                r
+                // Also when the session panics: the window closes instead
+                // of freezing, and the panic shows at the join.
+                let _done = OnDrop(Some(move || {
+                    let _ = proxy.send_event(UserEvent::Done);
+                }));
+                run_with(cfg, stop, factory)
             }));
             self.window = Some(window);
         }

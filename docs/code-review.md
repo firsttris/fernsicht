@@ -340,7 +340,8 @@ the limits FFmpeg puts on the next latency step.
 
 - **Where:** `apps/client/src/main.rs:662-666, 841`, `apps/client/src/lib.rs:747-750`.
 - **Fix:** send `Done` from a drop guard.
-- **Status:** open
+- **Status:** fixed. The client thread holds an `OnDrop` guard that sends `Done`, also while
+  unwinding. Test: `a_panicking_session_still_closes_the_window`.
 
 ### A27 · IPv6 cannot work
 
