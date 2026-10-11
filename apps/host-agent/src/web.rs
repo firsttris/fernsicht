@@ -838,7 +838,7 @@ fn serve_file(req: tiny_http::Request, root: Option<&Path>, path: &str) {
 /// up (pairing closes).
 pub(crate) fn check_pin(sec: &HostSecurity, pin: &str) -> Result<(), WebError> {
     match sec.pairing_attempt() {
-        Ok(expected) => {
+        Ok((expected, _)) => {
             let ok = expected.len() == pin.len()
                 && expected
                     .bytes()

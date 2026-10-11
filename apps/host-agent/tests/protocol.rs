@@ -1071,6 +1071,68 @@ mod secure {
     }
 
     #[test]
+    fn a_pairing_begun_before_a_browser_used_the_pin_is_refused() {
+        // Someone read the PIN off the browser's HTTP request and began
+        // pairing; the browser's request is handled first and closes the
+        // window: the pairing must not finish.
+        let sec = security();
+        sec.open_pairing("123456");
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let (mut p, m1) = ClientPairing::start("123456", &Identity::generate(), "mallory");
+        peer.send(|b| {
+            Pair {
+                step: 1,
+                message: &m1,
+            }
+            .encode(b)
+        });
+        let m2 = peer
+            .wait_for(Duration::from_secs(2), |p| match p {
+                Packet::Pair(p) if p.step == 2 => Some(p.message.to_vec()),
+                _ => None,
+            })
+            .expect("step 2");
+        sec.close_pairing(); // what the browser's right PIN does
+        let m3 = p.on_reply(&m2).unwrap();
+        peer.send(|b| {
+            Pair {
+                step: 3,
+                message: &m3,
+            }
+            .encode(b)
+        });
+        let answer = peer.wait_for(Duration::from_secs(1), |p| match p {
+            Packet::Pair(p) if p.step == 4 => Some(None),
+            Packet::Reject(r) => Some(Some(r)),
+            _ => None,
+        });
+        assert_eq!(answer, Some(Some(RejectReason::PairingClosed)));
+        assert!(sec.paired().is_empty());
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_last_allowed_attempt_can_still_pair() {
+        let sec = security();
+        sec.open_pairing("123456");
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        assert_eq!(pair(&mut peer, &client, "654321").unwrap_err(), "wrong PIN");
+        assert_eq!(pair(&mut peer, &client, "111111").unwrap_err(), "wrong PIN");
+        assert!(pair(&mut peer, &client, "123456").is_ok());
+        assert_eq!(sec.paired().len(), 1);
+        host.shutdown();
+    }
+
+    #[test]
     fn handshakes_are_answered_once_and_replays_dropped() {
         let sec = security();
         sec.open_pairing("000000");

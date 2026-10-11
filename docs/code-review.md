@@ -424,7 +424,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   who reads the PIN on the LAN can pair a device for good (root input).
 - **Fix:** separate the browser session from device pairing; in step 3 require the window still
   open and this exchange to be the one that used the PIN; drop the exchange on close.
-- **Status:** open
+- **Status:** fixed for passive listeners; the active attacker remains for D7. Each pairing window
+  has a generation; step 3 finishes only if the window it began in is still open, so a browser
+  using the PIN (which closes the window) kills a pairing begun with it, and the control loop
+  handles web requests before UDP packets, so a listener cannot get step 1 and 3 through first. An
+  attacker who intercepts and holds back the browser's HTTP request could still use the PIN: only
+  HTTPS or a PAKE in the page closes that (D7). Tests:
+  `a_pairing_begun_before_a_browser_used_the_pin_is_refused`, `the_last_allowed_attempt_can_still_pair`.
 
 ### B2 · The control socket trusts a "desktop user" any local user can fake
 

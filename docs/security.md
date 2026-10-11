@@ -63,7 +63,11 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
 ## The web viewer
 
 - A browser is not paired: the PIN opens one session, once, within 5 minutes, with the same attempt
-  limit as pairing.
+  limit as pairing. Using it in a browser closes pairing for devices, and a device pairing that
+  began with that PIN is refused (it must finish in the pairing window it began in). Someone who
+  reads the PIN off the network therefore cannot pair a device with it; only an attacker who can
+  intercept and hold back the browser's request could use it first, which HTTPS for the viewer
+  would close ([next steps](next-steps.md)).
 - Picture, sound and input then travel over WebRTC, which encrypts with DTLS-SRTP.
 - **The page and the PIN travel over plain HTTP.** That is acceptable in your own LAN, not over the
   internet. Use a VPN for remote access ([remote access](remote-access.md)).

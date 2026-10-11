@@ -501,7 +501,13 @@ struct PairingWindow {
     pin: String,
     until: Instant,
     attempts_left: u8,
+    /// Which opening this is: a device pairing that began in one window
+    /// must finish in it (see [`HostSecurity::pairing_generation`]).
+    generation: u64,
 }
+
+/// Counts pairing windows across the host's life.
+static PAIRING_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Who this host is and whom it lets in. Without it (library default, for
 /// tests) sessions are not encrypted and anyone may connect.
@@ -556,7 +562,23 @@ impl HostSecurity {
             pin: pin.to_owned(),
             until: Instant::now() + PAIRING_OPEN_FOR,
             attempts_left: PAIRING_ATTEMPTS,
+            generation: PAIRING_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
         });
+    }
+
+    /// The pairing window open now (not closed, not expired), if any. A
+    /// device pairing finishes only in the window it began in: once a
+    /// browser used the PIN (it travels in clear over HTTP) or the window
+    /// closed, a pairing someone began with that PIN is refused. Used-up
+    /// attempts don't count here: SPAKE2 tells a wrong PIN only at the
+    /// end, so the last allowed attempt must still be able to finish.
+    fn pairing_generation(&self) -> Option<u64> {
+        self.pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|p| p.until > Instant::now())
+            .map(|p| p.generation)
     }
 
     pub fn paired(&self) -> Vec<Peer> {
@@ -581,12 +603,13 @@ impl HostSecurity {
     }
 
     /// The PIN if pairing is open; counts the attempt.
-    fn pairing_attempt(&self) -> Result<String, RejectReason> {
+    /// Uses up an attempt: the PIN and the window's generation.
+    fn pairing_attempt(&self) -> Result<(String, u64), RejectReason> {
         let mut w = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
         match w.as_mut() {
             Some(p) if p.until > Instant::now() && p.attempts_left > 0 => {
                 p.attempts_left -= 1;
-                Ok(p.pin.clone())
+                Ok((p.pin.clone(), p.generation))
             }
             Some(p) if p.attempts_left == 0 => {
                 *w = None;
@@ -639,6 +662,8 @@ impl HostSecurity {
 /// A pairing in progress with one client (retransmissions get the same
 /// answers).
 struct PairingExchange {
+    /// The pairing window it began in.
+    generation: u64,
     from: SocketAddr,
     msg1: Vec<u8>,
     msg2: Vec<u8>,
@@ -1163,7 +1188,7 @@ impl HostAgent {
                     send(2, &e.msg2, out);
                     return;
                 }
-                let pin = match sec.pairing_attempt() {
+                let (pin, generation) = match sec.pairing_attempt() {
                     Ok(pin) => pin,
                     Err(reason) => {
                         let n = reason.encode(out);
@@ -1175,6 +1200,7 @@ impl HostAgent {
                     Ok((state, msg2)) => {
                         send(2, &msg2, out);
                         *ex = Some(PairingExchange {
+                            generation,
                             from,
                             msg1: p.message.to_vec(),
                             msg2,
@@ -1193,6 +1219,15 @@ impl HostAgent {
                     if msg3.as_slice() == p.message {
                         send(4, msg4, out);
                     }
+                    return;
+                }
+                // Its window still open: not closed meanwhile, and its PIN
+                // not used by a browser (which sends it in clear).
+                if sec.pairing_generation() != Some(e.generation) {
+                    log::warn!("{from}: pairing refused: pairing closed meanwhile");
+                    *ex = None;
+                    let n = RejectReason::PairingClosed.encode(out);
+                    let _ = self.socket.send_to(&out[..n], from);
                     return;
                 }
                 let Some(state) = e.state.take() else { return };
