@@ -57,7 +57,6 @@ pub use input::{
     window_to_stream,
 };
 pub use monitors::{MonitorControl, MonitorList, MonitorRequest, parse_monitor_command};
-pub use present::RefChain;
 pub use summary::{AudioSummary, RunSummary};
 
 /// Completed frames waiting for the decoder.

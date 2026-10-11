@@ -10,6 +10,7 @@ use fernsicht_codec::synthetic::SyntheticDecoder;
 use fernsicht_codec::{CodecError, DecodedFrame, Decoder};
 use fernsicht_core::latency::{FrameTimings, LatencyStats};
 use fernsicht_core::now_us;
+use fernsicht_net::keyframe::RefChain;
 use fernsicht_proto::Codec;
 use fernsicht_render::overlay::StreamInfo;
 use fernsicht_render::{Presenter, overlay};
@@ -19,35 +20,6 @@ use crate::cursor::CursorTracker;
 use crate::input::InputHandle;
 use crate::monitors::MonitorControl;
 use crate::network::{OVERLAY_INTERVAL, ReceivedFrame};
-
-/// Tracks whether the decoder can use the next frame. Delta frames need
-/// every frame since the last keyframe; after any gap only a keyframe helps.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RefChain {
-    next: Option<u32>,
-}
-
-impl RefChain {
-    /// Returns `true` if frame `frame_id` can be decoded now.
-    pub fn accept(&mut self, frame_id: u32, keyframe: bool) -> bool {
-        if keyframe || self.next == Some(frame_id) {
-            self.next = Some(frame_id.wrapping_add(1));
-            true
-        } else {
-            self.next = None;
-            false
-        }
-    }
-
-    /// The decoder rejected a frame: wait for the next keyframe.
-    pub fn break_chain(&mut self) {
-        self.next = None;
-    }
-
-    pub fn needs_keyframe(&self) -> bool {
-        self.next.is_none()
-    }
-}
 
 /// What the present thread needs to create a hardware decoder.
 pub(crate) struct Hw {

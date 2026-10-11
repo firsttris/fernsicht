@@ -35,6 +35,7 @@ mod start;
 mod still;
 #[cfg(test)]
 mod tests;
+mod throughput;
 mod web;
 
 // The crate's public API, as before the split into modules.
@@ -62,7 +63,6 @@ use fernsicht_net::socket;
 use fernsicht_proto::{ClockPong, InputAck, MAX_DATAGRAM, Packet};
 
 use health::End;
-use link::{Link, UdpLink};
 use security::PairingExchange;
 use session::{Session, log_session, on_feedback, say_bye};
 
@@ -256,19 +256,13 @@ impl HostAgent {
             let (packet, authentic) = match outer {
                 Packet::Sealed(h, sealed) => {
                     let Some(s) = session.as_ref() else { continue };
-                    let Link::Udp(UdpLink {
-                        crypto: Some(crypto),
-                        ..
-                    }) = &s.link
-                    else {
-                        continue;
-                    };
                     if !from_peer || h.session_id != s.params.session_id {
                         continue;
                     }
-                    let n = match crypto.open(h.counter, sealed, &mut opened) {
-                        Ok(n) => n,
-                        Err(e) => {
+                    let n = match s.link.open(h.counter, sealed, &mut opened) {
+                        None => continue,
+                        Some(Ok(n)) => n,
+                        Some(Err(e)) => {
                             log::debug!("{from}: dropping sealed packet: {e}");
                             continue;
                         }
@@ -282,9 +276,7 @@ impl HostAgent {
             };
             if authentic && let Some(s) = session.as_mut() {
                 s.last_seen = Instant::now();
-                if let Link::Udp(l) = &s.link
-                    && !l.confirmed.swap(true, Ordering::AcqRel)
-                {
+                if s.link.confirm() {
                     // The stream starts now, with a picture of its own.
                     s.shared.keyframe_requested.store(true, Ordering::Relaxed);
                     log::debug!("session {:08x}: client confirmed", s.params.session_id);

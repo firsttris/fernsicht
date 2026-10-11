@@ -134,13 +134,13 @@ pub(crate) fn on_feedback(s: &mut Session, fb: &Feedback) {
     s.overflows_seen = overflows;
     if let Some(kbps) = s
         .rate
-        .report(fb.loss_ratio(), fb.frames_dropped, overflow, Instant::now())
+        .report(estimate, fb.frames_dropped, overflow, Instant::now())
     {
         log::info!(
             "session {:08x}: bitrate {:.1} Mbit/s (loss {:.1} %, {} frames lost{})",
             s.params.session_id,
             f64::from(kbps) / 1000.0,
-            s.rate.loss() * 100.0,
+            estimate * 100.0,
             fb.frames_dropped,
             if overflow { ", sender behind" } else { "" }
         );

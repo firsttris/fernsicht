@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use fernsicht_proto::{MAX_DATAGRAM, clip};
+use fernsicht_proto::clip;
 
 use crate::link::Link;
 use crate::shared::Shared;
@@ -16,18 +16,13 @@ pub(crate) const MONITORS_REPEAT: Duration = Duration::from_secs(2);
 /// it as JSON on the data channel.
 pub(crate) struct MonitorSender {
     link: Link,
-    session_id: u32,
     /// Screen change count and time of the last list sent.
     sent: Option<(u64, Instant)>,
 }
 
 impl MonitorSender {
-    pub(crate) fn new(link: Link, session_id: u32) -> Self {
-        Self {
-            link,
-            session_id,
-            sent: None,
-        }
+    pub(crate) fn new(link: Link) -> Self {
+        Self { link, sent: None }
     }
 
     pub(crate) fn tick(&mut self, shared: &Shared) {
@@ -45,23 +40,7 @@ impl MonitorSender {
         let Some((current, list)) = monitor_list(&screen) else {
             return;
         };
-        match &self.link {
-            Link::Web(tx) => {
-                let monitors: Vec<_> = list
-                    .iter()
-                    .map(|m| serde_json::json!({"name": m.name, "width": m.width, "height": m.height}))
-                    .collect();
-                let text =
-                    serde_json::json!({"type": "monitors", "current": current, "list": monitors});
-                let _ = tx.try_send(crate::web::WebOut::Text(text.to_string()));
-            }
-            Link::Udp(_) => {
-                let mut buf = [0u8; MAX_DATAGRAM];
-                let n =
-                    fernsicht_proto::Monitors::encode(self.session_id, current, &list, &mut buf);
-                let _ = self.link.send(&buf[..n]);
-            }
-        }
+        self.link.send_monitors(current, &list);
     }
 }
 

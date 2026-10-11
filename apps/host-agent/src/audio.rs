@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use fernsicht_audio::{AudioSource, Frame as AudioFrame, Tone};
-use fernsicht_proto::{AudioHeader, MAX_AUDIO_FRAME, MAX_DATAGRAM};
+use fernsicht_proto::{AudioHeader, MAX_AUDIO_FRAME};
 
 use crate::config::AudioKind;
 use crate::link::Link;
@@ -32,28 +32,16 @@ pub(crate) fn audio_loop(
     let mut pcm: AudioFrame = [0; fernsicht_audio::FRAME_SAMPLES * fernsicht_audio::CHANNELS];
     let mut current = [0u8; MAX_AUDIO_FRAME];
     let mut previous = Vec::with_capacity(MAX_AUDIO_FRAME);
-    let mut buf = [0u8; MAX_DATAGRAM];
     let mut seq = 0u32;
     while shared.running.load(Ordering::Acquire) {
         let captured_us = source.next_frame(&mut pcm)?;
         let n = encoder.encode(&pcm, &mut current)?;
-        let len = AudioHeader {
+        let header = AudioHeader {
             session_id,
             seq,
             capture_us: captured_us,
-        }
-        .encode(&current[..n], &previous, &mut buf);
-        match link {
-            // WebRTC carries Opus frames as they are.
-            Link::Web(tx) => {
-                let _ = tx.try_send(crate::web::WebOut::Audio {
-                    data: current[..n].to_vec(),
-                });
-            }
-            Link::Udp(_) => {
-                let _ = link.send(&buf[..len]);
-            }
-        }
+        };
+        link.send_audio(header, &current[..n], &previous);
         HostStats::bump(&shared.stats.audio_frames_sent);
         previous.clear();
         previous.extend_from_slice(&current[..n]);

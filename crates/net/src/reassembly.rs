@@ -5,6 +5,7 @@ use reed_solomon_simd::ReedSolomonDecoder;
 
 use crate::fec::MIN_RECOVERY_CAP;
 use crate::frame_newer;
+use crate::keyframe::RefChain;
 
 /// Frames tracked at once. Older frames are dropped when a newer one
 /// completes or when a slot is needed.
@@ -145,7 +146,7 @@ pub struct Reassembler {
     slots: Vec<FrameSlot>,
     decoder: Option<ReedSolomonDecoder>,
     last_completed: Option<u32>,
-    needs_keyframe: bool,
+    chain: RefChain,
     session_id: Option<u32>,
     interval: ReceiverStats,
     total: ReceiverStats,
@@ -166,7 +167,7 @@ impl Reassembler {
             slots: (0..MAX_IN_FLIGHT).map(|_| FrameSlot::default()).collect(),
             decoder: None,
             last_completed: None,
-            needs_keyframe: true,
+            chain: RefChain::default(),
             session_id: None,
             interval: ReceiverStats::default(),
             total: ReceiverStats::default(),
@@ -176,7 +177,7 @@ impl Reassembler {
 
     /// `true` until a keyframe arrives, and again after a frame was lost.
     pub fn needs_keyframe(&self) -> bool {
-        self.needs_keyframe
+        self.chain.needs_keyframe()
     }
 
     /// Hands over the bytes of completed frame `frame_id` by swapping
@@ -395,11 +396,7 @@ impl Reassembler {
             s.frames_completed = s.frames_completed.saturating_add(1);
             s.frames_dropped = s.frames_dropped.saturating_add(gap);
         });
-        if keyframe {
-            self.needs_keyframe = false;
-        } else if gap > 0 {
-            self.needs_keyframe = true;
-        }
+        self.chain.accept(frame_id, keyframe);
         self.last_completed = Some(frame_id);
 
         // Latest frame wins: anything older can no longer be shown.

@@ -18,7 +18,6 @@ use crate::input::{
 };
 use crate::monitors::{MonitorList, MonitorRequest, parse_monitor_command};
 use crate::network::{RateWindow, ratio};
-use crate::present::RefChain;
 
 #[test]
 fn gamepads_follow_the_focus() {
@@ -310,38 +309,6 @@ fn the_input_handle_waits_for_the_stream_size() {
         h.pointer_at((50.0, 50.0), (100, 100)),
         Some(InputEvent::MouseAbs { .. })
     ));
-}
-
-#[test]
-fn ref_chain_needs_a_keyframe_first() {
-    let mut c = RefChain::default();
-    assert!(c.needs_keyframe());
-    assert!(!c.accept(0, false));
-    assert!(c.accept(1, true));
-    assert!(!c.needs_keyframe());
-    assert!(c.accept(2, false));
-    assert!(c.accept(3, false));
-}
-
-#[test]
-fn ref_chain_breaks_on_gaps_until_keyframe() {
-    let mut c = RefChain::default();
-    assert!(c.accept(0, true));
-    assert!(!c.accept(2, false), "frame 1 missing");
-    assert!(!c.accept(3, false), "still broken");
-    assert!(c.needs_keyframe());
-    assert!(c.accept(4, true));
-    assert!(c.accept(5, false));
-}
-
-#[test]
-fn ref_chain_breaks_on_decode_error_and_wraps() {
-    let mut c = RefChain::default();
-    assert!(c.accept(u32::MAX, true));
-    assert!(c.accept(0, false));
-    c.break_chain();
-    assert!(!c.accept(1, false));
-    assert!(c.accept(9, true));
 }
 
 #[test]

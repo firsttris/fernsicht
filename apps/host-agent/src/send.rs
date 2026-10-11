@@ -13,6 +13,10 @@ use crate::config::SessionParams;
 use crate::health::RepeatedError;
 use crate::link::Link;
 use crate::shared::{HostStats, Shared};
+use crate::throughput::{self, Sent, Window};
+
+/// How often the host logs what a session sends.
+const LOG_EVERY: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn send_loop(
@@ -24,23 +28,7 @@ pub(crate) fn send_loop(
     mut pacer: Pacer,
     mut loss: LossSim,
 ) -> anyhow::Result<()> {
-    // Datagrams that cross the path whole (a VPN's MTU is lower than a
-    // LAN's); the client takes the shard size from each packet.
-    let shard_size = match link {
-        Link::Udp(l) => {
-            let datagram = socket::datagram_for(socket::path_mtu(l.peer), l.peer.is_ipv6());
-            let shard = fernsicht_net::fec::shard_size_for(datagram);
-            if datagram < MAX_DATAGRAM {
-                log::info!(
-                    "session {:08x}: the path to {} carries {datagram}-byte datagrams; shards of {shard} bytes",
-                    params.session_id,
-                    l.peer
-                );
-            }
-            shard
-        }
-        Link::Web(_) => FecConfig::default().shard_size,
-    };
+    let shard_size = link.shard_size();
     let mut packetizer = Packetizer::new(FecConfig {
         shard_size,
         ..FecConfig::default()
@@ -49,8 +37,7 @@ pub(crate) fn send_loop(
     let mut scratch = Vec::with_capacity(socket::MAX_SEGMENTS_BYTES + MAX_DATAGRAM);
     // A frame leaves before the next one is encoded.
     let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)));
-    let mut window_start = Instant::now();
-    let (mut frames, mut bytes, mut packets) = (0u32, 0u64, 0u64);
+    let mut window: Window = (Instant::now(), Sent::default());
     let mut errors = RepeatedError::default();
 
     while let Ok(enc) = queue.recv() {
@@ -67,10 +54,10 @@ pub(crate) fn send_loop(
             encoded_delta_us: enc.encoded_us.saturating_sub(enc.capture_us) as u32,
         };
         let pkts = packetizer.packetize(&meta, &enc.data)?;
+        let bytes = pkts.iter().map(|p| p.len() as u64).sum();
+        window.1 = throughput::count(window.1, &enc, bytes, pkts.len() as u64);
         let _ = free_enc.send(enc);
         pacer.pace(pkts, budget, |chunk| {
-            packets += chunk.len() as u64;
-            bytes += chunk.iter().map(|p| p.len() as u64).sum::<u64>();
             let kept = chunk
                 .iter()
                 .map(Vec::as_slice)
@@ -88,22 +75,17 @@ pub(crate) fn send_loop(
                 Err(e) => Err(e),
             }
         })?;
-        frames += 1;
         HostStats::bump(&shared.stats.frames_sent);
 
-        let elapsed = window_start.elapsed();
-        if elapsed >= Duration::from_secs(5) {
-            let secs = elapsed.as_secs_f64();
+        if let Some(r) = throughput::close_after(&mut window, Instant::now(), LOG_EVERY) {
             log::info!(
                 "session {:08x}: {:.1} fps, {:.1} Mbit/s, {:.0} pkt/s, FEC sized for {:.1} % loss",
                 params.session_id,
-                f64::from(frames) / secs,
-                bytes as f64 * 8.0 / secs / 1e6,
-                packets as f64 / secs,
+                r.fps,
+                r.bits_per_sec / 1e6,
+                r.packets_per_sec,
                 packetizer.config().loss * 100.0
             );
-            window_start = Instant::now();
-            (frames, bytes, packets) = (0, 0, 0);
         }
     }
     Ok(())

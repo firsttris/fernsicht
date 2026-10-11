@@ -6,16 +6,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::Sender;
+use fernsicht_net::fec::FecConfig;
 use fernsicht_net::socket;
-use fernsicht_proto::{MAX_DATAGRAM, SEALED_OVERHEAD, SealedHeader};
-use fernsicht_secure::session::Transport;
+use fernsicht_proto::{
+    AudioHeader, MAX_DATAGRAM, Monitor, Monitors, SEALED_OVERHEAD, SealedHeader,
+};
+use fernsicht_secure::session::{SessionError, Transport};
+
+use crate::web::WebOut;
 
 /// Sends a session's packets to its client: over our UDP protocol, or to
 /// a browser's data channel. Shared by the session's threads.
 #[derive(Clone)]
 pub(crate) enum Link {
     Udp(UdpLink),
-    Web(Sender<crate::web::WebOut>),
+    Web(Sender<WebOut>),
 }
 
 impl Link {
@@ -24,7 +29,7 @@ impl Link {
             Link::Udp(l) => l.send(packet),
             Link::Web(tx) => {
                 // A full queue drops the packet (pointer updates repeat).
-                let _ = tx.try_send(crate::web::WebOut::Packet(packet.to_vec()));
+                let _ = tx.try_send(WebOut::Packet(packet.to_vec()));
                 Ok(())
             }
         }
@@ -48,6 +53,85 @@ impl Link {
             Link::Udp(l) => l.crypto.is_some(),
             // DTLS-SRTP.
             Link::Web(_) => true,
+        }
+    }
+
+    /// Sends one Opus frame: WebRTC carries it as it is, our protocol in a
+    /// packet with the frame before it, so that one lost packet leaves no
+    /// gap.
+    pub(crate) fn send_audio(&self, header: AudioHeader, frame: &[u8], previous: &[u8]) {
+        match self {
+            Link::Web(tx) => {
+                let _ = tx.try_send(WebOut::Audio {
+                    data: frame.to_vec(),
+                });
+            }
+            Link::Udp(l) => {
+                let mut buf = [0u8; MAX_DATAGRAM];
+                let n = header.encode(frame, previous, &mut buf);
+                let _ = l.send(&buf[..n]);
+            }
+        }
+    }
+
+    /// Tells the client the host's monitors and which one it sees: a
+    /// browser as JSON on the data channel.
+    pub(crate) fn send_monitors(&self, current: u8, list: &[Monitor<'_>]) {
+        match self {
+            Link::Web(tx) => {
+                let _ = tx.try_send(WebOut::Text(crate::web::monitors_message(current, list)));
+            }
+            Link::Udp(l) => {
+                let mut buf = [0u8; MAX_DATAGRAM];
+                let n = Monitors::encode(l.session_id, current, list, &mut buf);
+                let _ = l.send(&buf[..n]);
+            }
+        }
+    }
+
+    /// The size of the video's FEC shards: datagrams that cross the path
+    /// whole (a VPN's MTU is lower than a LAN's). The client takes the
+    /// shard size from each packet.
+    pub(crate) fn shard_size(&self) -> usize {
+        let Link::Udp(l) = self else {
+            return FecConfig::default().shard_size;
+        };
+        let datagram = socket::datagram_for(socket::path_mtu(l.peer), l.peer.is_ipv6());
+        let shard = fernsicht_net::fec::shard_size_for(datagram);
+        if datagram < MAX_DATAGRAM {
+            log::info!(
+                "session {:08x}: the path to {} carries {datagram}-byte datagrams; shards of {shard} bytes",
+                l.session_id,
+                l.peer
+            );
+        }
+        shard
+    }
+
+    /// Opens a sealed packet from the client into `out`; `None` when the
+    /// session is not sealed (a browser's, or a plain one in tests).
+    pub(crate) fn open(
+        &self,
+        counter: u64,
+        sealed: &[u8],
+        out: &mut [u8],
+    ) -> Option<Result<usize, SessionError>> {
+        match self {
+            Link::Udp(UdpLink {
+                crypto: Some(crypto),
+                ..
+            }) => Some(crypto.open(counter, sealed, out)),
+            _ => None,
+        }
+    }
+
+    /// Notes that the client sent an authentic packet; true the first
+    /// time, when it has proven it holds the session's keys.
+    pub(crate) fn confirm(&self) -> bool {
+        match self {
+            Link::Udp(l) => !l.confirmed.swap(true, Ordering::AcqRel),
+            // WebRTC proved it before the session started.
+            Link::Web(_) => false,
         }
     }
 }

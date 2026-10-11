@@ -13,13 +13,14 @@
 
 use std::time::{Duration, Instant};
 
+#[cfg(doc)]
+use crate::LossEstimator;
+
 /// Loss above this (smoothed) counts as congestion: down hard.
 pub const HEAVY_LOSS: f32 = 0.20;
 /// Loss above this: down a little (FEC gets expensive). Below it, with no
 /// frame lost and no overflow, the link counts as clean.
 pub const SOME_LOSS: f32 = 0.15;
-/// How much of a new report goes into the smoothed loss.
-const SMOOTHING: f32 = 0.3;
 /// Steps down: hard on congestion, gently for a frame lost now and then.
 const DOWN_HARD: f64 = 0.7;
 const DOWN_GENTLY: f64 = 0.85;
@@ -35,8 +36,6 @@ pub struct RateController {
     ceiling: u32,
     floor: u32,
     current: u32,
-    /// Smoothed loss ratio.
-    loss: f32,
     last_change: Instant,
     clean_since: Option<Instant>,
 }
@@ -50,7 +49,6 @@ impl RateController {
             ceiling,
             floor: (ceiling / 10).max(1000).min(ceiling),
             current: ceiling,
-            loss: 0.0,
             last_change: now,
             clean_since: Some(now),
         }
@@ -60,14 +58,10 @@ impl RateController {
         self.current
     }
 
-    /// The smoothed loss the controller works with.
-    pub fn loss(&self) -> f32 {
-        self.loss
-    }
-
-    /// One report: the loss ratio the client saw (before FEC), the frames
-    /// it lost despite FEC, and whether the host's sender overflowed since
-    /// the last report. Returns the new bitrate when it changes.
+    /// One report: the loss the client saw (before FEC), smoothed as FEC
+    /// sizes for it ([`LossEstimator`]), the frames it lost despite FEC, and
+    /// whether the host's sender overflowed since the last report. Returns
+    /// the new bitrate when it changes.
     pub fn report(
         &mut self,
         loss: f32,
@@ -75,19 +69,12 @@ impl RateController {
         overflow: bool,
         now: Instant,
     ) -> Option<u32> {
-        let loss = if loss.is_finite() {
-            loss.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        // Symmetric, so the estimate is not biased towards bad reports.
-        self.loss += (loss - self.loss) * SMOOTHING;
         let since = now.saturating_duration_since(self.last_change);
 
-        let factor = if overflow || self.loss > HEAVY_LOSS {
+        let factor = if overflow || loss > HEAVY_LOSS {
             self.clean_since = None;
             (since >= DOWN_EVERY).then_some(DOWN_HARD)
-        } else if frames_lost > 0 || self.loss > SOME_LOSS {
+        } else if frames_lost > 0 || loss > SOME_LOSS {
             self.clean_since = None;
             (since >= DOWN_EVERY * 2).then_some(DOWN_GENTLY)
         } else {
@@ -114,15 +101,29 @@ impl RateController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LossEstimator;
 
     const MS: Duration = Duration::from_millis(100);
 
+    /// The controller and the loss filter its reports go through, as in
+    /// the host's session.
+    type Link = (RateController, LossEstimator);
+
+    fn link(ceiling: u32, t: Instant) -> Link {
+        (RateController::new(ceiling, t), LossEstimator::default())
+    }
+
+    fn report(c: &mut Link, loss: f32, lost: u32, overflow: bool, t: Instant) -> Option<u32> {
+        let smoothed = c.1.update(loss);
+        c.0.report(smoothed, lost, overflow, t)
+    }
+
     /// Feeds `n` reports of `loss`, 100 ms apart; returns the changes.
-    fn feed(c: &mut RateController, t: &mut Instant, n: usize, loss: f32) -> Vec<u32> {
+    fn feed(c: &mut Link, t: &mut Instant, n: usize, loss: f32) -> Vec<u32> {
         (0..n)
             .filter_map(|_| {
                 *t += MS;
-                c.report(loss, 0, false, *t)
+                report(c, loss, 0, false, *t)
             })
             .collect()
     }
@@ -130,7 +131,7 @@ mod tests {
     #[test]
     fn a_clean_link_keeps_the_bitrate() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         assert!(
             feed(&mut c, &mut t, 300, 0.0).is_empty(),
             "already at the ceiling"
@@ -143,35 +144,35 @@ mod tests {
             feed(&mut c, &mut t, 300, 0.10).is_empty(),
             "steady 10 % (Wi-Fi) too"
         );
-        assert_eq!(c.current(), 20_000);
+        assert_eq!(c.0.current(), 20_000);
     }
 
     #[test]
     fn heavy_loss_goes_down_fast_and_recovers_slowly() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         // 30 % loss for 3 s: down about once a second, to the floor at most.
         let down = feed(&mut c, &mut t, 30, 0.30);
         assert!(down.len() >= 2, "{down:?}");
         assert!(down.windows(2).all(|w| w[1] < w[0]));
-        assert!(c.current() < 10_000);
-        assert!(c.loss() > HEAVY_LOSS);
-        let low = c.current();
+        assert!(c.0.current() < 10_000);
+        assert!(c.1.estimate() > HEAVY_LOSS);
+        let low = c.0.current();
         // Clean again: nothing for 5 s, then up in steps 5 s apart.
         assert!(feed(&mut c, &mut t, 49, 0.0).is_empty());
         let up = feed(&mut c, &mut t, 300, 0.0);
         assert!(!up.is_empty() && up[0] > low, "{up:?}");
         assert!(up.len() <= 6, "at most one step per 5 s: {up:?}");
-        assert_eq!(c.current(), *up.last().unwrap());
+        assert_eq!(c.0.current(), *up.last().unwrap());
         // Eventually back at the ceiling, never above.
         feed(&mut c, &mut t, 3000, 0.0);
-        assert_eq!(c.current(), 20_000);
+        assert_eq!(c.0.current(), 20_000);
     }
 
     #[test]
     fn some_loss_goes_down_gently() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         let down = feed(&mut c, &mut t, 25, 0.17);
         assert_eq!(down.first(), Some(&17_000));
     }
@@ -179,18 +180,18 @@ mod tests {
     #[test]
     fn the_floor_holds_and_overflow_counts_as_congestion() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         for _ in 0..100 {
             t += Duration::from_secs(1);
-            c.report(0.0, 0, true, t);
+            report(&mut c, 0.0, 0, true, t);
         }
-        assert_eq!(c.current(), 2_000, "a tenth of the ceiling");
-        let small = RateController::new(500, t);
-        assert_eq!(small.current(), 500);
+        assert_eq!(c.0.current(), 2_000, "a tenth of the ceiling");
+        let small = link(500, t);
+        assert_eq!(small.0.current(), 500);
         let mut small = small;
         t += Duration::from_secs(2);
         assert_eq!(
-            small.report(0.5, 0, false, t),
+            report(&mut small, 0.5, 0, false, t),
             None,
             "floor = ceiling below 1 Mbit/s"
         );
@@ -199,26 +200,29 @@ mod tests {
     #[test]
     fn nonsense_reports_are_harmless() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         for l in [f32::NAN, f32::INFINITY, -1.0] {
             t += Duration::from_secs(1);
-            c.report(l, 0, false, t);
+            report(&mut c, l, 0, false, t);
         }
-        assert!(c.loss() <= 1.0 && c.loss() >= 0.0);
-        let mut zero = RateController::new(0, t);
-        assert_eq!(zero.current(), 1);
-        assert_eq!(zero.report(1.0, 0, true, t + Duration::from_secs(9)), None);
+        assert!(c.1.estimate() <= 1.0 && c.1.estimate() >= 0.0);
+        let mut zero = link(0, t);
+        assert_eq!(zero.0.current(), 1);
+        assert_eq!(
+            report(&mut zero, 1.0, 0, true, t + Duration::from_secs(9)),
+            None
+        );
     }
 
     #[test]
     fn frames_lost_despite_fec_go_down_gently() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         t += Duration::from_secs(2);
-        assert_eq!(c.report(0.03, 2, false, t), Some(17_000));
+        assert_eq!(report(&mut c, 0.03, 2, false, t), Some(17_000));
         // Not again within two seconds.
         t += MS;
-        assert_eq!(c.report(0.03, 2, false, t), None);
+        assert_eq!(report(&mut c, 0.03, 2, false, t), None);
     }
 
     #[test]
@@ -227,22 +231,22 @@ mod tests {
         // repairs: the bitrate comes back to the ceiling.
         for loss in [0.03, 0.10] {
             let mut t = Instant::now();
-            let mut c = RateController::new(20_000, t);
+            let mut c = link(20_000, t);
             t += Duration::from_secs(2);
-            assert!(c.report(loss, 1, false, t).is_some());
+            assert!(report(&mut c, loss, 1, false, t).is_some());
             feed(&mut c, &mut t, 600, loss);
-            assert_eq!(c.current(), 20_000, "{loss}");
+            assert_eq!(c.0.current(), 20_000, "{loss}");
         }
     }
 
     #[test]
     fn one_bad_report_does_not_count_as_congestion() {
         let mut t = Instant::now();
-        let mut c = RateController::new(20_000, t);
+        let mut c = link(20_000, t);
         feed(&mut c, &mut t, 30, 0.0);
         t += MS;
-        assert_eq!(c.report(0.40, 0, false, t), None);
-        assert!(c.loss() < SOME_LOSS);
+        assert_eq!(report(&mut c, 0.40, 0, false, t), None);
+        assert!(c.1.estimate() < SOME_LOSS);
         assert!(feed(&mut c, &mut t, 100, 0.0).is_empty());
     }
 }

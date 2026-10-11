@@ -4,7 +4,9 @@
 //! - [`reassembly`]: rebuilds frames on the receiver, latest frame wins
 //! - [`pacer`]: spreads a frame's packets over part of the frame interval
 //! - [`clock_sync`]: NTP-style host↔client clock offset estimation
-//! - [`keyframe`]: asking for a keyframe at once, answering each loss once
+//! - [`keyframe`]: the reference chain, asking for a keyframe at once,
+//!   answering each loss once
+//! - [`rate`]: bitrate adaptation from the smoothed loss
 //! - [`loss`]: deterministic packet-loss injection for testing
 //! - [`socket`]: UDP sockets with buffers sized for video bursts
 

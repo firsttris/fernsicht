@@ -210,7 +210,7 @@ impl HostAgent {
                 params.session_id,
                 (source.width(), source.height()),
             );
-            let monitors = MonitorSender::new(link.clone(), params.session_id);
+            let monitors = MonitorSender::new(link.clone());
             spawn_hot("capture", move || {
                 let _guard = StopOnExit {
                     running: &shared.running,

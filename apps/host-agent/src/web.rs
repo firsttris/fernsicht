@@ -36,10 +36,12 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use fernsicht_codec::EncodedFrame;
+use fernsicht_proto::Monitor;
 use serde_json::json;
 use str0m::change::{SdpAnswer, SdpOffer};
 
 use crate::shared::Shared;
+use crate::throughput::{self, Sent, Window};
 use crate::{HostStats, SessionParams};
 
 /// What a session sends to the browser, from its threads to the WebRTC
@@ -66,6 +68,9 @@ const OUT_QUEUE: usize = 64;
 /// blocked, or the tab was closed while connecting): the session ends
 /// instead of encoding for nobody.
 pub(crate) const CONNECT_WITHIN: Duration = Duration::from_secs(10);
+
+/// How often the browser's overlay gets the host's numbers.
+const STATS_EVERY: Duration = Duration::from_secs(1);
 
 /// A browser asking for a session, from the HTTP thread to the host's loop.
 pub(crate) struct WebRequest {
@@ -120,8 +125,7 @@ pub(crate) fn send_loop(
     params: SessionParams,
     codec: &'static str,
 ) {
-    let mut window = Instant::now();
-    let (mut frames, mut bytes, mut capture_us, mut encode_us) = (0u64, 0u64, 0u64, 0u64);
+    let mut window: Window = (Instant::now(), Sent::default());
     // The picture's size changes with the monitor shown.
     let mut size = (params.width, params.height);
     while let Ok(enc) = queue.recv() {
@@ -131,10 +135,7 @@ pub(crate) fn send_loop(
         if enc.width > 0 && enc.height > 0 {
             size = (enc.width, enc.height);
         }
-        frames += 1;
-        bytes += enc.data.len() as u64;
-        capture_us += enc.capture_ready_us.saturating_sub(enc.capture_us);
-        encode_us += enc.encoded_us.saturating_sub(enc.capture_ready_us);
+        window.1 = throughput::count(window.1, &enc, enc.data.len() as u64, 0);
         let video = WebOut::Video {
             data: enc.data.clone(),
             capture_us: enc.capture_us,
@@ -144,22 +145,18 @@ pub(crate) fn send_loop(
             break;
         }
         HostStats::bump(&shared.stats.frames_sent);
-        let elapsed = window.elapsed();
-        if elapsed >= Duration::from_secs(1) {
-            let secs = elapsed.as_secs_f64();
+        if let Some(r) = throughput::close_after(&mut window, Instant::now(), STATS_EVERY) {
             let stats = json!({
                 "type": "stats",
-                "captureUs": capture_us / frames,
-                "encodeUs": encode_us / frames,
-                "fps": frames as f64 / secs,
-                "bitrateBps": (bytes as f64 * 8.0 / secs) as u64,
+                "captureUs": r.capture_us,
+                "encodeUs": r.encode_us,
+                "fps": r.fps,
+                "bitrateBps": r.bits_per_sec as u64,
                 "width": size.0,
                 "height": size.1,
                 "codec": codec,
             });
             let _ = out.try_send(WebOut::Text(stats.to_string()));
-            window = Instant::now();
-            (frames, bytes, capture_us, encode_us) = (0, 0, 0, 0);
         }
     }
 }
@@ -167,4 +164,42 @@ pub(crate) fn send_loop(
 /// A new channel for a web session's output.
 pub(crate) fn out_channel() -> (Sender<WebOut>, Receiver<WebOut>) {
     bounded(OUT_QUEUE)
+}
+
+/// The host's monitors for the data channel, and which one is shown.
+pub(crate) fn monitors_message(current: u8, list: &[Monitor<'_>]) -> String {
+    let list: Vec<_> = list
+        .iter()
+        .map(|m| json!({"name": m.name, "width": m.width, "height": m.height}))
+        .collect();
+    json!({"type": "monitors", "current": current, "list": list}).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitors_go_to_the_browser_as_json() {
+        let list = [
+            Monitor {
+                name: "DP-1",
+                width: 2560,
+                height: 1440,
+            },
+            Monitor {
+                name: "HDMI-A-1",
+                width: 1920,
+                height: 1080,
+            },
+        ];
+        let v: serde_json::Value = serde_json::from_str(&monitors_message(1, &list)).unwrap();
+        assert_eq!(
+            v,
+            json!({"type": "monitors", "current": 1, "list": [
+                {"name": "DP-1", "width": 2560, "height": 1440},
+                {"name": "HDMI-A-1", "width": 1920, "height": 1080},
+            ]})
+        );
+    }
 }

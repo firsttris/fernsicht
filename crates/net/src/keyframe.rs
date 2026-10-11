@@ -24,6 +24,37 @@ pub fn in_flight_for(rtt: Duration, frame: Duration) -> Duration {
     rtt.min(MAX_RTT) + frame * 2 + SLACK
 }
 
+/// Whether the decoder can use the next frame. Delta frames need every
+/// frame since the last keyframe; after any gap only a keyframe helps. The
+/// reassembler follows the frames that complete, the client's present
+/// thread the frames it decodes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefChain {
+    next: Option<u32>,
+}
+
+impl RefChain {
+    /// Returns `true` if frame `frame_id` can be decoded now.
+    pub fn accept(&mut self, frame_id: u32, keyframe: bool) -> bool {
+        if keyframe || self.next == Some(frame_id) {
+            self.next = Some(frame_id.wrapping_add(1));
+            true
+        } else {
+            self.next = None;
+            false
+        }
+    }
+
+    /// The decoder rejected a frame: wait for the next keyframe.
+    pub fn break_chain(&mut self) {
+        self.next = None;
+    }
+
+    pub fn needs_keyframe(&self) -> bool {
+        self.next.is_none()
+    }
+}
+
 /// The client's side: when to ask.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Asks {
@@ -152,5 +183,37 @@ mod tests {
             in_flight_for(Duration::from_secs(4000), frame),
             MAX_RTT + 2 * frame + SLACK
         );
+    }
+
+    #[test]
+    fn ref_chain_needs_a_keyframe_first() {
+        let mut c = RefChain::default();
+        assert!(c.needs_keyframe());
+        assert!(!c.accept(0, false));
+        assert!(c.accept(1, true));
+        assert!(!c.needs_keyframe());
+        assert!(c.accept(2, false));
+        assert!(c.accept(3, false));
+    }
+
+    #[test]
+    fn ref_chain_breaks_on_gaps_until_keyframe() {
+        let mut c = RefChain::default();
+        assert!(c.accept(0, true));
+        assert!(!c.accept(2, false), "frame 1 missing");
+        assert!(!c.accept(3, false), "still broken");
+        assert!(c.needs_keyframe());
+        assert!(c.accept(4, true));
+        assert!(c.accept(5, false));
+    }
+
+    #[test]
+    fn ref_chain_breaks_on_decode_error_and_wraps() {
+        let mut c = RefChain::default();
+        assert!(c.accept(u32::MAX, true));
+        assert!(c.accept(0, false));
+        c.break_chain();
+        assert!(!c.accept(1, false));
+        assert!(c.accept(9, true));
     }
 }
