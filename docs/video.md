@@ -34,8 +34,9 @@ display or no root, e.g. in CI.
 
     The DMA-BUF is imported as a VA surface with `vaCreateSurfaces` (DRM PRIME), without a copy. The
     GPU's video processor (`scale_vaapi`) converts RGB to NV12 in BT.709 limited range and scales to
-    the stream size. Imports are cached per buffer. Measured on the RX 7800 XT: import, conversion and
-    encode of a 1080p frame in about 2 ms.
+    the stream size. Imports are cached for the last four buffers, keyed by the buffer's inode and
+    layout (as on the NVIDIA path). Measured on the RX 7800 XT: import, conversion and encode of a
+    1080p frame in about 2 ms.
 
 === "NVIDIA (NVENC)"
 

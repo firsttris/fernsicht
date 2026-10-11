@@ -711,7 +711,10 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `crates/codec/src/vaapi.rs:675-817`, `docs/video.md` ("imports are cached").
 - **Fix:** cache imported surfaces by (device, inode, layout) like `gpu::convert`.
-- **Status:** open
+- **Status:** fixed. The key moved into the capture crate (`DmaBuf::identity`), used by both
+  converters. VAAPI keeps the surfaces of the last four buffers; each cache entry holds its own
+  reference, so an evicted surface lives on while the filter graph still uses it. GPU test: three
+  buffers in rotation, a fresh descriptor per frame, three imports.
 
 ### C9 · About 30 DRM ioctls per frame; pointer work before the frame is handed on
 

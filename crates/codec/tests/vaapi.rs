@@ -480,6 +480,30 @@ fn dmabuf_zero_copy_bt709_and_latency() {
 }
 
 #[test]
+fn screen_buffers_are_imported_once() {
+    let Some(node) = render_node() else { return };
+    let (w, h) = (1920, 1080);
+    let mut enc = VaapiEncoder::new(&config(&node, w, h, 60, 20_000)).unwrap();
+    // A display server cycles through a few buffers; capture hands out a
+    // new descriptor for the same buffer every frame.
+    let buffers: Vec<DmaBuf> = (0..3).map(|i| upload_bgrx(&node, w, h, i * 7)).collect();
+    let mut out = EncodedFrame::default();
+    for i in 0..30u64 {
+        let image = &buffers[i as usize % buffers.len()];
+        let fresh = DmaBuf {
+            objects: image
+                .objects
+                .iter()
+                .map(|fd| Arc::new(fd.try_clone().unwrap()))
+                .collect(),
+            ..image.clone()
+        };
+        enc.encode(&dmabuf_frame(&fresh, i), &mut out).unwrap();
+    }
+    assert_eq!(enc.cached_imports(), buffers.len());
+}
+
+#[test]
 fn dmabuf_is_scaled_to_the_stream_size() {
     let Some(node) = render_node() else { return };
     let image = upload_bgrx(&node, 2560, 1440, 0);

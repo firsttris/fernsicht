@@ -95,6 +95,35 @@ impl DmaBuf {
         }
         Ok(())
     }
+
+    /// Which buffer this is: capture hands out new descriptors for the
+    /// same buffer every frame, so importers key their imports by this
+    /// (the inode stays the buffer's while anyone holds a reference).
+    /// `None` when the descriptor cannot be examined.
+    pub fn identity(&self) -> Option<BufferIdentity> {
+        use std::os::unix::fs::MetadataExt;
+        let fd = self.objects.get(self.planes.first()?.object)?;
+        let meta = std::fs::File::from(fd.try_clone().ok()?).metadata().ok()?;
+        Some(BufferIdentity {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            fourcc: self.fourcc,
+            modifier: self.modifier,
+            size: (self.width, self.height),
+            planes: self.planes.iter().map(|p| (p.offset, p.pitch)).collect(),
+        })
+    }
+}
+
+/// See [`DmaBuf::identity`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufferIdentity {
+    dev: u64,
+    ino: u64,
+    fourcc: u32,
+    modifier: u64,
+    size: (u32, u32),
+    planes: Vec<(u32, u32)>,
 }
 
 #[cfg(test)]
@@ -118,6 +147,20 @@ mod tests {
                 pitch: 7680,
             }],
         }
+    }
+
+    #[test]
+    fn the_same_buffer_is_known_by_any_descriptor() {
+        let a = image();
+        let mut again = a.clone();
+        again.objects = vec![Arc::new(a.objects[0].try_clone().unwrap())];
+        assert_eq!(a.identity(), again.identity());
+        let mut other = a.clone();
+        other.objects = vec![Arc::new(std::fs::File::open("/dev/zero").unwrap().into())];
+        assert_ne!(a.identity(), other.identity());
+        let mut relaid = a.clone();
+        relaid.planes[0].pitch = 8192;
+        assert_ne!(a.identity(), relaid.identity());
     }
 
     #[test]

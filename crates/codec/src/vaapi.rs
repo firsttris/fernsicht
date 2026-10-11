@@ -19,7 +19,7 @@ use std::ptr;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 
-use fernsicht_capture::dmabuf::{DmaBuf, DmaBufPlane, formats, fourcc_name};
+use fernsicht_capture::dmabuf::{BufferIdentity, DmaBuf, DmaBufPlane, formats, fourcc_name};
 use fernsicht_capture::{Frame, PixelFormat};
 use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
@@ -348,6 +348,11 @@ impl VaapiEncoder {
         }
     }
 
+    /// Screen buffers whose import is kept (see `DmaBuf::identity`).
+    pub fn cached_imports(&self) -> usize {
+        self.converter.as_ref().map_or(0, |c| c.imports.len())
+    }
+
     /// Copies an NV12 frame into the reusable CPU frame.
     unsafe fn fill_sw(&mut self, frame: &Frame) -> Result<(), CodecError> {
         let (w, h) = (self.width as usize, self.height as usize);
@@ -581,7 +586,13 @@ struct GpuConverter {
     format: ImportFormat,
     input: *mut ffi::AVFrame,
     next_pts: i64,
+    /// Surfaces of recently seen buffers, the most recent last; each
+    /// reference owns its surface.
+    imports: Vec<(BufferIdentity, *mut ffi::AVBufferRef)>,
 }
+
+/// Imports kept; display servers use two or three buffers per output.
+const MAX_IMPORTS: usize = 4;
 
 impl GpuConverter {
     fn new(
@@ -605,6 +616,7 @@ impl GpuConverter {
                 format,
                 input: ffi::av_frame_alloc(),
                 next_pts: 0,
+                imports: Vec::new(),
             };
             if conv.import_frames.is_null() || conv.graph.is_null() || conv.input.is_null() {
                 return Err(CodecError::Backend("out of memory".into()));
@@ -685,7 +697,65 @@ impl GpuConverter {
     }
 
     /// Imports `image` as a VAAPI surface (no copy) into `self.input`.
+    /// Puts `image` into `input`: the surface imported for this buffer
+    /// before, or a new import (kept for the next time).
     unsafe fn import(&mut self, image: &DmaBuf) -> Result<(), CodecError> {
+        let identity = image.identity();
+        let cached = identity
+            .as_ref()
+            .and_then(|k| self.imports.iter().position(|(c, _)| c == k));
+        // SAFETY: the references in the cache own live surfaces.
+        let buf = unsafe {
+            match cached {
+                Some(i) => {
+                    let entry = self.imports.remove(i);
+                    let buf = ffi::av_buffer_ref(entry.1);
+                    self.imports.push(entry);
+                    buf
+                }
+                None => {
+                    let buf = self.create_surface(image)?;
+                    let keep = identity.map(|k| (k, ffi::av_buffer_ref(buf)));
+                    if let Some(entry) = keep.filter(|(_, r)| !r.is_null()) {
+                        self.imports.push(entry);
+                        if self.imports.len() > MAX_IMPORTS {
+                            // Still referenced while the graph uses it.
+                            let (_, mut old) = self.imports.remove(0);
+                            ffi::av_buffer_unref(&mut old);
+                        }
+                    }
+                    buf
+                }
+            }
+        };
+        if buf.is_null() {
+            return Err(CodecError::Backend("out of memory".into()));
+        }
+        // SAFETY: `input` is ours; the buffer's data is an ImportedSurface,
+        // and the frame owns the reference from here on.
+        unsafe {
+            let id = (*((*buf).data as *const ImportedSurface)).id;
+            ffi::av_frame_unref(self.input);
+            let f = &mut *self.input;
+            f.buf[0] = buf;
+            f.data[3] = id as usize as *mut u8;
+            f.format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int;
+            f.width = image.width as c_int;
+            f.height = image.height as c_int;
+            f.hw_frames_ctx = ffi::av_buffer_ref(self.import_frames);
+            // A desktop: full-range sRGB.
+            f.color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
+            f.colorspace = ffi::AVColorSpace::AVCOL_SPC_RGB;
+            f.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+            f.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
+            f.pts = self.next_pts;
+        }
+        self.next_pts += 1;
+        Ok(())
+    }
+
+    /// Imports `image` as a VAAPI surface, owned by the returned buffer.
+    unsafe fn create_surface(&self, image: &DmaBuf) -> Result<*mut ffi::AVBufferRef, CodecError> {
         let mut desc = VaDrmPrimeSurfaceDescriptor {
             fourcc: self.format.va_fourcc,
             width: image.width,
@@ -761,7 +831,7 @@ impl GpuConverter {
             display: self.display,
             id,
         }));
-        // SAFETY: `input` is ours; the buffer owns the surface from here on.
+        // SAFETY: the buffer owns the surface from here on.
         unsafe {
             let buf = ffi::av_buffer_create(
                 surface.cast(),
@@ -774,23 +844,8 @@ impl GpuConverter {
                 release_surface(ptr::null_mut(), surface.cast());
                 return Err(CodecError::Backend("out of memory".into()));
             }
-            ffi::av_frame_unref(self.input);
-            let f = &mut *self.input;
-            f.buf[0] = buf;
-            f.data[3] = id as usize as *mut u8;
-            f.format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int;
-            f.width = image.width as c_int;
-            f.height = image.height as c_int;
-            f.hw_frames_ctx = ffi::av_buffer_ref(self.import_frames);
-            // A desktop: full-range sRGB.
-            f.color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
-            f.colorspace = ffi::AVColorSpace::AVCOL_SPC_RGB;
-            f.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-            f.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
-            f.pts = self.next_pts;
+            Ok(buf)
         }
-        self.next_pts += 1;
-        Ok(())
     }
 
     /// Imports `image` and writes the converted NV12 surface into `out`.
@@ -836,6 +891,9 @@ impl Drop for GpuConverter {
         unsafe {
             ffi::avfilter_graph_free(&mut self.graph);
             ffi::av_frame_free(&mut self.input);
+            for (_, mut surface) in self.imports.drain(..) {
+                ffi::av_buffer_unref(&mut surface);
+            }
             ffi::av_buffer_unref(&mut self.import_frames);
         }
     }

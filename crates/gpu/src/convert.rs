@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use ash::vk;
 use fernsicht_capture::DmaBuf;
+use fernsicht_capture::dmabuf::BufferIdentity;
 
 use crate::Gpu;
 use crate::device::submit_and_wait;
@@ -86,39 +87,11 @@ pub struct Converter {
     output_memory: vk::DeviceMemory,
     output_allocation: u64,
     /// Recently imported pictures, the most recent last.
-    imports: Vec<(ImportKey, import::Plane)>,
+    imports: Vec<(BufferIdentity, import::Plane)>,
 }
 
 /// Imports kept; display servers use two or three buffers per output.
 const MAX_IMPORTS: usize = 4;
-
-/// Identifies the buffer behind a DMA-BUF: descriptors differ per frame,
-/// the buffer (its inode while we hold a reference) and layout do not.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ImportKey {
-    dev: u64,
-    ino: u64,
-    fourcc: u32,
-    modifier: u64,
-    size: (u32, u32),
-    planes: Vec<(u32, u32)>,
-}
-
-impl ImportKey {
-    fn of(image: &DmaBuf) -> Option<Self> {
-        let fd = image.objects.get(image.planes.first()?.object)?;
-        let meta = std::fs::File::from(fd.try_clone().ok()?).metadata().ok()?;
-        use std::os::unix::fs::MetadataExt;
-        Some(Self {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            fourcc: image.fourcc,
-            modifier: image.modifier,
-            size: (image.width, image.height),
-            planes: image.planes.iter().map(|p| (p.offset, p.pitch)).collect(),
-        })
-    }
-}
 
 // SAFETY: the Vulkan handles are only used through &mut self (or &self for
 // exporting the memory, which Vulkan allows from any thread); submissions
@@ -390,7 +363,7 @@ impl Converter {
     /// through two or three, and capture hands out a new descriptor for
     /// the same buffer every frame.
     pub fn convert(&mut self, image: &DmaBuf) -> Result<(), String> {
-        let key = ImportKey::of(image);
+        let key = image.identity();
         let cached = key
             .as_ref()
             .and_then(|k| self.imports.iter().position(|(c, _)| c == k));
