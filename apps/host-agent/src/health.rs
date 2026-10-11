@@ -5,7 +5,7 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A send error that is only packet loss: the network is gone for a
 /// moment (Wi-Fi roaming, a VPN reconnecting), a buffer is full, or a
@@ -137,6 +137,38 @@ impl<F: FnMut()> Drop for Starting<F> {
                 let _ = t.join();
             }
         }
+    }
+}
+
+/// Collapses an error that repeats every frame into one log line per second.
+#[derive(Default)]
+pub(crate) struct RepeatedError {
+    last: String,
+    repeats: u64,
+    since: Option<Instant>,
+}
+
+impl RepeatedError {
+    /// The line to log for this occurrence, if any.
+    pub(crate) fn report(&mut self, msg: String, now: Instant) -> Option<String> {
+        if msg != self.last || self.since.is_none() {
+            self.last = msg;
+            self.repeats = 0;
+            self.since = Some(now);
+            return Some(self.last.clone());
+        }
+        self.repeats += 1;
+        let since = self.since.expect("set above");
+        if now.duration_since(since) < Duration::from_secs(1) {
+            return None;
+        }
+        let line = format!(
+            "{} (another {}× in the last second)",
+            self.last, self.repeats
+        );
+        self.repeats = 0;
+        self.since = Some(now);
+        Some(line)
     }
 }
 

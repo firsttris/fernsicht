@@ -39,7 +39,8 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 
 use crate::http::{self, Body, Head, Method, Response};
-use crate::{HostSecurity, HostStats, SessionParams, Shared};
+use crate::shared::Shared;
+use crate::{HostSecurity, HostStats, SessionParams};
 
 /// What a session sends to the browser, from its threads to the WebRTC
 /// thread.
@@ -244,7 +245,7 @@ struct RtcSession {
 }
 
 impl RtcSession {
-    fn new(
+    pub(crate) fn new(
         setup: WebSetup,
         codec: Codec,
         shared: Arc<Shared>,
@@ -410,7 +411,7 @@ impl RtcSession {
         true
     }
 
-    fn send(&mut self, m: WebOut) {
+    pub(crate) fn send(&mut self, m: WebOut) {
         if !self.connected {
             return;
         }
