@@ -12,7 +12,7 @@ use std::time::Instant;
 use fernsicht_capture::dmabuf::{DmaBuf, formats};
 use fernsicht_capture::{Frame, FrameSource, TestPattern};
 use fernsicht_codec::vulkan::{
-    VulkanDecoder, VulkanEncoder, VulkanEncoderConfig, ffmpeg_is_ready, gpu_encodes,
+    VulkanDecoder, VulkanEncoder, VulkanEncoderConfig, decodes, ffmpeg_is_ready, gpu_encodes,
 };
 use fernsicht_codec::{DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
 use fernsicht_gpu::testimage::upload_as_dmabuf;
@@ -39,9 +39,10 @@ fn ready(codec: Codec) -> bool {
         return false;
     }
     let gpu = gpu();
-    if !gpu_encodes(&gpu, codec) {
+    // Encoded here, and decoded again to check it.
+    if !(gpu_encodes(&gpu, codec) && decodes(&gpu, codec)) {
         eprintln!(
-            "skipped: {} does not encode {codec:?} with Vulkan Video",
+            "skipped: {} does not encode and decode {codec:?} with Vulkan Video",
             gpu.name()
         );
         return false;
@@ -173,7 +174,7 @@ impl Default for Roundtrip {
 
 #[test]
 fn roundtrip_1080p60_quality_latency_and_framing() {
-    for codec in [Codec::H264, Codec::Hevc] {
+    for codec in [Codec::H264, Codec::Hevc, Codec::Av1] {
         if !ready(codec) {
             continue;
         }
@@ -358,7 +359,7 @@ fn upload(gpu: &Arc<Gpu>, w: u32, h: u32, shift: usize) -> DmaBuf {
 
 #[test]
 fn the_screen_goes_to_the_encoder_without_leaving_the_gpu() {
-    for codec in [Codec::H264, Codec::Hevc] {
+    for codec in [Codec::H264, Codec::Hevc, Codec::Av1] {
         if !ready(codec) {
             continue;
         }

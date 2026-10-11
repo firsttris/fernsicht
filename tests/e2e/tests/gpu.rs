@@ -291,7 +291,7 @@ fn chosen(codec: Codec) -> CodecChoice {
 #[test]
 fn vulkan_video_decodes_end_to_end() {
     let Some(gpu) = gpu() else { return };
-    for codec in [Codec::H264, Codec::Hevc] {
+    for codec in [Codec::H264, Codec::Hevc, Codec::Av1] {
         if !vulkan_video(&gpu, codec, false) {
             continue;
         }
@@ -345,7 +345,7 @@ fn vulkan_video_decodes_end_to_end() {
 fn vulkan_video_on_both_sides() {
     let Some(gpu) = gpu() else { return };
     let _serial = exclusive();
-    for codec in [Codec::H264, Codec::Hevc] {
+    for codec in [Codec::H264, Codec::Hevc, Codec::Av1] {
         if !(vulkan_video(&gpu, codec, true) && vulkan_video(&gpu, codec, false)) {
             continue;
         }
