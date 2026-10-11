@@ -151,6 +151,7 @@ jobs:
       # behind a feature): it needs a GPU driver and is tested on the GPU
       # runners.
       - run: >
+          scripts/annotate-failures.sh
           cargo llvm-cov --workspace --lcov --output-path lcov.info
           --ignore-filename-regex 'main\.rs$|crates/gpu/' --fail-under-lines 90
         env:

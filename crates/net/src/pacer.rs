@@ -228,8 +228,9 @@ mod tests {
         let took = start.elapsed();
         assert_eq!(sent, 24);
         // The burst and what is due within the quantum at once (7), then
-        // a chunk per 200 µs (3 packets each).
-        assert_eq!(chunks, 7);
+        // a chunk per 200 µs (3 packets each): 7 chunks, fewer where the
+        // thread is late and finds more due at once.
+        assert!((2..=7).contains(&chunks), "{chunks} chunks");
         // 20 kB past the burst at 10 MB/s = 2 ms, the last chunk up to a
         // quantum early; allow scheduler slack.
         assert!(took >= Duration::from_micros(1_500), "{took:?}");
