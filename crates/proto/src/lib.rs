@@ -99,10 +99,10 @@ impl Kind {
             Kind::Handshake => FLAG_REPLY,
             Kind::Announce => FLAG_PAIRING | FLAG_BUSY,
             Kind::KeyframeRequest => FLAG_HAS_FRAME,
+            Kind::HelloAck => FLAG_ACK_REFRESH,
             Kind::Hello | Kind::Pair | Kind::Monitors => 0xFF,
             Kind::ClockPing
             | Kind::ClockPong
-            | Kind::HelloAck
             | Kind::Bye
             | Kind::CursorShape
             | Kind::Input
@@ -379,6 +379,10 @@ pub struct Hello {
     /// What the client can decode (carried in the prefix flags, which
     /// clients before codec choice left at 0: H.264 only).
     pub codecs: CodecSet,
+    /// After a loss, keep the picture going and let the encoder's intra
+    /// refresh heal it, instead of waiting for a keyframe (where the host's
+    /// encoder can).
+    pub refresh: bool,
 }
 
 /// A set of real video codecs, e.g. what a client can decode.
@@ -455,7 +459,7 @@ impl Default for CodecSet {
 }
 
 impl Hello {
-    pub const LEN: usize = PREFIX_LEN + 10;
+    pub const LEN: usize = PREFIX_LEN + 11;
 
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         let mut w = Writer::new(&mut buf[..Self::LEN]);
@@ -464,6 +468,7 @@ impl Hello {
         w.u16(self.height);
         w.u16(self.fps);
         w.u32(self.bitrate_kbps);
+        w.u8(u8::from(self.refresh));
         Self::LEN
     }
 
@@ -474,6 +479,11 @@ impl Hello {
             fps: r.u16()?,
             bitrate_kbps: r.u32()?,
             codecs: CodecSet::from_flags(flags)?,
+            refresh: match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(DecodeError::Invalid("hello refresh")),
+            },
         };
         if h.fps == 0 {
             return Err(DecodeError::Invalid("fps is zero"));
@@ -513,6 +523,9 @@ pub struct HelloAck {
     pub height: u16,
     pub fps: u16,
     pub codec: Codec,
+    /// The encoder heals losses by intra refresh (the client asked, and
+    /// the host's encoder can): the client keeps decoding after a gap.
+    pub refresh: bool,
 }
 
 /// Video codec carried in the session.
@@ -545,7 +558,10 @@ impl HelloAck {
 
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         let mut w = Writer::new(&mut buf[..Self::LEN]);
-        w.prefix(Kind::HelloAck, 0);
+        w.prefix(
+            Kind::HelloAck,
+            if self.refresh { FLAG_ACK_REFRESH } else { 0 },
+        );
         w.u32(self.session_id);
         w.u16(self.width);
         w.u16(self.height);
@@ -554,8 +570,9 @@ impl HelloAck {
         Self::LEN
     }
 
-    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+    fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(HelloAck {
+            refresh: flags & FLAG_ACK_REFRESH != 0,
             session_id: r.u32()?,
             width: r.u16()?,
             height: r.u16()?,
@@ -596,6 +613,7 @@ pub const MAX_CURSOR_SIZE: u16 = 256;
 /// shorter). Fixed, so the receiver knows which pieces it has.
 pub const CURSOR_CHUNK: usize = 1024;
 
+const FLAG_ACK_REFRESH: u8 = 0x01;
 const FLAG_CURSOR_VISIBLE: u8 = 0x01;
 const FLAG_CURSOR_HOTSPOT: u8 = 0x02;
 
@@ -1501,7 +1519,7 @@ impl<'a> Packet<'a> {
             Kind::ClockPing => Packet::ClockPing(ClockPing::read(&mut r)?),
             Kind::ClockPong => Packet::ClockPong(ClockPong::read(&mut r)?),
             Kind::Hello => Packet::Hello(Hello::read(flags, &mut r)?),
-            Kind::HelloAck => Packet::HelloAck(HelloAck::read(&mut r)?),
+            Kind::HelloAck => Packet::HelloAck(HelloAck::read(flags, &mut r)?),
             Kind::Bye => Packet::Bye(Bye::read(&mut r)?),
             Kind::Cursor => Packet::Cursor(Cursor::read(flags, &mut r)?),
             Kind::CursorShape => {
@@ -1797,9 +1815,14 @@ mod tests {
             fps: 60,
             bitrate_kbps: 20_000,
             codecs: CodecSet::of(&[Codec::H264, Codec::Hevc]),
+            refresh: true,
         };
         let n = hello.encode(&mut buf);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Hello(hello));
+        // The refresh byte is 0 or 1.
+        let mut odd = buf;
+        odd[Hello::LEN - 1] = 2;
+        assert!(Packet::decode(&odd[..n]).is_err());
 
         let ack = HelloAck {
             session_id: 9,
@@ -1807,6 +1830,7 @@ mod tests {
             height: 1080,
             fps: 60,
             codec: Codec::H264,
+            refresh: true,
         };
         let n = ack.encode(&mut buf);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::HelloAck(ack));
@@ -2096,6 +2120,7 @@ mod tests {
             fps: 60,
             bitrate_kbps: 0,
             codecs: CodecSet::of(&[Codec::Hevc]),
+            refresh: false,
         }
         .encode(&mut buf);
         buf[3] = 0; // what older clients put in the flags byte
@@ -2113,6 +2138,7 @@ mod tests {
             fps: 60,
             bitrate_kbps: 0,
             codecs: CodecSet::H264,
+            refresh: false,
         };
         let b = h.encode_with_time(1_760_000_000_123);
         assert_eq!(Hello::decode_with_time(&b), Some((h, 1_760_000_000_123)));

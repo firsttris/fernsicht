@@ -35,6 +35,7 @@ fn config(width: u32, height: u32, fps: u32, kbps: u32) -> NvencConfig {
         height,
         fps,
         bitrate_kbps: kbps,
+        intra_refresh: false,
     }
 }
 
@@ -194,6 +195,57 @@ fn keyframe_on_request_and_decoder_recovers() {
     let last = dec.last_frame_nv12().unwrap();
     let psnr = psnr_y(&input[29].data, &last, (w * h) as usize);
     assert!(psnr > 30.0, "{psnr:.1} dB after joining at the keyframe");
+}
+
+#[test]
+fn intra_refresh_heals_a_lost_frame_without_a_keyframe() {
+    if !nvidia() {
+        return;
+    }
+    let (w, h, fps) = (1280, 720, 60);
+    let mut enc = NvencEncoder::new(&NvencConfig {
+        intra_refresh: true,
+        ..config(w, h, fps, 8_000)
+    })
+    .unwrap();
+    let input = frames(w, h, 120);
+    let packets: Vec<EncodedFrame> = input
+        .iter()
+        .map(|f| {
+            let mut out = EncodedFrame::default();
+            enc.encode(f, &mut out).unwrap();
+            out
+        })
+        .collect();
+    let keyframes: Vec<usize> = (0..packets.len())
+        .filter(|&i| packets[i].keyframe)
+        .collect();
+    assert_eq!(keyframes, vec![0], "only the first: losses heal by refresh");
+    // No burst: after the first, no frame much larger than the typical one.
+    let mut sizes: Vec<usize> = packets[1..].iter().map(|p| p.data.len()).collect();
+    sizes.sort_unstable();
+    let (median, largest) = (sizes[sizes.len() / 2], *sizes.last().unwrap());
+    assert!(
+        largest < median * 4,
+        "largest {largest} bytes, median {median}"
+    );
+
+    // Frame 20 is lost; the decoder goes on, and a refresh period later the
+    // picture is whole again.
+    let mut dec = NvdecDecoder::new(0).unwrap();
+    let mut d = DecodedFrame::default();
+    for (i, p) in packets.iter().enumerate() {
+        if i != 20 {
+            dec.decode(&p.data, &mut d)
+                .unwrap_or_else(|e| panic!("frame {i}: {e}"));
+        }
+    }
+    let last = dec.last_frame_nv12().unwrap();
+    let psnr = psnr_y(&input[119].data, &last, (w * h) as usize);
+    summary(&format!(
+        "- NVENC intra refresh: one keyframe in 120 frames, largest frame {largest} B (median {median} B), after a lost frame {psnr:.1} dB\n"
+    ));
+    assert!(psnr > 30.0, "{psnr:.1} dB a refresh period after the loss");
 }
 
 #[test]

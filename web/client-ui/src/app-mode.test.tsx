@@ -209,7 +209,15 @@ describe("Desktop-App", () => {
         "connect",
         {
           id: "k1",
-          settings: { width: 0, height: 0, fps: 60, bitrateMbit: 0, codec: "auto", gaming: true },
+          settings: {
+            width: 0,
+            height: 0,
+            fps: 60,
+            bitrateMbit: 0,
+            codec: "auto",
+            smooth: false,
+            gaming: true,
+          },
         },
       ],
     ]);
@@ -248,6 +256,7 @@ describe("Desktop-App", () => {
     await user.click(screen.getByRole("radio", { name: "120 fps" }));
     await user.click(screen.getByRole("radio", { name: "20 Mbit/s" }));
     await user.click(screen.getByRole("radio", { name: "HEVC" }));
+    await user.click(screen.getByRole("radio", { name: "Flüssig" }));
     await user.click(screen.getByRole("link", { name: "Geräte" }));
     const card = (await screen.findByText("zentrale")).closest("article")!;
     await user.click(within(card).getByRole("button", { name: "Desktop" }));
@@ -263,6 +272,7 @@ describe("Desktop-App", () => {
               fps: 120,
               bitrateMbit: 20,
               codec: "hevc",
+              smooth: true,
               gaming: false,
             },
           },

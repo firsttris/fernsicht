@@ -57,6 +57,9 @@ pub struct StreamSettings {
     pub gaming: bool,
     /// Video codec; automatic picks HEVC where both sides can.
     pub codec: CodecSetting,
+    /// After a loss, keep the picture going (intra refresh, NVIDIA hosts)
+    /// instead of waiting for a keyframe.
+    pub smooth: bool,
 }
 
 /// The settings page's video codec choice.
@@ -100,6 +103,9 @@ impl StreamSettings {
         }
         if self.gaming {
             a.push("--gaming".into());
+        }
+        if self.smooth {
+            a.push("--smooth".into());
         }
         a
     }
@@ -640,6 +646,7 @@ mod tests {
             bitrate_mbit: 50,
             gaming: true,
             codec: CodecSetting::Hevc,
+            smooth: true,
         };
         assert_eq!(
             s.args(),
@@ -654,7 +661,8 @@ mod tests {
                 "50000",
                 "--codec",
                 "hevc",
-                "--gaming"
+                "--gaming",
+                "--smooth"
             ]
         );
         // Half a size is no size.

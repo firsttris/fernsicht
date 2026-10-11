@@ -61,6 +61,7 @@ given).
 | `--fps` | `60` | frame rate |
 | `--bitrate` | `0` | kbit/s; 0 = chosen by the host for the size (20 Mbit/s for 1080p60, about 36 for 1440p60) |
 | `--codec` | `auto` | `auto` (the best this machine decodes in hardware and the host encodes: AV1, HEVC, else H.264), `h264`, `hevc`, `av1` |
+| `--smooth` | | after a loss the picture goes on and mends itself within half a second instead of waiting for a keyframe (NVIDIA hosts; others ignore it) |
 | `--decoder` | `auto` | hardware decoder: `auto` (VAAPI, else NVDEC), `vaapi`, `nvdec` |
 | `--render-node` | `/dev/dri/renderD128` | GPU render node for VAAPI |
 | `--gaming` | | gaming mode: a click captures the pointer, which then moves relatively |

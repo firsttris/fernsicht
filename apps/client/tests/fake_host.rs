@@ -133,6 +133,7 @@ fn serve(sock: UdpSocket, script: Script, stop: &AtomicBool, seen: &Mutex<Observ
                             height: 240,
                             fps: 60,
                             codec: Codec::Synthetic,
+                            refresh: false,
                         };
                         let n = ack.encode(&mut out);
                         sock.send_to(&out[..n], from).unwrap();

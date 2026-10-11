@@ -132,6 +132,7 @@ the host (buttons are let go, sticks centred).
 | “Bildrate” (frame rate) | 30, 60, 120, 144 fps |
 | “Bitrate” | “Automatisch” (chosen by the host for the size: about 20 Mbit/s for 1080p60, 36 for 1440p60) or 10–80 Mbit/s. An upper bound: the host lowers it by itself on congestion |
 | “Videoformat” (video format) | “Automatisch” (the best both computers do in hardware: AV1, then HEVC, then H.264), AV1, HEVC, H.264 ([codecs](video.md#codecs)) |
+| “Nach Verlusten” (after losses) | “Scharf” (sharp: the host sends a keyframe, the picture waits one round trip and is sharp again) or “Flüssig” (smooth: the picture goes on and mends itself within half a second; NVIDIA hosts only, others stay sharp) ([intra refresh](video.md#conversion-and-encoding)) |
 
 With a host on this computer there is one more section, “Dieser Rechner als Host” (this computer as
 host): “Grafikkarte während Sitzungen hochtakten” (raise the GPU's clocks during sessions). Between

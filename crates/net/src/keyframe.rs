@@ -28,15 +28,26 @@ pub fn in_flight_for(rtt: Duration, frame: Duration) -> Duration {
 /// frame since the last keyframe; after any gap only a keyframe helps. The
 /// reassembler follows the frames that complete, the client's present
 /// thread the frames it decodes.
+///
+/// A stream that heals by intra refresh is different: after its first
+/// keyframe a gap leaves the following frames usable, and the picture
+/// mends itself within a refresh period.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RefChain {
     next: Option<u32>,
+    refresh: bool,
 }
 
 impl RefChain {
+    /// Whether the stream heals losses by intra refresh.
+    pub fn set_refresh(&mut self, on: bool) {
+        self.refresh = on;
+    }
+
     /// Returns `true` if frame `frame_id` can be decoded now.
     pub fn accept(&mut self, frame_id: u32, keyframe: bool) -> bool {
-        if keyframe || self.next == Some(frame_id) {
+        let mends = self.refresh && self.next.is_some();
+        if keyframe || self.next == Some(frame_id) || mends {
             self.next = Some(frame_id.wrapping_add(1));
             true
         } else {
@@ -205,6 +216,23 @@ mod tests {
         assert!(c.needs_keyframe());
         assert!(c.accept(4, true));
         assert!(c.accept(5, false));
+    }
+
+    #[test]
+    fn a_refreshing_stream_goes_on_after_a_gap() {
+        let mut c = RefChain::default();
+        c.set_refresh(true);
+        assert!(!c.accept(0, false), "the first keyframe still counts");
+        assert!(c.accept(1, true));
+        assert!(
+            c.accept(5, false),
+            "frames 2 to 4 lost: the refresh mends it"
+        );
+        assert!(!c.needs_keyframe());
+        // A decoder that gives up still needs a keyframe.
+        c.break_chain();
+        assert!(!c.accept(6, false));
+        assert!(c.needs_keyframe());
     }
 
     #[test]

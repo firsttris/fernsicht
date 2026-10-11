@@ -54,6 +54,8 @@ impl HostAgent {
             fps: pick(hello.fps, self.cfg.max_fps).max(1),
             bitrate_kbps: hello.bitrate_kbps.min(self.cfg.max_bitrate_kbps),
             codecs: hello.codecs,
+            // Only NVENC refreshes in this build of the encoders.
+            refresh: hello.refresh && matches!(self.cfg.encoder, EncoderKind::Nvenc { .. }),
         }
     }
 
@@ -272,6 +274,7 @@ impl HostAgent {
             height: p.height,
             fps: p.fps,
             codec,
+            refresh: p.refresh,
         }
     }
 }

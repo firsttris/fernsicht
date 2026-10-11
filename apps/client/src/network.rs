@@ -75,6 +75,8 @@ pub(crate) struct ReceivedFrame {
     pub(crate) completed_us: u64,
     /// Host clock − client clock at the time the frame completed.
     pub(crate) offset_us: i64,
+    /// The stream heals losses by intra refresh.
+    pub(crate) refresh: bool,
 }
 
 impl ReceivedFrame {
@@ -85,6 +87,7 @@ impl ReceivedFrame {
             data: Vec::new(),
             completed_us: 0,
             offset_us: 0,
+            refresh: false,
         }
     }
 }
@@ -124,6 +127,8 @@ struct Net {
     /// Secure: the handshake in flight, then the session's keys.
     handshake: Option<(Initiator, Vec<u8>)>,
     crypto: Option<Arc<Transport>>,
+    /// The host heals losses by intra refresh (its HelloAck said so).
+    refresh: bool,
     /// Packets on their way out are encoded here.
     out: [u8; MAX_DATAGRAM],
 }
@@ -200,6 +205,7 @@ fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
         fps: cfg.fps,
         bitrate_kbps: cfg.bitrate_kbps,
         codecs,
+        refresh: cfg.refresh,
     };
     let handshake = match &cfg.security {
         Some(sec) => {
@@ -233,6 +239,7 @@ fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
         video_seen: false,
         handshake,
         crypto: None,
+        refresh: false,
         out: [0; MAX_DATAGRAM],
     })
 }
@@ -613,6 +620,9 @@ fn on_hello_ack(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net, ack: &Hel
         }
     }
     net.session = Some((ack.session_id, ack.codec));
+    // Losses heal by intra refresh: a gap needs no keyframe.
+    net.reassembler.set_refresh(ack.refresh);
+    net.refresh = ack.refresh;
     net.frame_interval = Duration::from_secs(1) / u32::from(ack.fps.max(1));
 }
 
@@ -644,6 +654,7 @@ fn on_video(
     };
     rf.header = header;
     rf.codec = net.session.map_or(Codec::Synthetic, |(_, codec)| codec);
+    rf.refresh = net.refresh;
     // The bytes change hands, no copy.
     if !net
         .reassembler

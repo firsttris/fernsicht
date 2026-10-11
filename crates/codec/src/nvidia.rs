@@ -46,7 +46,14 @@ pub struct NvencConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// Heal losses by intra refresh: every [`REFRESH_PERIOD_S`] the whole
+    /// picture is refreshed column by column, so no keyframe is needed
+    /// after a loss (the first frame and forced ones still are).
+    pub intra_refresh: bool,
 }
+
+/// How long an intra refresh wave takes to cross the picture.
+pub const REFRESH_PERIOD_S: f64 = 0.5;
 
 pub struct NvencEncoder {
     device: *mut ffi::AVBufferRef,
@@ -61,6 +68,7 @@ pub struct NvencEncoder {
     width: u32,
     height: u32,
     fps: u32,
+    intra_refresh: bool,
     /// Vulkan conversion of DMA-BUF input, set up on the first such frame.
     gpu_input: Option<Result<GpuInput, String>>,
     force_keyframe: bool,
@@ -118,6 +126,7 @@ impl NvencEncoder {
                 width: cfg.width,
                 height: cfg.height,
                 fps: cfg.fps,
+                intra_refresh: cfg.intra_refresh,
                 gpu_input: None,
                 force_keyframe: true,
                 rate_change: None,
@@ -172,11 +181,24 @@ impl NvencEncoder {
             (c"delay", c"0"),
             (c"rc-lookahead", c"0"),
             (c"forced-idr", c"1"),
+            // A keyframe may be no larger than other frames (ULL's default,
+            // stated: no burst on the link when one is forced).
+            (c"ldkfs", c"1"),
         ];
+        if self.intra_refresh {
+            opts.push((c"intra-refresh", c"1"));
+        }
         if let Some(profile) = names.profile {
             opts.push((c"profile", profile));
         }
         let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        // With intra refresh FFmpeg takes the GOP length as the refresh
+        // period (and makes the GOP endless itself).
+        let gop = if self.intra_refresh {
+            ((f64::from(fps) * REFRESH_PERIOD_S).round() as c_int).max(2)
+        } else {
+            c_int::MAX
+        };
         // SAFETY: open_encoder hands over a fresh context; frames is valid
         // per the contract.
         unsafe {
@@ -195,7 +217,7 @@ impl NvencEncoder {
                 (*c).sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
                 (*c).hw_frames_ctx = ffi::av_buffer_ref(frames);
                 (*c).max_b_frames = 0;
-                (*c).gop_size = c_int::MAX;
+                (*c).gop_size = gop;
                 ff::set_cbr(c, kbps, fps);
                 (*c).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as c_int;
                 signal_bt709_limited(c);
@@ -461,6 +483,7 @@ pub fn encodes(gpu: u32, codec: Codec) -> bool {
             height: 256,
             fps: 30,
             bitrate_kbps: 1_000,
+            intra_refresh: false,
         })
         .is_ok()
 }

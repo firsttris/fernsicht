@@ -109,6 +109,20 @@ export function SettingsPage() {
             options={CODECS}
           />
         </Setting>
+        <Setting
+          title="Nach Verlusten"
+          hint="Gehen über WLAN Pakete verloren, wartet das Bild normalerweise kurz auf ein frisches Vollbild und ist dann sofort scharf. „Flüssig“ lässt es weiterlaufen; verschmierte Stellen heilen in etwa einer halben Sekunde, und die Bitrate springt nicht. Wirkt bei Hosts mit NVIDIA-Grafik."
+        >
+          <Segmented<"sharp" | "smooth">
+            label="Nach Verlusten"
+            value={s.smooth ? "smooth" : "sharp"}
+            onChange={(v) => update({ ...s, smooth: v === "smooth" })}
+            options={[
+              { value: "sharp", label: "Scharf" },
+              { value: "smooth", label: "Flüssig" },
+            ]}
+          />
+        </Setting>
         <div>
           <button
             type="button"

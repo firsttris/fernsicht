@@ -93,6 +93,11 @@ struct Args {
     /// Leave this machine's gamepads out.
     #[arg(long)]
     no_gamepad: bool,
+    /// After a packet loss keep the picture going and let it heal (intra
+    /// refresh, NVIDIA hosts) instead of waiting for a fresh keyframe:
+    /// smooth instead of sharp, and no bitrate bursts. Good on Wi-Fi.
+    #[arg(long)]
+    smooth: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -390,6 +395,7 @@ fn session_config(args: &Args, wanted: &str, host: &Peer, identity: Identity) ->
             CodecArg::Av1 => CodecChoice::Av1,
         },
         record: args.record.clone(),
+        refresh: args.smooth,
         audio: if args.no_audio {
             AudioOutput::Off
         } else {

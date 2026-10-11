@@ -169,6 +169,7 @@ pub(crate) fn present_loop(
                 .map(|d| (rf.codec, d));
             chain = RefChain::default();
         }
+        chain.set_refresh(rf.refresh);
         let Some((_, decoder)) = decoder.as_mut() else {
             r.decode_errors += 1;
             let _ = free_tx.send(rf);

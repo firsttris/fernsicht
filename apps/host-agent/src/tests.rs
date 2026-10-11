@@ -168,6 +168,7 @@ fn params(codecs: CodecSet) -> SessionParams {
         fps: 30,
         bitrate_kbps: 1_000,
         codecs,
+        refresh: false,
     }
 }
 
@@ -492,4 +493,46 @@ fn the_pointer_hotspot_is_learnt_from_where_input_put_it() {
     // Kept for the image, also once the input is old.
     assert_eq!(sent(&mut cursor, Some((middle, 60_000))), Some((10, 5)));
     assert_eq!(sent(&mut cursor, None), Some((10, 5)));
+}
+
+#[test]
+fn intra_refresh_is_agreed_only_with_nvenc() {
+    use crate::HostAgent;
+    use crate::config::HostConfig;
+    use fernsicht_proto::Hello;
+    let hello = Hello {
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        bitrate_kbps: 0,
+        codecs: CodecSet::H264,
+        refresh: true,
+    };
+    let agent = |encoder| {
+        HostAgent::bind(HostConfig {
+            bind: "127.0.0.1:0".into(),
+            encoder,
+            ..HostConfig::default()
+        })
+        .unwrap()
+    };
+    let nvenc = agent(EncoderKind::Nvenc { gpu: 0 });
+    let p = nvenc.negotiate(&hello);
+    assert!(p.refresh);
+    assert!(
+        nvenc.hello_ack(&p, Codec::H264).refresh,
+        "the client is told"
+    );
+    // VAAPI and the synthetic encoder keep keyframes.
+    let vaapi = agent(EncoderKind::Vaapi {
+        render_node: "/dev/dri/renderD128".into(),
+    });
+    assert!(!vaapi.negotiate(&hello).refresh);
+    assert!(!agent(EncoderKind::Synthetic).negotiate(&hello).refresh);
+    // Not asked for: not used.
+    let plain = Hello {
+        refresh: false,
+        ..hello
+    };
+    assert!(!nvenc.negotiate(&plain).refresh);
 }

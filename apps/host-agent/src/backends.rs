@@ -229,6 +229,7 @@ fn make_hardware_encoder(
                 height: u32::from(p.height),
                 fps: u32::from(p.fps),
                 bitrate_kbps: p.bitrate_kbps,
+                intra_refresh: p.refresh,
             },
         )?)),
         #[cfg(not(feature = "nvidia"))]

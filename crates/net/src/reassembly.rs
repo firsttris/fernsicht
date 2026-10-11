@@ -175,7 +175,14 @@ impl Reassembler {
         }
     }
 
-    /// `true` until a keyframe arrives, and again after a frame was lost.
+    /// The stream heals losses by intra refresh: a lost frame no longer
+    /// needs a keyframe (see [`RefChain`]).
+    pub fn set_refresh(&mut self, on: bool) {
+        self.chain.set_refresh(on);
+    }
+
+    /// `true` until a keyframe arrives, and again after a frame was lost
+    /// (unless the stream refreshes).
     pub fn needs_keyframe(&self) -> bool {
         self.chain.needs_keyframe()
     }

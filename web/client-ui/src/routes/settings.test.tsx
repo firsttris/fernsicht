@@ -26,12 +26,14 @@ describe("Einstellungen", () => {
     await user.click(screen.getByRole("radio", { name: "144 fps" }));
     await user.click(screen.getByRole("radio", { name: "50 Mbit/s" }));
     await user.click(group("Videoformat").getByRole("radio", { name: "H.264" }));
+    await user.click(screen.getByRole("radio", { name: "Flüssig" }));
     expect(loadSettings()).toEqual({
       width: 1280,
       height: 720,
       fps: 144,
       bitrateMbit: 50,
       codec: "h264",
+      smooth: true,
     });
     await user.click(screen.getByRole("radio", { name: "Wie der Host" }));
     expect(loadSettings()).toMatchObject({ width: 0, height: 0 });

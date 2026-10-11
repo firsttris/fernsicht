@@ -32,6 +32,10 @@ pub struct ClientConfig {
     pub decoder: DecoderChoice,
     /// Which video codec to ask the host for.
     pub codec: CodecChoice,
+    /// After a loss, keep the picture going and let the host's encoder
+    /// heal it by intra refresh (NVENC hosts), instead of waiting for a
+    /// keyframe: smooth instead of sharp.
+    pub refresh: bool,
     /// Mouse and keyboard to send to the host; `None` = view only.
     pub input: Option<Arc<InputHandle>>,
     /// Where the host's sound is played.
@@ -67,6 +71,7 @@ impl Default for ClientConfig {
             render_node: "/dev/dri/renderD128".into(),
             decoder: DecoderChoice::Auto,
             codec: CodecChoice::Auto,
+            refresh: false,
             input: None,
             audio: AudioOutput::Off,
             muted: Arc::default(),

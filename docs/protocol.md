@@ -20,7 +20,7 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 | Video (1) | host → client | one shard of an encoded frame: session, frame ID, frame length, capture time and stage offsets, FEC group position, keyframe flag |
 | Feedback (2) | client → host | every 100 ms: frames completed and dropped, packets received, lost and recovered; asks for a keyframe or the pointer image |
 | ClockPing (3) / ClockPong (4) | both | clock sync: the client's send time, the host's receive and send times |
-| Hello (5) / HelloAck (6) | client → host / back | the session request (size, fps, bitrate, the codecs the client decodes) and the answer (session ID, size, fps, codec) |
+| Hello (5) / HelloAck (6) | client → host / back | the session request (size, fps, bitrate, the codecs the client decodes, whether it wants intra refresh) and the answer (session ID, size, fps, codec, whether the stream refreshes) |
 | Bye (7) | both | the session ends |
 | Cursor (8) / CursorShape (9) | host → client | pointer position and visibility per frame, and the image's hotspot once the host learnt it (where input put the pointer against where its image appears: KMS does not tell); the pointer image in 1 KiB pieces when it changes |
 | Input (10) / InputAck (11) | client → host / back | mouse, keyboard and gamepad events with sequence numbers; the host's acknowledgement |
@@ -64,7 +64,10 @@ by property tests and a fuzz target ([testing](testing.md)).
   marks. The browser's WebRTC socket carries AF41.
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
-  reference chain is broken: it waits for a keyframe and asks for one.
+  reference chain is broken: it waits for a keyframe and asks for one. A stream with intra refresh
+  (the client asked for it, the host encodes with NVENC; HelloAck says so) is the exception: after
+  its first keyframe the client decodes on across a gap, and the picture mends itself within the
+  refresh period.
 - **Keyframe requests** go out the moment the client sees the gap (KeyframeRequest), not with the
   next feedback, and again each time a keyframe should have come and did not: after the round trip,
   two frames and 10 ms. The host answers each loss once: a request from a client that has not

@@ -24,4 +24,9 @@ gaming: boolean,
 /**
  * Video codec; automatic picks HEVC where both sides can.
  */
-codec: CodecSetting, };
+codec: CodecSetting, 
+/**
+ * After a loss, keep the picture going (intra refresh, NVIDIA hosts)
+ * instead of waiting for a keyframe.
+ */
+smooth: boolean, };

@@ -111,6 +111,7 @@ export const DEFAULT_SETTINGS: StreamSettings = {
   fps: 60,
   bitrateMbit: 0,
   codec: "auto",
+  smooth: false,
 };
 const SETTINGS_KEY = "fernsicht.settings";
 

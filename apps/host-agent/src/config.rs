@@ -265,4 +265,7 @@ pub struct SessionParams {
     pub bitrate_kbps: u32,
     /// What the client can decode; the encoder picks the best of it.
     pub codecs: CodecSet,
+    /// The encoder heals losses by intra refresh instead of keyframes (the
+    /// client asked, and the encoder is NVENC).
+    pub refresh: bool,
 }

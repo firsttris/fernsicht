@@ -58,6 +58,16 @@ fn gpu() -> Option<Gpu> {
 }
 
 fn stream(gpu: &Gpu, codec: CodecChoice, down: Impairment) -> (RunSummary, u64) {
+    stream_with(gpu, codec, down, false)
+}
+
+/// `refresh`: the client asks for intra refresh (`--smooth`).
+fn stream_with(
+    gpu: &Gpu,
+    codec: CodecChoice,
+    down: Impairment,
+    refresh: bool,
+) -> (RunSummary, u64) {
     let _serial = exclusive();
     let host = Host::start(HostConfig {
         encoder: gpu.encoder.clone(),
@@ -76,6 +86,7 @@ fn stream(gpu: &Gpu, codec: CodecChoice, down: Impairment) -> (RunSummary, u64) 
             render_node: gpu.render_node.clone(),
             decoder: gpu.decoder,
             codec,
+            refresh,
             ..ClientConfig::default()
         },
         Arc::new(AtomicBool::new(false)),
@@ -213,4 +224,39 @@ fn av1_with_one_percent_loss() {
         "FEC must hide 1 % loss: {s:?}"
     );
     assert!(s.frames_presented >= 4 * 60 * 8 / 10, "{s:?}");
+}
+
+#[test]
+fn intra_refresh_rides_out_a_blackout() {
+    let Some(gpu) = gpu() else { return };
+    if !matches!(gpu.encoder, EncoderKind::Nvenc { .. }) {
+        eprintln!("skipped: intra refresh is NVENC only");
+        return;
+    }
+    let down = || Impairment {
+        blackout: Some((Duration::from_secs(1), Duration::from_millis(300))),
+        ..Impairment::none()
+    };
+    let (s, _) = stream_with(&gpu, CodecChoice::H264, down(), true);
+    report(
+        &format!(
+            "H.264 ({}) 1080p60, Intra-Refresh, 300 ms Ausfall",
+            gpu.name
+        ),
+        &s,
+    );
+    assert!(
+        s.receiver.frames_dropped > 0,
+        "the blackout must cost frames: {s:?}"
+    );
+    // The picture goes on right after the gap: no frame waits for a
+    // keyframe. (The rate controller still lowers the bitrate after the
+    // loss, and FFmpeg starts NVENC anew with an IDR frame for that.)
+    assert_eq!(s.frames_awaiting_keyframe, 0, "{s:?}");
+    assert_eq!(s.decode_errors, 0, "{s:?}");
+    assert!(s.frames_presented >= 4 * 60 * 6 / 10, "{s:?}");
+
+    // The same gap without refresh: the frames after it wait.
+    let (k, _) = stream_with(&gpu, CodecChoice::H264, down(), false);
+    assert!(k.frames_awaiting_keyframe > 0, "{k:?}");
 }

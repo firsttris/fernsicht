@@ -66,6 +66,7 @@ impl HostAgent {
             // What the browser offered: H.264, and AV1 from Chrome and
             // Firefox (they decode it on the CPU if need be).
             codecs: setup.browser_codecs(),
+            refresh: false,
         };
         let who = format!("Browser {}", req.browser.ip());
         match self.start_session(params, req.browser, None, Some(setup)) {

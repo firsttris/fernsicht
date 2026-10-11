@@ -888,6 +888,18 @@ more). With it the window sets the image as its own system cursor (winit `Custom
 like the picture) and the presenter leaves it out of the picture; the web viewer sets it as the
 video's CSS cursor. Until the tip is known, or with the pointer captured, nothing changes.
 
+D2 is done, as a choice: the client asks for intra refresh in Hello (`--smooth`, the app's
+“Nach Verlusten: Flüssig”), the host agrees only with NVENC and says so in HelloAck. NVENC then
+encodes with `intra-refresh` over a 0.5 s period (`gop_size`) and `ldkfs`; the client's `RefChain`
+decodes on across a gap after the first keyframe instead of asking for one. The default stays
+keyframes: they repair the picture sharp in one round trip, refresh smears it for up to half a
+second. Tests: a GTX 1080 encode with frame 20 dropped is back above 30 dB PSNR by frame 119 with
+no keyframe after frame 0 and no frame over 4× the median; end to end a 300 ms blackout leaves no
+frame waiting for a keyframe with refresh, and frames waiting without it. Left: a bitrate change
+still costs an IDR frame (FFmpeg resets NVENC with `forceIDR` for it), so the rate step after a
+burst of loss brings one keyframe back; avoiding it needs `NvEncReconfigureEncoder` called without
+FFmpeg, or D1.
+
 ## E. Clean code and consistency
 
 | ID | Finding | Where | Status |

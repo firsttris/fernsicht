@@ -499,6 +499,7 @@ mod nvidia {
             height: h,
             fps: 60,
             bitrate_kbps: 20_000,
+            intra_refresh: false,
         })
         .unwrap();
         let mut dec = NvdecDecoder::new(0).unwrap();

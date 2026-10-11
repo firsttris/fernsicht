@@ -66,6 +66,14 @@ display or no root, e.g. in CI.
 Encoder settings follow what game streamers use for low latency: no B-frames, an endless GOP with
 keyframes only on request (stream start, loss), CBR with a buffer of one frame, one packet per input
 frame without queueing (`async_depth = 1` on VAAPI, `delay = 0`, preset p1 and tune `ull` on NVENC).
+
+**Intra refresh** (NVENC, when the client asks: `--smooth`, in the app “Nach Verlusten: Flüssig”):
+instead of one keyframe, each frame refreshes a band of the picture, all of it every 0.5 s (the GOP
+is the refresh period, `ldkfs` keeps keyframes out of it). A lost frame then costs no keyframe: the
+client decodes on, the damage shows as a smear for at most half a second, and no keyframe burst
+loads the link right after a loss. The default stays keyframes, because they repair the picture
+sharp in one round trip. A bitrate change still starts NVENC anew with an IDR frame (FFmpeg resets
+the session for it); the rate controller spaces those out.
 The GPU's clocks are kept up during sessions on AMD/Intel, because a GPU that clocks down between
 frames encodes the next one slower.
 
