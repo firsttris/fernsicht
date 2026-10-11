@@ -448,6 +448,9 @@ fn read_app_commands(
 fn print_summary(s: &RunSummary) {
     println!();
     println!("── Summary ──");
+    if let Some(decoder) = s.decoder {
+        println!("Decoded with {decoder}");
+    }
     println!(
         "Frames: {} shown, {} complete, {} lost · packets: {} received, {} lost, {} repaired by FEC",
         s.frames_presented,

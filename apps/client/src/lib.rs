@@ -229,6 +229,7 @@ fn summary(
     RunSummary {
         session_id: net.session.map(|(id, _)| id),
         codec: net.session.map(|(_, codec)| codec),
+        decoder: present.decoder,
         receiver: net.receiver,
         frames_presented: present.presented,
         keyframes_decoded: present.keyframes,

@@ -90,7 +90,8 @@ from the host.
 ### Latency overlay
 
 The overlay shows glass-to-glass latency and its stages – Capture, Encode, “Netz” (network), Decode,
-“Anzeige” (display) – with the spread (p95 and maximum) below it, plus the codec and its hardware,
+“Anzeige” (display) – with the spread (p95 and maximum) below it, plus the codec and what decodes it
+on this computer (Vulkan Video, VAAPI or NVDEC: the app takes the first that works, in this order),
 frame rate, bitrate, loss before and after FEC and the round trip (RTT). Glass-to-glass here is
 measured up to the moment the picture is handed to the window; the monitor's own delay comes on top
 ([architecture](architecture.md#latency-measurement)). In the web viewer, decode and display come

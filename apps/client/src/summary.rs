@@ -10,6 +10,8 @@ pub struct RunSummary {
     /// Session id from the host's `HelloAck`, if one arrived.
     pub session_id: Option<u32>,
     pub codec: Option<Codec>,
+    /// What decoded it, e.g. "Vulkan Video" (the last decoder made).
+    pub decoder: Option<&'static str>,
     pub receiver: ReceiverStats,
     pub frames_presented: u64,
     pub keyframes_decoded: u64,

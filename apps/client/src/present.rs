@@ -85,23 +85,18 @@ impl Hw {
     }
 }
 
-fn make_decoder(
-    codec: Codec,
-    hw: &Hw,
-    presenter: &dyn Presenter,
-) -> Result<Box<dyn Decoder>, CodecError> {
+/// A decoder and what it is called in the overlay (`None`: synthetic).
+type Made = (Box<dyn Decoder>, Option<&'static str>);
+
+fn make_decoder(codec: Codec, hw: &Hw, presenter: &dyn Presenter) -> Result<Made, CodecError> {
     match codec {
-        Codec::Synthetic => Ok(Box::new(SyntheticDecoder::default())),
+        Codec::Synthetic => Ok((Box::new(SyntheticDecoder::default()), None)),
         Codec::H264 | Codec::Hevc | Codec::Av1 => make_hw_decoder(codec, hw, presenter),
     }
 }
 
 #[allow(unused_variables)]
-fn make_hw_decoder(
-    codec: Codec,
-    hw: &Hw,
-    presenter: &dyn Presenter,
-) -> Result<Box<dyn Decoder>, CodecError> {
+fn make_hw_decoder(codec: Codec, hw: &Hw, presenter: &dyn Presenter) -> Result<Made, CodecError> {
     let label = overlay::codec_label(codec);
     let mut errors = Vec::new();
     if matches!(hw.decoder, DecoderChoice::Auto | DecoderChoice::Vulkan) {
@@ -113,7 +108,7 @@ fn make_hw_decoder(
                 match fernsicht_codec::vulkan::VulkanDecoder::for_codec(gpu, codec) {
                     Ok(d) => {
                         log::info!("decoding {label} with Vulkan Video ({name})");
-                        return Ok(Box::new(d));
+                        return Ok((Box::new(d), Some("Vulkan Video")));
                     }
                     Err(e) => errors.push(format!("Vulkan Video: {e}")),
                 }
@@ -135,7 +130,7 @@ fn make_hw_decoder(
             match fernsicht_codec::vaapi::VaapiDecoder::for_codec(&hw.render_node, codec) {
                 Ok(d) => {
                     log::info!("decoding {label} with VAAPI ({})", hw.render_node);
-                    return Ok(Box::new(d));
+                    return Ok((Box::new(d), Some("VAAPI")));
                 }
                 Err(e) => errors.push(format!("VAAPI: {e}")),
             }
@@ -151,7 +146,7 @@ fn make_hw_decoder(
             match fernsicht_codec::nvidia::NvdecDecoder::for_codec(0, codec) {
                 Ok(d) => {
                     log::info!("decoding {label} with NVDEC");
-                    return Ok(Box::new(d));
+                    return Ok((Box::new(d), Some("NVDEC")));
                 }
                 Err(e) => errors.push(format!("NVDEC: {e}")),
             }
@@ -195,6 +190,8 @@ pub(crate) struct PresentResult {
     pub(crate) keyframes: u64,
     pub(crate) awaiting_keyframe: u64,
     pub(crate) decode_errors: u64,
+    /// The overlay's name of the last decoder made.
+    pub(crate) decoder: Option<&'static str>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -220,12 +217,16 @@ pub(crate) fn present_loop(
 
     while let Ok(rf) = queue.recv() {
         if decoder.as_ref().is_none_or(|(codec, _)| *codec != rf.codec) {
-            decoder = make_decoder(rf.codec, hw, &*presenter)
+            let made = make_decoder(rf.codec, hw, &*presenter)
                 .inspect_err(|e| {
                     log::error!("no decoder for {}: {e}", overlay::codec_label(rf.codec))
                 })
-                .ok()
-                .map(|d| (rf.codec, d));
+                .ok();
+            r.decoder = made.as_ref().and_then(|(_, name)| *name);
+            if let Ok(mut i) = info.lock() {
+                i.decoder = r.decoder;
+            }
+            decoder = made.map(|(d, _)| (rf.codec, d));
             chain = RefChain::default();
         }
         chain.set_refresh(rf.refresh);

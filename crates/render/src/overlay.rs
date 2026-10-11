@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StreamInfo {
     pub codec: Codec,
+    /// What decodes it here, e.g. "Vulkan Video"; `None` before the first
+    /// frame and for the synthetic codec.
+    pub decoder: Option<&'static str>,
     pub fps: f32,
     pub bitrate_bps: u64,
     /// Packet loss on the wire, before FEC (0.0–1.0).
@@ -31,6 +34,14 @@ pub fn codec_label(codec: Codec) -> &'static str {
         Codec::H264 => "H.264",
         Codec::Hevc => "HEVC",
         Codec::Av1 => "AV1",
+    }
+}
+
+/// The codec and what decodes it, e.g. "HEVC · Vulkan Video".
+pub fn codec_and_decoder(info: &StreamInfo) -> String {
+    match info.decoder {
+        Some(decoder) => format!("{} · {decoder}", codec_label(info.codec)),
+        None => codec_label(info.codec).to_owned(),
     }
 }
 
@@ -74,7 +85,7 @@ pub fn lines(stats: &LatencyStats, info: &StreamInfo) -> Vec<String> {
     out.push(stages);
     let mut meta = format!(
         "Codec {} · Bildrate {:.0} fps · Bitrate {} · Verlust (FEC) {} → {}",
-        codec_label(info.codec),
+        codec_and_decoder(info),
         info.fps,
         mbit(info.bitrate_bps),
         percent(info.loss_before_fec),
@@ -146,7 +157,7 @@ pub fn stats(stats: &LatencyStats, info: &StreamInfo) -> Stats {
             decode: avg(Stage::Decode),
             present: avg(Stage::Present),
         },
-        codec: codec_label(info.codec).to_owned(),
+        codec: codec_and_decoder(info),
         fps: finite(info.fps),
         bitrate_bps: info.bitrate_bps,
         loss_before_fec: finite(info.loss_before_fec),
@@ -183,6 +194,7 @@ mod tests {
         });
         let info = StreamInfo {
             codec: Codec::Av1,
+            decoder: None,
             fps: 120.0,
             bitrate_bps: 38_000_000,
             loss_before_fec: 0.004,
@@ -218,6 +230,13 @@ mod tests {
         let j = serde_json::to_value(super::stats(&stats, &with_rtt)).unwrap();
         assert_eq!(j["rttUs"], 1_250);
         assert_eq!(j["fps"], 0.0, "never NaN, which JSON cannot carry");
+        // Once a decoder runs, it is named with the codec.
+        let decoding = StreamInfo {
+            decoder: Some("Vulkan Video"),
+            ..info
+        };
+        assert_eq!(super::stats(&stats, &decoding).codec, "AV1 · Vulkan Video");
+        assert!(lines(&stats, &decoding)[2].starts_with("Codec AV1 · Vulkan Video · Bildrate"));
         // What the app reads back is what was written.
         let s = super::stats(&stats, &with_rtt);
         let text = serde_json::to_string(&s).unwrap();

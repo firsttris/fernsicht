@@ -143,6 +143,8 @@ fn real_h264_over_loopback() {
         &s,
     );
     assert_eq!(s.codec, Some(Codec::H264));
+    // The hardware path under test decoded it, named as in the overlay.
+    assert!(s.decoder.is_some_and(|d| gpu.name.contains(d)), "{s:?}");
     assert_eq!(s.decode_errors, 0, "{s:?}");
     assert_eq!(s.receiver.packets_lost, 0, "{s:?}");
     assert!(u64::from(s.receiver.frames_dropped) <= overflows, "{s:?}");
@@ -301,6 +303,7 @@ fn vulkan_video_decodes_end_to_end() {
             &format!("{codec:?} ({} → Vulkan Video) 1080p60, Loopback", gpu.name),
             &s,
         );
+        assert_eq!(s.decoder, Some("Vulkan Video"), "{s:?}");
         assert_eq!(s.decode_errors, 0, "{s:?}");
         assert_eq!(s.receiver.packets_lost, 0, "{s:?}");
         assert!(u64::from(s.receiver.frames_dropped) <= overflows, "{s:?}");
@@ -378,6 +381,7 @@ fn vulkan_video_on_both_sides() {
             &format!("{codec:?} (Vulkan Video → Vulkan Video) 1080p60, 1 % Paketverlust"),
             &s,
         );
+        assert_eq!(s.decoder, Some("Vulkan Video"), "{s:?}");
         assert_eq!(s.decode_errors, 0, "{s:?}");
         assert!(s.receiver.packets_recovered > 0, "{s:?}");
         assert!(
