@@ -69,7 +69,7 @@ Added after that:
    - WebRTC with str0m: H.264 and Opus, plus a data channel (mouse cursor
      as protocol packets and statistics to the browser, input as JSON to
      the host).
-   - Code: `apps/host-agent/src/web.rs`, `web/viewer/src/lib/host.ts`,
+   - Code: `apps/host-agent/src/web/`, `web/viewer/src/lib/host.ts`,
      `web/viewer/src/routes/live.tsx`.
    - Tested: with headless Chrome (in the box) against a real host with a
      VAAPI test pattern, 1920×1080 at 60 fps, glass-to-glass according to
