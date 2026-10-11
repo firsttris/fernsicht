@@ -1835,14 +1835,15 @@ fn capture_loop(
             failures = 0;
         }
         HostStats::bump(&shared.stats.frames_captured);
-        // Right away, not after encoding: the pointer is the one thing the
-        // client can show before the frame it belongs to arrives.
-        if let Some(c) = &frame.cursor {
-            let asked = shared.cursor_requested.swap(false, Ordering::Relaxed);
-            cursor.send(c, asked);
-        }
+        // The frame first: the encoder starts while the pointer is read.
         if let Some(skipped) = slot.put(frame) {
             let _ = free_tx.send(skipped);
+        }
+        // Then the pointer, right away, not after encoding: it is the one
+        // thing the client can show before the frame it belongs to.
+        if let Some(c) = source.cursor() {
+            let asked = shared.cursor_requested.swap(false, Ordering::Relaxed);
+            cursor.send(&c, asked);
         }
     }
     slot.close();

@@ -52,8 +52,6 @@ pub struct Frame {
     pub format: PixelFormat,
     pub data: Vec<u8>,
     pub dmabuf: Option<DmaBuf>,
-    /// The pointer, if the source knows it (it is not in the image).
-    pub cursor: Option<CursorState>,
     /// Source sequence number, increments per captured frame.
     pub seq: u64,
     /// Local monotonic clock (µs): when the image was produced (vblank).
@@ -70,7 +68,6 @@ impl Frame {
             format,
             data: vec![0; format.frame_bytes(width, height)],
             dmabuf: None,
-            cursor: None,
             seq: 0,
             capture_us: 0,
             ready_us: 0,
@@ -85,7 +82,6 @@ impl Frame {
             format: PixelFormat::Bgrx,
             data: Vec::new(),
             dmabuf: Some(image),
-            cursor: None,
             seq: 0,
             capture_us: 0,
             ready_us: 0,
@@ -121,6 +117,13 @@ pub trait FrameSource: Send {
 
     /// Blocks until the next frame is available and writes it into `frame`.
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError>;
+
+    /// The pointer with the last frame (it is not in the image), `None`
+    /// where the source does not know it. Asked once that frame has gone
+    /// on to the encoder.
+    fn cursor(&mut self) -> Option<CursorState> {
+        None
+    }
 
     /// Which monitor is captured, if the source shows one.
     fn screen(&self) -> Option<ScreenInfo> {

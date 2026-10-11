@@ -720,7 +720,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `crates/capture/src/kms.rs:303-361, 416-423, 471-530`, `apps/host-agent/src/lib.rs:1525-1533`.
 - **Fix:** resolve property IDs once; read X and Y in one call; hand the frame on before the pointer.
-- **Status:** open
+- **Status:** fixed. The cursor plane's `CRTC_X`/`CRTC_Y` property ids are found once with the
+  plane; each frame reads both in one `get_properties` (two ioctls) instead of a name lookup per
+  property (one `GETPROPERTY` per property until the name matched, for X and again for Y). The
+  pointer left `Frame`: `FrameSource::cursor()` is asked after the frame is in the encoder's slot,
+  so the encoder no longer waits for it. Per frame there are now the vblank wait, the export
+  (plane, `GETFB2`, one prime export and one close per buffer object) and the pointer (plane,
+  properties). Not measured on a live KMS session (that needs root); the logic is unit-tested.
 
 ### C10 · One syscall per packet, a spinning pacer, avoidable copies
 

@@ -20,6 +20,8 @@ pub struct TestPattern {
     /// Frame slots in which the "monitor" is off and capture fails, as KMS
     /// does for a monitor in standby (tests).
     outage: std::ops::Range<u64>,
+    /// The slot of the last frame drawn: the pointer belongs to it.
+    shown: Option<u64>,
 }
 
 impl TestPattern {
@@ -35,6 +37,7 @@ impl TestPattern {
             bar_width: (width / 32).max(2),
             arrow: Arc::new(CursorImage::arrow()),
             outage: 0..0,
+            shown: None,
         }
     }
 
@@ -85,6 +88,10 @@ impl FrameSource for TestPattern {
         self.width
     }
 
+    fn cursor(&mut self) -> Option<CursorState> {
+        self.shown.map(|seq| self.cursor_at(seq))
+    }
+
     fn height(&self) -> u32 {
         self.height
     }
@@ -123,7 +130,7 @@ impl FrameSource for TestPattern {
         frame.capture_us = now_us();
         self.draw(frame, self.seq);
         frame.seq = self.seq;
-        frame.cursor = Some(self.cursor_at(self.seq));
+        self.shown = Some(self.seq);
         frame.ready_us = now_us();
         self.seq += 1 + skipped;
         Ok(())
@@ -180,9 +187,14 @@ mod tests {
         assert!(a.visible && a.serial == 1 && a.image.width == 12);
 
         let mut src = TestPattern::new(64, 32, 1000);
+        assert!(src.cursor().is_none(), "no pointer before a frame");
         let mut f = src.alloc_frame();
         src.next_frame(&mut f).unwrap();
-        assert!(f.cursor.is_some(), "frames carry the pointer");
+        assert_eq!(
+            src.cursor(),
+            Some(src.cursor_at(f.seq)),
+            "the frame's pointer"
+        );
     }
 
     #[test]

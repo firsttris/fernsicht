@@ -9,7 +9,8 @@ The host reads the screen over **KMS** (kernel mode setting): at each vblank of 
 looks up the framebuffer the primary plane shows and exports it as a **DMA-BUF**. The compositor is
 not involved, so this works the same on KDE, GNOME, Hyprland, gamescope, X11 and the login screen,
 without a portal dialog. It needs `CAP_SYS_ADMIN` (the system service runs as root). The cursor plane
-is read separately and sent as its own packets. Details, options and limits: [KMS capture](kms-capture.md).
+is read separately, once the frame has gone on to the encoder, and sent as its own packets. Details,
+options and limits: [KMS capture](kms-capture.md).
 
 Desktops scan out in one of eight RGB formats: 8 or 10 bit, RGB or BGR order, with or without alpha
 (KDE on AMD uses the 10-bit `AB30`). All eight are supported on every path below.

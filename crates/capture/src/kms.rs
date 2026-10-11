@@ -477,6 +477,8 @@ const CURSOR_REFRESH: Duration = Duration::from_secs(2);
 /// The cursor plane and what we last read from it.
 struct CursorPlane {
     plane: plane::Handle,
+    /// Ids of its `CRTC_X` and `CRTC_Y` properties, looked up once.
+    position: (u32, u32),
     /// Framebuffer the image was read from, and when.
     fb: Option<(u32, Instant)>,
     /// The visible part of the image and where it starts in the buffer.
@@ -498,13 +500,48 @@ fn find_cursor_plane(
             .iter()
             .any(|c| u32::from(*c) == crtc);
         let cursor = plane_property(card, h, "type") == Some(control::PlaneType::Cursor as u64);
-        (fits && cursor).then_some(CursorPlane {
+        if !(fits && cursor) {
+            return None;
+        }
+        let props = card.get_properties(h).ok()?;
+        let names: Vec<(u32, Vec<u8>)> = props
+            .iter()
+            .filter_map(|(id, _)| {
+                let p = card.get_property(*id).ok()?;
+                Some((u32::from(*id), p.name().to_bytes().to_vec()))
+            })
+            .collect();
+        let position = position_ids(names.iter().map(|(id, n)| (*id, n.as_slice())))?;
+        Some(CursorPlane {
             plane: h,
+            position,
             fb: None,
             image: None,
             serial: 0,
             failed: false,
         })
+    })
+}
+
+/// The ids of the `CRTC_X` and `CRTC_Y` properties among (id, name).
+fn position_ids<'a>(props: impl IntoIterator<Item = (u32, &'a [u8])>) -> Option<(u32, u32)> {
+    let (mut x, mut y) = (None, None);
+    for (id, name) in props {
+        match name {
+            b"CRTC_X" => x = Some(id),
+            b"CRTC_Y" => y = Some(id),
+            _ => {}
+        }
+    }
+    x.zip(y)
+}
+
+/// The plane's position from its property values (id, value).
+fn position(values: impl IntoIterator<Item = (u32, u64)>, (x_id, y_id): (u32, u32)) -> (i32, i32) {
+    values.into_iter().fold((0, 0), |(x, y), (id, v)| match id {
+        _ if id == x_id => (signed(v), y),
+        _ if id == y_id => (x, signed(v)),
+        _ => (x, y),
     })
 }
 
@@ -566,8 +603,12 @@ impl KmsCapture {
             }
         }
         let (image, dx, dy) = cp.image.clone()?;
-        let x = plane_property(&self.card, cp.plane, "CRTC_X").map_or(0, signed);
-        let y = plane_property(&self.card, cp.plane, "CRTC_Y").map_or(0, signed);
+        // Both in one call, by the ids found once.
+        let values = self.card.get_properties(cp.plane).ok()?;
+        let (x, y) = position(
+            values.iter().map(|(id, v)| (u32::from(*id), *v)),
+            cp.position,
+        );
         Some(CursorState {
             visible: true,
             x: x + dx as i32,
@@ -735,10 +776,13 @@ impl FrameSource for KmsCapture {
         Ok(())
     }
 
+    fn cursor(&mut self) -> Option<CursorState> {
+        self.read_cursor()
+    }
+
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError> {
         let captured_us = self.wait_for_frame();
         let image = self.export()?;
-        frame.cursor = self.read_cursor();
         frame.width = image.width;
         frame.height = image.height;
         frame.format = PixelFormat::Bgrx;
@@ -864,6 +908,25 @@ mod tests {
         let (p, mut c) = setup();
         c[1].connectors.clear();
         assert_eq!(choose(&p, &c, None).unwrap().crtc, 81);
+    }
+
+    #[test]
+    fn the_pointer_position_is_read_by_property_id() {
+        let props = [
+            (5u32, &b"type"[..]),
+            (9, b"CRTC_Y"),
+            (8, b"CRTC_X"),
+            (11, b"SRC_X"),
+        ];
+        let ids = position_ids(props).unwrap();
+        assert_eq!(ids, (8, 9));
+        assert_eq!(
+            position([(5, 2), (8, 300), (9, 200), (11, 7)], ids),
+            (300, 200)
+        );
+        // Off the screen's left edge: a negative position.
+        assert_eq!(position([(8, (-12i64) as u64), (9, 4)], ids), (-12, 4));
+        assert_eq!(position_ids([(1u32, &b"CRTC_X"[..])]), None);
     }
 
     #[test]
