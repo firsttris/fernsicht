@@ -164,7 +164,7 @@ impl HostDescription {
     pub fn of_this_machine(encoder: &EncoderKind) -> Self {
         let node = match encoder {
             EncoderKind::Vaapi { render_node } => Some(render_node.clone()),
-            EncoderKind::Nvenc { .. } => render_nodes()
+            EncoderKind::Nvenc { .. } => render_nodes(Path::new("/sys"))
                 .into_iter()
                 .find(|(_, v)| *v == NVIDIA)
                 .map(|(n, _)| n),
@@ -1592,7 +1592,18 @@ fn capture_loop(
     mut monitors: MonitorSender,
 ) {
     let (mut failures, mut errors) = (0u32, RepeatedError::default());
+    let mut rescanned = Instant::now();
     while shared.running.load(Ordering::Acquire) {
+        // Monitors plugged in or out: the client's list and the input
+        // mapping follow.
+        if rescanned.elapsed() >= MONITORS_REPEAT {
+            rescanned = Instant::now();
+            source.rescan();
+            let screen = source.screen();
+            if screen != shared.screen() {
+                shared.set_screen(screen);
+            }
+        }
         let request = shared
             .monitor_request
             .lock()
@@ -2012,29 +2023,51 @@ pub fn choose_encoder(gpus: &[(String, u16)], vaapi: bool, nvenc: bool) -> Optio
     })
 }
 
-/// This machine's GPUs: render node and PCI vendor, in node order.
-fn render_nodes() -> Vec<(String, u16)> {
-    let mut gpus: Vec<(String, u16)> = std::fs::read_dir("/sys/class/drm")
+/// This machine's GPUs under `sys` (`/sys`, or a stand-in in tests):
+/// render node and PCI vendor. GPUs that drive a monitor come first: KMS
+/// captures the screen there, and an encoder on the same GPU takes the
+/// picture without crossing devices (a laptop's iGPU before its dGPU).
+fn render_nodes(sys: &Path) -> Vec<(String, u16)> {
+    let drm = sys.join("class/drm");
+    let entries: Vec<(String, PathBuf)> = std::fs::read_dir(&drm)
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            if !name.starts_with("renderD") {
-                return None;
-            }
-            let vendor = std::fs::read_to_string(e.path().join("device/vendor")).ok()?;
+        .filter_map(|e| Some((e.file_name().into_string().ok()?, e.path())))
+        .collect();
+    // The devices with a monitor on: a card with an enabled connector.
+    let showing: Vec<PathBuf> = entries
+        .iter()
+        .filter(|(name, _)| name.starts_with("card") && !name.contains('-'))
+        .filter(|(name, _)| {
+            entries.iter().any(|(other, path)| {
+                other.starts_with(&format!("{name}-"))
+                    && std::fs::read_to_string(path.join("enabled"))
+                        .is_ok_and(|s| s.trim() == "enabled")
+            })
+        })
+        .filter_map(|(_, path)| path.join("device").canonicalize().ok())
+        .collect();
+    let mut gpus: Vec<(bool, String, u16)> = entries
+        .iter()
+        .filter(|(name, _)| name.starts_with("renderD"))
+        .filter_map(|(name, path)| {
+            let vendor = std::fs::read_to_string(path.join("device/vendor")).ok()?;
             let vendor = u16::from_str_radix(vendor.trim().trim_start_matches("0x"), 16).ok()?;
-            Some((format!("/dev/dri/{name}"), vendor))
+            let device = path.join("device").canonicalize().ok();
+            let shows = device.is_some_and(|d| showing.contains(&d));
+            Some((!shows, format!("/dev/dri/{name}"), vendor))
         })
         .collect();
     gpus.sort();
-    gpus
+    gpus.into_iter()
+        .map(|(_, node, vendor)| (node, vendor))
+        .collect()
 }
 
 /// [`choose_encoder`] for this machine's GPUs.
 pub fn auto_encoder() -> anyhow::Result<EncoderKind> {
-    let gpus = render_nodes();
+    let gpus = render_nodes(Path::new("/sys"));
     let kind = choose_encoder(&gpus, cfg!(feature = "vaapi"), cfg!(feature = "nvidia"))
         .ok_or_else(|| {
             anyhow::anyhow!("no GPU this build can encode with (found {gpus:x?}); pick --encoder")
@@ -2544,6 +2577,54 @@ mod tests {
         );
         // Rebuilt only when the shape changed (each with a keyframe).
         assert_eq!(*rebuilt.lock().unwrap(), [(1920, 804), (1920, 1080)]);
+    }
+
+    #[test]
+    fn the_gpu_that_shows_the_monitor_comes_first() {
+        use std::os::unix::fs::symlink;
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let sys = std::env::temp_dir().join(format!("fernsicht-gpus-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sys);
+        let drm = sys.join("class/drm");
+        // A laptop: Intel iGPU (renderD128) drives no monitor here; the AMD
+        // dGPU (renderD129) drives DP-1.
+        for (pci, vendor, card, render, monitor) in [
+            (
+                "0000:00:02.0",
+                "0x8086",
+                "card0",
+                "renderD128",
+                ("eDP-1", "disabled"),
+            ),
+            (
+                "0000:03:00.0",
+                "0x1002",
+                "card1",
+                "renderD129",
+                ("DP-1", "enabled"),
+            ),
+        ] {
+            let dev = sys.join("devices/pci").join(pci);
+            std::fs::create_dir_all(&dev).unwrap();
+            std::fs::write(dev.join("vendor"), vendor).unwrap();
+            for node in [card, render] {
+                std::fs::create_dir_all(drm.join(node)).unwrap();
+                symlink(&dev, drm.join(node).join("device")).unwrap();
+            }
+            let connector = drm.join(format!("{card}-{}", monitor.0));
+            std::fs::create_dir_all(&connector).unwrap();
+            std::fs::write(connector.join("enabled"), monitor.1).unwrap();
+        }
+        let gpus = render_nodes(&sys);
+        assert_eq!(
+            gpus,
+            [
+                ("/dev/dri/renderD129".to_owned(), 0x1002),
+                ("/dev/dri/renderD128".to_owned(), 0x8086)
+            ]
+        );
+        std::fs::remove_dir_all(&sys).unwrap();
     }
 
     #[test]

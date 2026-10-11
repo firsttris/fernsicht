@@ -16,13 +16,14 @@
 //! returns no handles and [`KmsCapture::open`] fails with
 //! [`NEEDS_CAP_SYS_ADMIN`] in its message; see docs/kms-capture.md.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use drm::control::{self, Device as _, framebuffer, plane};
+use drm::control::{self, Device as _, ResourceHandles, framebuffer, plane};
 use drm::{ClientCapability, Device as _, VblankWaitFlags, VblankWaitTarget};
 use fernsicht_core::{clock, now_us};
 
@@ -151,8 +152,15 @@ pub struct KmsCapture {
     interval: Duration,
     next_due: Option<Instant>,
     vblank_works: bool,
+    /// After a failed vblank wait (CRTC off, a modeset): when to try again
+    /// instead of pacing by timer for good.
+    vblank_retry_at: Option<Instant>,
     seq: u64,
 }
+
+/// How long to pace by timer after a failed vblank wait before trying the
+/// vblank again.
+const VBLANK_RETRY: Duration = Duration::from_secs(1);
 
 impl KmsCapture {
     pub fn open(cfg: &KmsConfig) -> Result<Self, CaptureError> {
@@ -196,42 +204,11 @@ impl KmsCapture {
         let res = card
             .resource_handles()
             .map_err(|e| backend("read KMS resources", e))?;
-
-        let mut crtcs = Vec::new();
-        let mut refresh = std::collections::HashMap::new();
-        let mut mode_size = std::collections::HashMap::new();
-        for (index, &h) in res.crtcs().iter().enumerate() {
-            let info = card.get_crtc(h).map_err(|e| backend("read CRTC", e))?;
-            if let Some(mode) = info.mode() {
-                refresh.insert(u32::from(h), mode.vrefresh());
-                let (w, h2) = mode.size();
-                mode_size.insert(u32::from(h), (u32::from(w), u32::from(h2)));
-            }
-            crtcs.push(CrtcCandidate {
-                id: h.into(),
-                index: index as u32,
-                active: info.mode().is_some(),
-                connectors: Vec::new(),
-            });
-        }
-        for &h in res.connectors() {
-            let Ok(info) = card.get_connector(h, false) else {
-                continue;
-            };
-            if info.state() != control::connector::State::Connected {
-                continue;
-            }
-            let crtc = info
-                .current_encoder()
-                .and_then(|e| card.get_encoder(e).ok())
-                .and_then(|e| e.crtc());
-            if let Some(crtc) = crtc {
-                let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-                if let Some(c) = crtcs.iter_mut().find(|c| c.id == u32::from(crtc)) {
-                    c.connectors.push(name);
-                }
-            }
-        }
+        let Outputs {
+            crtcs,
+            refresh,
+            mode_size,
+        } = read_outputs(&card, &res)?;
         let mut planes = Vec::new();
         for h in card
             .plane_handles()
@@ -250,26 +227,7 @@ impl KmsCapture {
         let hz = refresh.get(&sel.crtc).copied().unwrap_or(60).max(1);
 
         let cursor = find_cursor_plane(&card, &res, sel.crtc);
-        let screen = ScreenInfo {
-            connector: crtcs
-                .iter()
-                .find(|c| c.id == sel.crtc)
-                .and_then(|c| c.connectors.first().cloned())
-                .unwrap_or_default(),
-            active: crtcs
-                .iter()
-                .filter(|c| c.active)
-                .flat_map(|c| c.connectors.iter().cloned())
-                .collect(),
-            sizes: crtcs
-                .iter()
-                .filter(|c| c.active)
-                .flat_map(|c| {
-                    let size = mode_size.get(&c.id).copied().unwrap_or_default();
-                    c.connectors.iter().map(move |_| size)
-                })
-                .collect(),
-        };
+        let screen = screen_info(&crtcs, &mode_size, sel.crtc);
         if cursor.is_none() {
             log::info!("no cursor plane for the captured display; the pointer is not reported");
         }
@@ -287,6 +245,7 @@ impl KmsCapture {
             interval: Duration::from_micros(clock::frame_interval_us(cfg.fps)),
             next_due: None,
             vblank_works: true,
+            vblank_retry_at: None,
             seq: 0,
         };
         // Export once: fails early without the capability and tells us the
@@ -367,6 +326,9 @@ impl KmsCapture {
     /// time on our clock (µs).
     fn wait_for_frame(&mut self) -> u64 {
         let due = *self.next_due.get_or_insert_with(Instant::now);
+        if !self.vblank_works && self.vblank_retry_at.is_some_and(|t| Instant::now() >= t) {
+            self.vblank_works = true;
+        }
         let captured = loop {
             if self.vblank_works {
                 match self.card.wait_vblank(
@@ -376,6 +338,9 @@ impl KmsCapture {
                     0,
                 ) {
                     Ok(reply) => {
+                        if self.vblank_retry_at.take().is_some() {
+                            log::info!("vblank works again");
+                        }
                         let at = reply.time().map_or_else(Instant::now, monotonic_to_instant);
                         if vblank_is_due(at, due, self.refresh) {
                             break at;
@@ -383,8 +348,11 @@ impl KmsCapture {
                         continue;
                     }
                     Err(e) => {
-                        log::warn!("vblank wait failed ({e}); pacing by timer");
+                        if self.vblank_retry_at.is_none() {
+                            log::warn!("vblank wait failed ({e}); pacing by timer for now");
+                        }
                         self.vblank_works = false;
+                        self.vblank_retry_at = Some(Instant::now() + VBLANK_RETRY);
                     }
                 }
             }
@@ -403,6 +371,83 @@ impl KmsCapture {
         self.next_due = Some(next);
         let age = Instant::now().saturating_duration_since(captured);
         now_us().saturating_sub(age.as_micros() as u64)
+    }
+}
+
+/// The card's CRTCs with their monitors, refresh rates and mode sizes.
+struct Outputs {
+    crtcs: Vec<CrtcCandidate>,
+    refresh: HashMap<u32, u32>,
+    mode_size: HashMap<u32, (u32, u32)>,
+}
+
+/// Reads which monitors are on, on which CRTC, at which mode (no probing:
+/// cheap enough to repeat every few seconds for hotplug).
+fn read_outputs(card: &Card, res: &ResourceHandles) -> Result<Outputs, CaptureError> {
+    let mut crtcs = Vec::new();
+    let mut refresh = HashMap::new();
+    let mut mode_size = HashMap::new();
+    for (index, &h) in res.crtcs().iter().enumerate() {
+        let info = card.get_crtc(h).map_err(|e| backend("read CRTC", e))?;
+        if let Some(mode) = info.mode() {
+            refresh.insert(u32::from(h), mode.vrefresh());
+            let (w, h2) = mode.size();
+            mode_size.insert(u32::from(h), (u32::from(w), u32::from(h2)));
+        }
+        crtcs.push(CrtcCandidate {
+            id: h.into(),
+            index: index as u32,
+            active: info.mode().is_some(),
+            connectors: Vec::new(),
+        });
+    }
+    for &h in res.connectors() {
+        let Ok(info) = card.get_connector(h, false) else {
+            continue;
+        };
+        if info.state() != control::connector::State::Connected {
+            continue;
+        }
+        let crtc = info
+            .current_encoder()
+            .and_then(|e| card.get_encoder(e).ok())
+            .and_then(|e| e.crtc());
+        if let Some(crtc) = crtc {
+            let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+            if let Some(c) = crtcs.iter_mut().find(|c| c.id == u32::from(crtc)) {
+                c.connectors.push(name);
+            }
+        }
+    }
+    Ok(Outputs {
+        crtcs,
+        refresh,
+        mode_size,
+    })
+}
+
+/// The monitor on `captured` (a CRTC) and all monitors that are on.
+pub fn screen_info(
+    crtcs: &[CrtcCandidate],
+    mode_size: &HashMap<u32, (u32, u32)>,
+    captured: u32,
+) -> ScreenInfo {
+    let active = || crtcs.iter().filter(|c| c.active);
+    ScreenInfo {
+        connector: crtcs
+            .iter()
+            .find(|c| c.id == captured)
+            .and_then(|c| c.connectors.first().cloned())
+            .unwrap_or_default(),
+        active: active()
+            .flat_map(|c| c.connectors.iter().cloned())
+            .collect(),
+        sizes: active()
+            .flat_map(|c| {
+                let size = mode_size.get(&c.id).copied().unwrap_or_default();
+                c.connectors.iter().map(move |_| size)
+            })
+            .collect(),
     }
 }
 
@@ -653,6 +698,21 @@ impl FrameSource for KmsCapture {
         Some(self.screen.clone())
     }
 
+    fn rescan(&mut self) {
+        let Ok(res) = self.card.resource_handles() else {
+            return;
+        };
+        if let Ok(o) = read_outputs(&self.card, &res) {
+            let mut screen = screen_info(&o.crtcs, &o.mode_size, self.sel.crtc);
+            // The captured monitor unplugged: capture fails until another
+            // is chosen; its name stays for the client meanwhile.
+            if screen.connector.is_empty() {
+                screen.connector = self.screen.connector.clone();
+            }
+            self.screen = screen;
+        }
+    }
+
     /// Opens the same card again for `connector`; the old capture stays
     /// if that fails.
     fn switch_to(&mut self, connector: &str) -> Result<(), CaptureError> {
@@ -737,6 +797,28 @@ mod tests {
                 crtc(81, 2, true, &["HDMI-A-1"]),
             ],
         )
+    }
+
+    #[test]
+    fn the_screen_lists_the_monitors_that_are_on() {
+        let crtc = |id, active, connectors: &[&str]| CrtcCandidate {
+            id,
+            index: id,
+            active,
+            connectors: connectors.iter().map(|c| c.to_string()).collect(),
+        };
+        let crtcs = [
+            crtc(40, true, &["DP-2"]),
+            crtc(41, false, &[]),
+            crtc(42, true, &["HDMI-A-1"]),
+        ];
+        let sizes = HashMap::from([(40, (2560, 1440)), (42, (3440, 1440))]);
+        let s = screen_info(&crtcs, &sizes, 42);
+        assert_eq!(s.connector, "HDMI-A-1");
+        assert_eq!(s.active, ["DP-2", "HDMI-A-1"]);
+        assert_eq!(s.sizes, [(2560, 1440), (3440, 1440)]);
+        // The captured CRTC lost its monitor (unplugged): no name.
+        assert_eq!(screen_info(&crtcs, &sizes, 41).connector, "");
     }
 
     #[test]

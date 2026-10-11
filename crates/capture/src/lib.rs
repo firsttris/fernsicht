@@ -127,6 +127,10 @@ pub trait FrameSource: Send {
         None
     }
 
+    /// Reads again which monitors there are (hotplug); [`Self::screen`]
+    /// tells the result.
+    fn rescan(&mut self) {}
+
     /// The captured monitor's refresh rate (Hz): more frames per second
     /// than that cannot come. `None` for sources without one.
     fn refresh_hz(&self) -> Option<u32> {

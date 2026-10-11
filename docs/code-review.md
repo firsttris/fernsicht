@@ -230,7 +230,11 @@ the limits FFmpeg puts on the next latency step.
   independently of the card driving the monitor. The monitor list is never refreshed on hotplug.
 - **Fix:** retry vblank periodically; pick the encoder on the capture card's device; refresh the
   list.
-- **Status:** open
+- **Status:** fixed. A failed vblank wait paces by timer for a second, then vblank is tried again.
+  `--encoder auto` orders GPUs that drive a monitor first (a card with an enabled connector in
+  sysfs). The capture thread rescans the outputs every 2 s (`FrameSource::rescan`, the KMS outputs
+  read by `read_outputs`/`screen_info`), so hotplug reaches the client's list and the input
+  mapping. Tests: `the_gpu_that_shows_the_monitor_comes_first`, `the_screen_lists_the_monitors_that_are_on`.
 
 ### A17 · The Vulkan device is not matched to the decoding or encoding GPU
 

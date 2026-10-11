@@ -15,7 +15,14 @@ This works on both machines:
   the GPU into the NVENC input. On the GTX 1080 all of this together takes
   2.5 ms at 1080p.
 
-`--encoder auto` picks the encoder that matches the graphics card.
+`--encoder auto` picks the encoder that matches the graphics card. With
+several GPUs (a laptop's iGPU and dGPU) it takes the one that drives a
+monitor, so the picture never has to cross devices.
+
+The capture follows the monitor's refresh (vblank). If a vblank wait fails
+(the monitor switched off, a mode change), it paces by timer and tries the
+vblank again every second. Monitors plugged in or out show up in the
+client's monitor list within 2 s.
 
 This also works on the login screen and in Gaming Mode (gamescope), and it
 needs no confirmation dialog. In return, the kernel requires
