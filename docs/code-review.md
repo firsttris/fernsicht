@@ -583,7 +583,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Where:** `crates/secure/src/lib.rs:102-137`, `apps/host-agent/src/main.rs:199-205`.
 - **Fix:** random temporary name with `O_EXCL|O_NOFOLLOW`, `fchmod` 0600, state directory 0700,
   warn on group/other access.
-- **Status:** open
+- **Status:** fixed. `write_private` writes a new file of a random name, created exclusively
+  (`create_new`: never through a symlink) with 0600 from the start, then renames it; a missing
+  directory is created 0700; a temporary file is removed on failure. Loading a key file or the
+  paired list takes group and other access away (`keep_private`). Test:
+  `key_files_are_private_and_never_written_through_a_symlink`.
 
 ### B14 · Any local user can block the control socket
 

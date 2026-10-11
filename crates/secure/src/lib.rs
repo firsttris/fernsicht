@@ -100,6 +100,7 @@ impl Identity {
     /// Loads the identity from `path`, or creates and saves a new one
     /// (readable by the owner only).
     pub fn load_or_create(path: &Path) -> Result<Self, String> {
+        keep_private(path);
         match std::fs::read_to_string(path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -115,25 +116,51 @@ impl Identity {
     }
 }
 
-/// Writes a file only its owner can read (keys, the paired list).
+/// Writes a file only its owner can read (keys, the paired list): a new
+/// file of an unpredictable name next to it, created exclusively (so never
+/// through a symlink someone put there) with mode 0600 from the start,
+/// then renamed over the old one. A missing directory is created for the
+/// owner only.
 fn write_private(path: &Path, contents: &str) -> Result<(), String> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let tmp = path.with_extension("tmp");
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(|e| format!("random: {e}"))?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(".{name}.{:016x}.tmp", u64::from_ne_bytes(nonce)));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&tmp)
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    f.write_all(contents.as_bytes())
+    let written = f
+        .write_all(contents.as_bytes())
         .and_then(|()| f.sync_all())
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(())
+}
+
+/// Takes group and other access away from an existing key file (one
+/// written by an older version, or changed by hand).
+fn keep_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::symlink_metadata(path)
+        && meta.is_file()
+        && meta.permissions().mode() & 0o077 != 0
+    {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
 }
 
 /// A paired device.
@@ -156,6 +183,7 @@ pub struct Trusted {
 
 impl Trusted {
     pub fn load(path: &Path) -> Result<Self, String> {
+        keep_private(path);
         match std::fs::read_to_string(path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -196,6 +224,43 @@ pub(crate) fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_files_are_private_and_never_written_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fernsicht-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let key = dir.join("state/client.json");
+        Identity::load_or_create(&key).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&key), 0o600);
+        assert_eq!(mode(&dir.join("state")), 0o700);
+        // An old file readable by others is made private when loaded.
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        Identity::load_or_create(&key).unwrap();
+        assert_eq!(mode(&key), 0o600);
+        // A symlink planted where the old temporary name was is ignored.
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("state/client.tmp")).unwrap();
+        Trusted::default()
+            .save(&dir.join("state/hosts.json"))
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        // No temporary files are left.
+        let leftovers = std::fs::read_dir(dir.join("state"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 1, "only the planted link");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn temp(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("fernsicht-secure-{}-{name}", std::process::id()))
