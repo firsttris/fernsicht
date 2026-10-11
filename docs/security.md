@@ -30,7 +30,10 @@ client                               host (pairing open, PIN shown)
   per attempt.
 - With that key they swap their long-term public keys and names, sealed with ChaCha20-Poly1305 and
   bound to the SPAKE2 messages.
-- After **3 wrong attempts** the host closes pairing.
+- Each address gets **3 attempts** per pairing window, all together 10; then the host closes
+  pairing. A message that cannot be a pairing message costs no attempt. One machine therefore
+  cannot close pairing for the others, and guessing needs a full exchange per try, which a forged
+  address cannot complete.
 
 ## Sessions: Noise IK
 
@@ -79,6 +82,10 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
   intercept and hold back the browser's request could use it first, which HTTPS for the viewer
   would close ([next steps](next-steps.md)).
 - Picture, sound and input then travel over WebRTC, which encrypts with DTLS-SRTP.
+- The API answers only requests addressed to this machine (its IP address or its name; a page
+  elsewhere whose name was pointed at the host, DNS rebinding, is refused), and `/api/connect` only
+  JSON from the page's own origin (another website cannot spend the PIN attempts). Every answer
+  carries a content security policy (the page's own scripts only), no framing, no sniffing.
 - The host's small web server takes one request per connection with everything bounded: a request
   head of at most 8 KiB and 32 headers, a body of at most 64 KiB, 10 s to send it, 32 connections
   at once. A slow or oversized request cannot tie up the root service.

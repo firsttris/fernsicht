@@ -189,6 +189,13 @@ pub struct HostPairing {
     client_name: String,
 }
 
+/// Whether `msg1` can be a client's first pairing message (its length
+/// and name), checked before an attempt is counted.
+pub fn message1_is_well_formed(msg1: &[u8]) -> bool {
+    (SPAKE_LEN..=SPAKE_LEN + MAX_NAME).contains(&msg1.len())
+        && std::str::from_utf8(&msg1[SPAKE_LEN..]).is_ok()
+}
+
 impl HostPairing {
     /// Takes message 1 (from a client trying `pin`); returns the attempt
     /// and message 2. Whether the PIN matched shows with message 3.

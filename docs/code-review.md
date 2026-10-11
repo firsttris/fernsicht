@@ -526,7 +526,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   DNS rebinding can read `/api/info`); no security headers.
 - **Fix:** validate before counting; JSON content type and Origin/Host check; CSP, frame and
   nosniff headers.
-- **Status:** open
+- **Status:** fixed. Message 1 is checked for its form before an attempt counts; attempts are
+  counted per address (3) and in total (10), so one machine cannot close pairing for the others.
+  The API answers only a `Host` that names this machine (`host_allowed`: an IP, `localhost`, the
+  machine's name with or without domain); `/api/connect` takes only JSON from the page's own origin
+  (`same_origin_post`). Every answer has CSP, `X-Frame-Options`, `nosniff` and `no-referrer`; the
+  built viewer was loaded under that policy in Chromium without errors. Tests in `web.rs`,
+  `the_host_serves_the_viewer_page` and `a_browser_gets_picture_sound_and_pointer_and_types`.
 
 ### B10 · The service unit is barely hardened; the firewall opens in the default zone
 

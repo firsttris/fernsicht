@@ -497,11 +497,17 @@ fn handshakes_path(trusted: &Path) -> PathBuf {
 /// How long pairing mode stays open, and how many wrong PINs it takes.
 pub const PAIRING_OPEN_FOR: Duration = Duration::from_secs(300);
 pub const PAIRING_ATTEMPTS: u8 = 3;
+/// Attempts a pairing window allows from all addresses together; then it
+/// closes. One address alone cannot close it for the others.
+pub const PAIRING_ATTEMPTS_TOTAL: u8 = 10;
 
 struct PairingWindow {
     pin: String,
     until: Instant,
+    /// Attempts left from all addresses together.
     attempts_left: u8,
+    /// Attempts used per address ([`PAIRING_ATTEMPTS`] each).
+    used: HashMap<std::net::IpAddr, u8>,
     /// Which opening this is: a device pairing that began in one window
     /// must finish in it (see [`HostSecurity::pairing_generation`]).
     generation: u64,
@@ -623,7 +629,8 @@ impl HostSecurity {
         *self.pairing.lock().unwrap_or_else(|e| e.into_inner()) = Some(PairingWindow {
             pin: pin.to_owned(),
             until: Instant::now() + PAIRING_OPEN_FOR,
-            attempts_left: PAIRING_ATTEMPTS,
+            attempts_left: PAIRING_ATTEMPTS_TOTAL,
+            used: HashMap::new(),
             generation: PAIRING_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
         });
     }
@@ -673,11 +680,20 @@ impl HostSecurity {
 
     /// The PIN and the window's generation if pairing is open; uses up an
     /// attempt.
-    fn pairing_attempt(&self) -> Result<(String, u64), RejectReason> {
+    fn pairing_attempt(&self, from: std::net::IpAddr) -> Result<(String, u64), RejectReason> {
         let mut w = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
         match w.as_mut() {
+            // This address used its attempts: turned away, the window stays
+            // open for the others.
+            Some(p)
+                if p.until > Instant::now()
+                    && p.used.get(&from).is_some_and(|&n| n >= PAIRING_ATTEMPTS) =>
+            {
+                Err(RejectReason::TooManyAttempts)
+            }
             Some(p) if p.until > Instant::now() && p.attempts_left > 0 => {
                 p.attempts_left -= 1;
+                *p.used.entry(from).or_default() += 1;
                 Ok((p.pin.clone(), p.generation))
             }
             Some(p) if p.attempts_left == 0 => {
@@ -1071,7 +1087,7 @@ impl HostAgent {
             let _ = req.reply.send(Err(web::WebError::Failed));
             return;
         };
-        if let Err(e) = web::check_pin(sec, &req.pin) {
+        if let Err(e) = web::check_pin(sec, &req.pin, req.browser.ip()) {
             log::info!("web: {} turned away ({e:?})", req.browser.ip());
             let _ = req.reply.send(Err(e));
             return;
@@ -1293,7 +1309,12 @@ impl HostAgent {
                     send(2, &e.msg2, out);
                     return;
                 }
-                let (pin, generation) = match sec.pairing_attempt() {
+                // A message that cannot be one costs no attempt.
+                if !fernsicht_secure::pairing::message1_is_well_formed(p.message) {
+                    log::debug!("{from}: pairing: malformed message 1");
+                    return;
+                }
+                let (pin, generation) = match sec.pairing_attempt(from.ip()) {
                     Ok(pin) => pin,
                     Err(reason) => {
                         let n = reason.encode(out);

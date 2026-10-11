@@ -25,7 +25,7 @@ fn http(addr: SocketAddr, method: &str, path: &str, body: Option<&Value>) -> (u1
     let body = body.map(|b| b.to_string()).unwrap_or_default();
     write!(
         s,
-        "{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     )
@@ -93,6 +93,32 @@ fn a_browser_gets_picture_sound_and_pointer_and_types() {
     let channel = change.add_channel("fernsicht".into());
     let (offer, pending) = change.apply().unwrap();
     let request = |pin: &str| json!({"pin": pin, "offer": offer});
+
+    // Another site's page: a name pointed at this host (DNS rebinding), or
+    // a plain-text post (no preflight): refused before any PIN is tried.
+    let raw = |request: String| {
+        let mut s = TcpStream::connect(web).unwrap();
+        s.write_all(request.as_bytes()).unwrap();
+        let mut answer = String::new();
+        let _ = s.read_to_string(&mut answer);
+        answer
+    };
+    assert!(
+        raw("GET /api/info HTTP/1.1\r\nHost: evil.example\r\n\r\n".into())
+            .starts_with("HTTP/1.1 403")
+    );
+    let form = request("482913").to_string();
+    assert!(
+        raw(format!(
+            "POST /api/connect HTTP/1.1\r\nHost: {web}\r\nContent-Type: text/plain\r\n\
+             Content-Length: {}\r\n\r\n{form}",
+            form.len()
+        ))
+        .starts_with("HTTP/1.1 403")
+    );
+    // Every answer carries the security headers.
+    let info = raw(format!("GET /api/info HTTP/1.1\r\nHost: {web}\r\n\r\n"));
+    assert!(info.contains("X-Frame-Options: DENY") && info.contains("Content-Security-Policy"));
 
     // No pairing open, then a wrong PIN: turned away.
     let (status, body) = http(web, "POST", "/api/connect", Some(&request("123456")));

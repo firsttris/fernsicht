@@ -657,6 +657,67 @@ fn json_response(status: u16, v: &Value) -> Response {
         .with("Cache-Control", "no-store")
 }
 
+/// Whether a request's `Host` names this machine: an IP address,
+/// `localhost`, or the machine's name (alone or with a domain). Anything
+/// else is a page somewhere else whose name was pointed at us (DNS
+/// rebinding) and must not use the API.
+pub(crate) fn host_allowed(host: Option<&str>, machine: &str) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    // Without the port: "[::1]:47800", "192.168.1.5:47800", "zentrale".
+    let name = match host.strip_prefix('[') {
+        Some(v6) => {
+            return v6
+                .split(']')
+                .next()
+                .is_some_and(|a| a.parse::<IpAddr>().is_ok());
+        }
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    };
+    if name.parse::<IpAddr>().is_ok() || name.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // The machine's name may come with its domain ("bazzite.fritz.box"),
+    // the browser may use either: the first labels must match.
+    let first = |n: &str| n.split('.').next().unwrap_or_default().to_ascii_lowercase();
+    !first(machine).is_empty() && first(name) == first(machine)
+}
+
+/// Whether a POST may be a page's own: JSON (a form or a plain-text post
+/// from another site cannot set that without asking first), and from the
+/// page's own origin where the browser says it.
+pub(crate) fn same_origin_post(head: &Head) -> bool {
+    let json = head.header("content-type").is_some_and(|t| {
+        t.split(';')
+            .next()
+            .is_some_and(|t| t.trim() == "application/json")
+    });
+    let origin_ok = match (head.header("origin"), head.header("host")) {
+        (None, _) => true,
+        (Some(origin), Some(host)) => origin
+            .strip_prefix("http://")
+            .or_else(|| origin.strip_prefix("https://"))
+            .is_some_and(|o| o.eq_ignore_ascii_case(host)),
+        (Some(_), None) => false,
+    };
+    json && origin_ok
+}
+
+/// Headers on every answer: no sniffing, no framing, no referrer, and a
+/// content policy that allows only the page's own scripts.
+fn secured(r: Response) -> Response {
+    r.with("X-Content-Type-Options", "nosniff")
+        .with("Referrer-Policy", "no-referrer")
+        .with("X-Frame-Options", "DENY")
+        .with(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; \
+             frame-ancestors 'none'",
+        )
+}
+
 fn handle(
     head: &Head,
     body: &[u8],
@@ -665,6 +726,20 @@ fn handle(
     sec: &HostSecurity,
     requests: &Sender<WebRequest>,
 ) -> Response {
+    secured(route(head, body, from, root, sec, requests))
+}
+
+fn route(
+    head: &Head,
+    body: &[u8],
+    from: SocketAddr,
+    root: Option<&Path>,
+    sec: &HostSecurity,
+    requests: &Sender<WebRequest>,
+) -> Response {
+    if head.path.starts_with("/api/") && !host_allowed(head.header("host"), sec.name()) {
+        return json_response(403, &json!({"error": "wrong-host"}));
+    }
     match (head.method, head.path.as_str()) {
         (Method::Get, "/api/info") => json_response(
             200,
@@ -673,6 +748,9 @@ fn handle(
                 "pairing": sec.pairing_remaining().is_some(),
             }),
         ),
+        (Method::Post, "/api/connect") if !same_origin_post(head) => {
+            json_response(403, &json!({"error": "forbidden"}))
+        }
         (Method::Post, "/api/connect") => connect(body, from, requests),
         (Method::Get | Method::Head, path) => serve_file(root, path),
         _ => json_response(404, &json!({"error": "not-found"})),
@@ -784,8 +862,8 @@ fn serve_file(root: Option<&Path>, path: &str) -> Response {
 
 /// Checks a browser's PIN against the open pairing; a right PIN is used
 /// up (pairing closes).
-pub(crate) fn check_pin(sec: &HostSecurity, pin: &str) -> Result<(), WebError> {
-    match sec.pairing_attempt() {
+pub(crate) fn check_pin(sec: &HostSecurity, pin: &str, from: IpAddr) -> Result<(), WebError> {
+    match sec.pairing_attempt(from) {
         Ok((expected, _)) => {
             let ok = expected.len() == pin.len()
                 && expected
@@ -940,6 +1018,65 @@ mod tests {
     }
 
     #[test]
+    fn the_api_answers_only_to_this_machines_names() {
+        for ok in [
+            "192.168.178.87:47800",
+            "[fe80::1]:47800",
+            "[::1]",
+            "localhost:47800",
+            "zentrale:47800",
+            "Zentrale.fritz.box:47800",
+            "zentrale.local",
+        ] {
+            assert!(host_allowed(Some(ok), "zentrale"), "{ok}");
+        }
+        // DNS rebinding: someone else's name pointed at us.
+        for bad in [
+            "evil.example:47800",
+            "zentrale-evil.example",
+            "[not-an-ip]:1",
+            "",
+        ] {
+            assert!(!host_allowed(Some(bad), "zentrale"), "{bad}");
+        }
+        assert!(!host_allowed(None, "zentrale"));
+        // A machine whose name has its domain.
+        assert!(host_allowed(Some("bazzite.fritz.box:47800"), "bazzite.fritz.box"));
+        assert!(host_allowed(Some("bazzite:47800"), "bazzite.fritz.box"));
+        assert!(!host_allowed(Some("evil.fritz.box"), "bazzite.fritz.box"));
+    }
+
+    #[test]
+    fn only_the_pages_own_json_posts_connect() {
+        let head = |headers: &[(&str, &str)]| Head {
+            method: Method::Post,
+            path: "/api/connect".into(),
+            headers: headers
+                .iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect(),
+        };
+        let json = ("content-type", "application/json");
+        let host = ("host", "192.168.178.87:47800");
+        assert!(same_origin_post(&head(&[json, host])));
+        assert!(same_origin_post(&head(&[
+            ("content-type", "application/json; charset=utf-8"),
+            host,
+            ("origin", "http://192.168.178.87:47800"),
+        ])));
+        // A plain-text post from another site (no preflight needed).
+        assert!(!same_origin_post(&head(&[
+            ("content-type", "text/plain"),
+            host
+        ])));
+        assert!(!same_origin_post(&head(&[
+            json,
+            host,
+            ("origin", "http://evil.example")
+        ])));
+    }
+
+    #[test]
     fn pins_are_checked_once() {
         let sec = HostSecurity::new(
             fernsicht_secure::Identity::generate(),
@@ -947,21 +1084,30 @@ mod tests {
             fernsicht_secure::Trusted::default(),
             None,
         );
-        assert_eq!(check_pin(&sec, "123456"), Err(WebError::PairingClosed));
+        let (me, other) = (
+            IpAddr::from([192, 168, 1, 5]),
+            IpAddr::from([192, 168, 1, 6]),
+        );
+        assert_eq!(check_pin(&sec, "123456", me), Err(WebError::PairingClosed));
         sec.open_pairing("123456");
-        assert_eq!(check_pin(&sec, "654321"), Err(WebError::WrongPin));
-        assert_eq!(check_pin(&sec, "12345"), Err(WebError::WrongPin));
-        assert_eq!(check_pin(&sec, "123456"), Ok(()));
+        assert_eq!(check_pin(&sec, "654321", me), Err(WebError::WrongPin));
+        assert_eq!(check_pin(&sec, "12345", me), Err(WebError::WrongPin));
+        assert_eq!(check_pin(&sec, "123456", me), Ok(()));
         assert_eq!(
-            check_pin(&sec, "123456"),
+            check_pin(&sec, "123456", me),
             Err(WebError::PairingClosed),
             "used up"
         );
+        // Three wrong from one address turn that one away, not the others.
         sec.open_pairing("111111");
         for _ in 0..3 {
-            assert_eq!(check_pin(&sec, "000000"), Err(WebError::WrongPin));
+            assert_eq!(check_pin(&sec, "000000", me), Err(WebError::WrongPin));
         }
-        assert_eq!(check_pin(&sec, "111111"), Err(WebError::TooManyAttempts));
+        assert_eq!(
+            check_pin(&sec, "111111", me),
+            Err(WebError::TooManyAttempts)
+        );
+        assert_eq!(check_pin(&sec, "111111", other), Ok(()));
         assert_eq!(WebError::WrongPin.code(), "wrong-pin");
         assert_eq!(WebError::Failed.status(), 500);
     }

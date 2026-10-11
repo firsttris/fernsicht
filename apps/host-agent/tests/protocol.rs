@@ -1085,7 +1085,8 @@ mod secure {
         assert_eq!(pair(&mut peer, &client, "654321").unwrap_err(), "wrong PIN");
         assert_eq!(pair(&mut peer, &client, "111111").unwrap_err(), "wrong PIN");
         assert_eq!(pair(&mut peer, &client, "222222").unwrap_err(), "wrong PIN");
-        // Three wrong guesses close pairing mode, even for the right PIN.
+        // Three wrong guesses turn this address away, even with the right
+        // PIN.
         assert_eq!(
             pair(&mut peer, &client, "123456").unwrap_err(),
             "TooManyAttempts"
