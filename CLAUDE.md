@@ -31,6 +31,9 @@ comments and commit messages where it settles a detail.
   desktop where the user sits. Ask first and wait. A virtual display (Xvfb) is fine.
 - **Commands as root** (`sudo`, `pkexec`) are run by the user; don't work around that.
 - **The user's processes** (e.g. their running host) are not stopped; use other ports for tests.
+- **GPU tests on a runner machine** (the NVIDIA box runs the `gpu-nvidia` runner): only when the
+  runner is idle (no `Runner.Worker` process), and with `--test-threads=1` as CI does. NVENC allows
+  only a few sessions at once; tests running beside the runner's fail or hang it.
 - **Committing and pushing:** commit on `main`; check `git status --short` for stray files
   (`target/`, build output) first. Push over SSH to both branches:
   `git push git@github.com:firsttris/fernsicht.git HEAD:main` and `HEAD:ccr-a9432ae9-5iz8to`.

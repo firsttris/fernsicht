@@ -52,9 +52,12 @@ jobs:
       # NVIDIA: CPU upload and screen input (Vulkan → CUDA) on the
       # proprietary driver.
       # The hardware steps below run even when an earlier one failed, so
-      # one red step does not hide the results of the others.
+      # one red step does not hide the results of the others. Each has its
+      # own time limit: a GPU that hangs (a driver wait spinning forever)
+      # fails its step in minutes instead of holding the runner.
       - name: Vulkan renderer on this GPU
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         env:
           FERNSICHT_GPU: ${{ matrix.gpu }}
           FERNSICHT_REQUIRE_VULKAN: "1"
@@ -64,27 +67,32 @@ jobs:
           --test vulkan -- --test-threads=1 --nocapture
       - name: Screen to NV12 in Vulkan (DMA-BUF import, BT.709, scaling)
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         env:
           FERNSICHT_REQUIRE_VULKAN: "1"
           FERNSICHT_REQUIRE_DMABUF: "1"
         run: cargo test -p fernsicht-gpu -- --test-threads=1 --nocapture
       - name: VAAPI encode/decode on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}
+        timeout-minutes: 10
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-codec --features vaapi --test vaapi -- --test-threads=1 --nocapture
       - name: Real video end to end (host → impaired link → client; web viewer)
         if: ${{ !cancelled() && matrix.gpu == 'amd' }}
+        timeout-minutes: 10
         env:
           FERNSICHT_GPU: amd
         run: cargo test -p fernsicht-e2e --features vaapi --no-fail-fast --test gpu --test web_gpu -- --nocapture
       - name: NVENC/NVDEC on the GPU
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
+        timeout-minutes: 10
         env:
           FERNSICHT_GPU: nvidia
         run: cargo test -p fernsicht-codec --features nvidia --test nvidia -- --test-threads=1 --nocapture
       - name: Real video end to end (NVENC → impaired link → NVDEC; web viewer)
         if: ${{ !cancelled() && matrix.gpu == 'nvidia' }}
+        timeout-minutes: 10
         env:
           FERNSICHT_GPU: nvidia
         run: cargo test -p fernsicht-e2e --features nvidia --no-fail-fast --test gpu --test web_gpu -- --nocapture
