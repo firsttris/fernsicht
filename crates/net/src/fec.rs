@@ -181,6 +181,15 @@ impl Packetizer {
         if !(0.0..=1.0).contains(&cfg.max_redundancy) {
             return Err(FecError::Config("max_redundancy must be within 0..=1"));
         }
+        // A floor above the cap, or NaN, would size recovery by nonsense.
+        if !(0.0..=cfg.max_redundancy).contains(&cfg.redundancy) {
+            return Err(FecError::Config(
+                "redundancy must be within 0..=max_redundancy",
+            ));
+        }
+        if !(0.0..=1.0).contains(&cfg.loss) {
+            return Err(FecError::Config("loss must be within 0..=1"));
+        }
         Ok(Self {
             cfg,
             encoder: None,
@@ -408,6 +417,22 @@ mod tests {
             },
             FecConfig {
                 max_redundancy: 1.5,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                redundancy: 0.6,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                redundancy: f32::NAN,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                redundancy: -0.1,
+                ..FecConfig::default()
+            },
+            FecConfig {
+                loss: 2.0,
                 ..FecConfig::default()
             },
         ] {

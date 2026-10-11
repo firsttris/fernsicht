@@ -86,6 +86,34 @@ impl Kind {
             _ => return None,
         })
     }
+
+    /// The prefix flag bits this kind gives a meaning; a packet with any
+    /// other bit set is refused, the same for every kind. Hello (the codec
+    /// set), Pair (the step) and Monitors (the count) use the whole byte
+    /// and check it themselves.
+    fn known_flags(self) -> u8 {
+        match self {
+            Kind::Video => FLAG_KEYFRAME,
+            Kind::Feedback => FLAG_REQUEST_KEYFRAME | FLAG_REQUEST_CURSOR,
+            Kind::Cursor => FLAG_CURSOR_VISIBLE,
+            Kind::Handshake => FLAG_REPLY,
+            Kind::Announce => FLAG_PAIRING | FLAG_BUSY,
+            Kind::KeyframeRequest => FLAG_HAS_FRAME,
+            Kind::Hello | Kind::Pair | Kind::Monitors => 0xFF,
+            Kind::ClockPing
+            | Kind::ClockPong
+            | Kind::HelloAck
+            | Kind::Bye
+            | Kind::CursorShape
+            | Kind::Input
+            | Kind::InputAck
+            | Kind::Audio
+            | Kind::Sealed
+            | Kind::Reject
+            | Kind::Discover
+            | Kind::SelectMonitor => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -1443,6 +1471,9 @@ impl<'a> Packet<'a> {
         let kind_byte = r.u8()?;
         let kind = Kind::from_u8(kind_byte).ok_or(DecodeError::UnknownKind(kind_byte))?;
         let flags = r.u8()?;
+        if flags & !kind.known_flags() != 0 {
+            return Err(DecodeError::Invalid("unknown flags"));
+        }
         Ok(match kind {
             Kind::Video => {
                 let h = VideoHeader::read(flags, &mut r)?;
@@ -1577,6 +1608,56 @@ impl<'a> Packet<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_kind_refuses_flag_bits_it_does_not_know() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let mut packets: Vec<Vec<u8>> = Vec::new();
+        let mut add = |n: usize, buf: &[u8]| packets.push(buf[..n].to_vec());
+        let n = ClockPing {
+            seq: 1,
+            client_send_us: 2,
+        }
+        .encode(&mut buf);
+        add(n, &buf);
+        let n = Bye { session_id: 7 }.encode(&mut buf);
+        add(n, &buf);
+        let n = Cursor {
+            session_id: 7,
+            visible: true,
+            shape_serial: 1,
+            x: 3,
+            y: 4,
+            screen_width: 1920,
+            screen_height: 1080,
+        }
+        .encode(&mut buf);
+        add(n, &buf);
+        let n = Feedback {
+            session_id: 7,
+            request_keyframe: true,
+            request_cursor: true,
+            highest_frame_id: 1,
+            frames_completed: 1,
+            frames_dropped: 0,
+            packets_received: 10,
+            packets_lost: 0,
+            packets_recovered: 0,
+        }
+        .encode(&mut buf);
+        add(n, &buf);
+        for p in packets {
+            assert!(Packet::decode(&p).is_ok(), "valid as sent");
+            let mut odd = p.clone();
+            odd[3] |= 0x80;
+            assert_eq!(
+                Packet::decode(&odd).unwrap_err(),
+                DecodeError::Invalid("unknown flags"),
+                "kind {}",
+                p[2]
+            );
+        }
+    }
 
     fn video_header() -> VideoHeader {
         VideoHeader {

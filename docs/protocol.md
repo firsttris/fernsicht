@@ -7,7 +7,9 @@ instead (see [web viewer](web-viewer.md)).
 
 ## Packets
 
-Every datagram starts with a 4-byte prefix: magic `0xF5`, version `1`, kind, flags. Datagrams are at
+Every datagram starts with a 4-byte prefix: magic `0xF5`, version `1`, kind, flags. Each kind knows
+its flag bits; a packet with any other bit set is refused, whatever its kind (a new meaning needs a
+new version). Datagrams are at
 most 1,400 bytes, and video datagrams fit the path: the host asks the route's MTU towards the client
 (a WireGuard interface's 1420, Tailscale's 1280) and sizes the shards for it, so nothing is split
 into IP fragments. Once a session is secure, every packet travels inside a **Sealed** packet
