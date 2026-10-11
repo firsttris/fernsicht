@@ -3,7 +3,7 @@
  * WebRTC session with the PIN it shows. Without a host (development
  * server, the demo) there is no `/api`, and the viewer shows the demo.
  */
-import type { SessionStats } from "@fernsicht/ui";
+import { PAIRING_ERROR_TEXT, type SessionStats } from "@fernsicht/ui";
 
 import type { Connected } from "./bindings/Connected";
 import type { FromBrowser } from "./bindings/FromBrowser";
@@ -39,10 +39,9 @@ export type ConnectErrorCode = WebError | "unreachable";
 /** Each refusal in words; a `Record` so that a new code the host learns
  * does not typecheck until it has words here. */
 const CONNECT_ERROR_TEXT: Record<ConnectErrorCode, string> = {
-  "wrong-pin": "Falsche PIN.",
-  "pairing-closed":
-    "Am Host ist gerade keine Kopplung offen. Dort in der Fernsicht-App „Gerät koppeln“ wählen und die neue PIN eingeben.",
-  "too-many-attempts": "Zu viele falsche PINs. Am Host die Kopplung neu öffnen.",
+  ...PAIRING_ERROR_TEXT,
+  // A browser user has no app here that explains it.
+  "pairing-closed": `${PAIRING_ERROR_TEXT["pairing-closed"]} Dort in der Fernsicht-App „Gerät koppeln“ wählen und die neue PIN eingeben.`,
   unreachable: "Der Host antwortet nicht.",
   failed: "Die Sitzung konnte nicht starten. Details stehen im Log des Hosts.",
   "wrong-host":

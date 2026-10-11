@@ -45,7 +45,7 @@ describe("api", () => {
         code: "too-many-attempts",
         message: "192.0.2.1:47800: too many wrong PINs: pairing mode closed; open it again",
       }),
-    ).toBe("Zu viele falsche PINs. Kopplung am Host neu öffnen.");
+    ).toBe("Zu viele falsche PINs. Am Host die Kopplung neu öffnen.");
     expect(errorText({ code: "not-paired", message: "…" })).toBe(
       "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
     );

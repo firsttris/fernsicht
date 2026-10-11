@@ -1,4 +1,4 @@
-import { Button, SessionView } from "@fernsicht/ui";
+import { SessionEnded, SessionView } from "@fernsicht/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { AppWindow } from "lucide-react";
@@ -22,15 +22,12 @@ export function SessionPage() {
 
   if (app && session && !session.active) {
     return (
-      <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-background p-6 text-center">
-        <h1 className="m-0 text-xl font-semibold tracking-tight">Sitzung mit {name} beendet</h1>
-        {session.error && (
-          <p role="alert" className="m-0 max-w-[480px] text-muted-foreground">
-            {errorText(session.error)}
-          </p>
-        )}
-        <Button onClick={back}>Zurück zu den Geräten</Button>
-      </div>
+      <SessionEnded
+        title={`Sitzung mit ${name} beendet`}
+        reason={session.error ? errorText(session.error) : undefined}
+        action="Zurück zu den Geräten"
+        onAction={back}
+      />
     );
   }
 

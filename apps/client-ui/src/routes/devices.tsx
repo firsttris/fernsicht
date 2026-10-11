@@ -2,11 +2,17 @@ import {
   Badge,
   Button,
   type Device,
+  DeviceIdField,
   Input,
   Label,
+  PinField,
+  SESSION_MODES,
   Segmented,
   type SessionMode,
+  deviceIdDigits,
   formatDeviceId,
+  isDeviceId,
+  isPin,
 } from "@fernsicht/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -124,11 +130,6 @@ export function DevicesPage() {
   );
 }
 
-const MODES: { mode: SessionMode; label: string; primary: boolean }[] = [
-  { mode: "desktop", label: "Desktop", primary: true },
-  { mode: "gaming", label: "Gaming", primary: false },
-];
-
 /** "192.168.178.87:47800" without the default port. */
 const hostOnly = (address: string) => address.replace(/:47800$/, "");
 
@@ -183,11 +184,11 @@ function ConnectButtons({ device: d }: { device: Device }) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex gap-2">
-        {MODES.map(({ mode, label, primary }) => (
+        {SESSION_MODES.map(({ mode, label }, i) => (
           <Button
             key={mode}
             size="sm"
-            variant={primary ? "default" : "outline"}
+            variant={i === 0 ? "default" : "outline"}
             className="flex-1"
             disabled={!d.online || connect.isPending}
             title={d.online ? undefined : `${d.name} ist offline`}
@@ -210,13 +211,13 @@ function ConnectButtons({ device: d }: { device: Device }) {
 function LinkButtons({ device: d }: { device: Device }) {
   return (
     <div className="flex gap-2">
-      {MODES.map(({ mode, label, primary }) =>
+      {SESSION_MODES.map(({ mode, label }, i) =>
         d.online ? (
           <Button
             key={mode}
             asChild
             size="sm"
-            variant={primary ? "default" : "outline"}
+            variant={i === 0 ? "default" : "outline"}
             className="flex-1"
           >
             <Link to="/session/$deviceId" params={{ deviceId: d.id }} search={{ mode }}>
@@ -227,7 +228,7 @@ function LinkButtons({ device: d }: { device: Device }) {
           <Button
             key={mode}
             size="sm"
-            variant={primary ? "default" : "outline"}
+            variant={i === 0 ? "default" : "outline"}
             className="flex-1"
             disabled
             title={`${d.name} ist offline`}
@@ -293,7 +294,7 @@ function PairDialog({ ref, address }: { ref: React.Ref<HTMLDialogElement>; addre
       await queryClient.invalidateQueries({ queryKey: ["devices"] });
     },
   });
-  const valid = host.trim() !== "" && /^\d{6}$/.test(pin);
+  const valid = host.trim() !== "" && isPin(pin);
 
   return (
     <dialog
@@ -329,18 +330,7 @@ function PairDialog({ ref, address }: { ref: React.Ref<HTMLDialogElement>; addre
             onChange={(e) => setHost(e.target.value)}
           />
         </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="pair-pin">PIN</Label>
-          <Input
-            id="pair-pin"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            placeholder="000000"
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            className="h-11 font-mono text-base tracking-[0.3em]"
-          />
-        </div>
+        <PinField id="pair-pin" value={pin} onChange={setPin} />
         {pair.isError && (
           <p role="alert" className="m-0 text-muted-foreground">
             {errorText(pair.error)}
@@ -366,8 +356,8 @@ function PairDialog({ ref, address }: { ref: React.Ref<HTMLDialogElement>; addre
 function ConnectDialog({ ref }: { ref: React.Ref<HTMLDialogElement> }) {
   const navigate = useNavigate();
   const [id, setId] = useState("");
-  const digits = id.replace(/\D/g, "");
-  const valid = digits.length === 9;
+  const digits = deviceIdDigits(id);
+  const valid = isDeviceId(id);
 
   return (
     <dialog
@@ -398,18 +388,7 @@ function ConnectDialog({ ref }: { ref: React.Ref<HTMLDialogElement> }) {
             Die ID steht auf dem Zielrechner unter „Dieser Rechner“.
           </span>
         </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="connect-id">Geräte-ID</Label>
-          <Input
-            id="connect-id"
-            inputMode="numeric"
-            autoComplete="off"
-            placeholder="000 000 000"
-            value={id}
-            onChange={(e) => setId(formatDeviceId(e.target.value).slice(0, 11))}
-            className="h-11 font-mono text-base tracking-wider"
-          />
-        </div>
+        <DeviceIdField id="connect-id" value={id} onChange={setId} />
         <div className="flex justify-end gap-2">
           <Button
             type="button"

@@ -5,12 +5,13 @@
  * demo) it serves demo data.
  */
 import {
-  type Device,
-  type HostMonitors,
-  type SessionStats,
   demoDevices,
   demoStats,
   demoThisMachine,
+  type Device,
+  type HostMonitors,
+  PAIRING_ERROR_TEXT,
+  type SessionStats,
 } from "@fernsicht/ui";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { queryOptions } from "@tanstack/react-query";
@@ -166,9 +167,7 @@ export const actions = {
 
 /** Each failure in the UI's words; `null`: the message says it best. */
 const FAILURE_TEXT: Record<FailureCode, string | null> = {
-  "wrong-pin": "Falsche PIN.",
-  "too-many-attempts": "Zu viele falsche PINs. Kopplung am Host neu öffnen.",
-  "pairing-closed": "Am Host ist keine Kopplung offen.",
+  ...PAIRING_ERROR_TEXT,
   "not-paired": "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
   unavailable:
     "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",

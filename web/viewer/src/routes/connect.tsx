@@ -1,12 +1,18 @@
 import {
   Badge,
   Button,
+  DeviceIdField,
   Input,
   Label,
   Logo,
+  PinField,
+  SESSION_MODES,
   type SessionMode,
   cn,
+  deviceIdDigits,
   formatDeviceId,
+  isDeviceId,
+  isPin,
 } from "@fernsicht/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -14,11 +20,6 @@ import { ArrowRight, Lock } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { ConnectError, type HostInfo, connect, connectErrorText, fetchHostInfo } from "../lib/host";
-
-const MODES: { value: SessionMode; label: string; hint: string }[] = [
-  { value: "desktop", label: "Desktop", hint: "Steuern, Dateien, Zwischenablage" },
-  { value: "gaming", label: "Gaming", hint: "Pointer-Lock, Gamepad, Ton" },
-];
 
 /** The host serving this page, if any (otherwise the demo). */
 export const hostInfoQuery = {
@@ -54,21 +55,21 @@ function ModeChoice({ mode, onChange }: { mode: SessionMode; onChange: (m: Sessi
     <fieldset className="m-0 flex flex-col gap-2 border-0 p-0">
       <legend className="mb-2 p-0 text-[13px] font-medium">Modus</legend>
       <div className="grid grid-cols-2 gap-2">
-        {MODES.map((m) => (
+        {SESSION_MODES.map((m) => (
           <label
-            key={m.value}
+            key={m.mode}
             className={cn(
               "flex cursor-pointer flex-col gap-1 rounded-lg border p-3 transition-colors",
-              mode === m.value ? "border-foreground" : "border-border hover:border-ring",
+              mode === m.mode ? "border-foreground" : "border-border hover:border-ring",
             )}
           >
             <span className="flex items-center gap-2 font-medium">
               <input
                 type="radio"
                 name="mode"
-                value={m.value}
-                checked={mode === m.value}
-                onChange={() => onChange(m.value)}
+                value={m.mode}
+                checked={mode === m.mode}
+                onChange={() => onChange(m.mode)}
                 className="m-0 accent-foreground"
               />
               {m.label}
@@ -91,7 +92,7 @@ function HostForm({ host }: { host: HostInfo }) {
   const [mode, setMode] = useState<SessionMode>("desktop");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const valid = /^\d{6}$/.test(pin);
+  const valid = isPin(pin);
 
   return (
     <form
@@ -123,18 +124,7 @@ function HostForm({ host }: { host: HostInfo }) {
         </p>
       </div>
 
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="pin">PIN</Label>
-        <Input
-          id="pin"
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          placeholder="000000"
-          value={pin}
-          onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-          className="h-11 font-mono text-base tracking-[0.3em]"
-        />
-      </div>
+      <PinField id="pin" value={pin} onChange={setPin} />
 
       <ModeChoice mode={mode} onChange={setMode} />
 
@@ -168,9 +158,9 @@ function DemoForm() {
   const [code, setCode] = useState("");
   const [mode, setMode] = useState<SessionMode>("desktop");
 
-  const digits = id.replace(/\D/g, "");
+  const digits = deviceIdDigits(id);
   const codeValid = /^[a-z0-9]{3}-[a-z0-9]{3}$/i.test(code.trim());
-  const valid = digits.length === 9 && codeValid;
+  const valid = isDeviceId(id) && codeValid;
 
   return (
     <form
@@ -197,18 +187,7 @@ function DemoForm() {
         </p>
       </div>
 
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="rid">Geräte-ID</Label>
-        <Input
-          id="rid"
-          inputMode="numeric"
-          autoComplete="off"
-          placeholder="000 000 000"
-          value={id}
-          onChange={(e) => setId(formatDeviceId(e.target.value).slice(0, 11))}
-          className="h-11 font-mono text-base tracking-wider"
-        />
-      </div>
+      <DeviceIdField id="rid" value={id} onChange={setId} />
 
       <div className="flex flex-col gap-2">
         <Label htmlFor="code">Einmal-Code</Label>

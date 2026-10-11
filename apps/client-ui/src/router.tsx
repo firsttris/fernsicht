@@ -1,3 +1,4 @@
+import { sessionSearch } from "@fernsicht/ui";
 import {
   Outlet,
   type RouterHistory,
@@ -70,9 +71,7 @@ export type SessionSearch = { mode: "desktop" | "gaming" };
 const sessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/session/$deviceId",
-  validateSearch: (search: Record<string, unknown>): SessionSearch => ({
-    mode: search.mode === "gaming" ? "gaming" : "desktop",
-  }),
+  validateSearch: sessionSearch,
   component: SessionPage,
 });
 

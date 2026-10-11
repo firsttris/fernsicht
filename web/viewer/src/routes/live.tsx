@@ -5,8 +5,8 @@
  * want it).
  */
 import {
-  Button,
   type HostMonitors,
+  SessionEnded,
   type SessionMode,
   type SessionStats,
   SessionView,
@@ -100,12 +100,11 @@ export function LiveSessionPage({
 
   if (phase === "ended") {
     return (
-      <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-background p-6 text-center">
-        <h1 className="m-0 text-xl font-semibold tracking-tight">
-          Verbindung mit {session.hostName} beendet
-        </h1>
-        <Button onClick={onEnd}>Neu verbinden</Button>
-      </div>
+      <SessionEnded
+        title={`Verbindung mit ${session.hostName} beendet`}
+        action="Neu verbinden"
+        onAction={onEnd}
+      />
     );
   }
 
