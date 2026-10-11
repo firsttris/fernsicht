@@ -841,6 +841,19 @@ fn vaapi_reports_what_it_decodes() {
     assert!(!fernsicht_codec::vaapi::decodes(&node, Codec::Synthetic));
 }
 
+#[test]
+fn vaapi_reports_what_it_encodes() {
+    assert!(!fernsicht_codec::vaapi::encodes(
+        "/dev/dri/does-not-exist",
+        Codec::H264
+    ));
+    let Some(node) = render_node() else { return };
+    // The runner's RX 7800 XT encodes all three.
+    assert!(fernsicht_codec::vaapi::encodes(&node, Codec::H264));
+    assert!(fernsicht_codec::vaapi::encodes(&node, Codec::Hevc));
+    assert!(!fernsicht_codec::vaapi::encodes(&node, Codec::Synthetic));
+}
+
 // --- AV1 -------------------------------------------------------------------
 
 /// OBU types in a low-overhead AV1 bitstream (every OBU has a size field).

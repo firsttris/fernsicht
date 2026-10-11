@@ -449,6 +449,22 @@ impl Drop for NvencEncoder {
     }
 }
 
+/// Whether NVENC on CUDA device `gpu` encodes `codec`: a small encoder is
+/// opened and closed again (some GPUs lack AV1 or HEVC). False without the
+/// NVIDIA driver.
+pub fn encodes(gpu: u32, codec: Codec) -> bool {
+    codec != Codec::Synthetic
+        && NvencEncoder::new(&NvencConfig {
+            gpu,
+            codec,
+            width: 256,
+            height: 256,
+            fps: 30,
+            bitrate_kbps: 1_000,
+        })
+        .is_ok()
+}
+
 /// Whether NVDEC on CUDA device `gpu` decodes `codec` (H.264, HEVC or AV1,
 /// 8 bit, up to at least 1080p). False without the NVIDIA driver.
 pub fn decodes(gpu: u32, codec: Codec) -> bool {

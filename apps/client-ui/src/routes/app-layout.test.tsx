@@ -14,8 +14,12 @@ describe("App-Layout", () => {
   });
 
   it.each([
-    ["Verlauf", "/history", "Kommt mit dem Audit-Log in Phase 4."],
-    ["Zugriffe & Rechte", "/access", "Kommt mit den Session-Typen in Phase 3."],
+    ["Verlauf", "/history", "Noch nicht gebaut: kommt mit einem Protokoll der Sitzungen."],
+    [
+      "Zugriffe & Rechte",
+      "/access",
+      "Noch nicht gebaut: kommt mit Session-Typen (nur ansehen, steuern, Dateien, Gaming).",
+    ],
   ])("navigates to %s", async (label, path, note) => {
     const { router, user } = await renderApp("/devices");
     await user.click(screen.getByRole("link", { name: label }));

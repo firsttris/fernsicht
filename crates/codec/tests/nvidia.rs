@@ -720,6 +720,21 @@ fn nvdec_reports_what_it_decodes() {
 }
 
 #[test]
+fn nvenc_reports_what_it_encodes() {
+    if !nvidia() {
+        return;
+    }
+    // Pascal and newer encode H.264 and HEVC; AV1 only from Ada on.
+    assert!(fernsicht_codec::nvidia::encodes(0, Codec::H264));
+    assert!(fernsicht_codec::nvidia::encodes(0, Codec::Hevc));
+    assert!(!fernsicht_codec::nvidia::encodes(0, Codec::Synthetic));
+    assert!(
+        !fernsicht_codec::nvidia::encodes(99, Codec::H264),
+        "no such GPU"
+    );
+}
+
+#[test]
 fn av1_is_offered_only_where_nvidia_has_it() {
     if !nvidia() {
         return;

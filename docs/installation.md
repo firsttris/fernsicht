@@ -143,7 +143,7 @@ fernsicht-client discover
 ```
 
 ```text
-zentrale  192.168.178.87:47800  Bazzite · Radeon RX 7700 XT / 7800 XT · H.264  gekoppelt
+zentrale  192.168.178.87:47800  Bazzite · Radeon RX 7700 XT / 7800 XT · AV1  gekoppelt
 ```
 
 The client sends a broadcast query into the local network and also asks

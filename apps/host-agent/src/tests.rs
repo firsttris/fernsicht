@@ -16,7 +16,7 @@ use crate::backends::{
     make_encoder, render_nodes,
 };
 use crate::capture::switch_monitor;
-use crate::config::{EncoderKind, HostDescription, SessionParams};
+use crate::config::{EncoderKind, HostDescription, SessionParams, describe_gpu};
 use crate::encode::{Rebuild, encode_loop};
 use crate::health::RepeatedError;
 use crate::link::{Link, UdpLink};
@@ -382,13 +382,17 @@ fn the_host_describes_itself() {
     let test = HostDescription::of_this_machine(&EncoderKind::Synthetic);
     assert_eq!(test.gpu, "Testbild");
     assert!(!test.os.is_empty());
+    // No such GPU: nothing claimed.
     let unknown = HostDescription::of_this_machine(&EncoderKind::Vaapi {
         render_node: "/dev/dri/renderD999".into(),
     });
-    assert_eq!(unknown.gpu, "H.264");
-    // NVENC looks up the NVIDIA card, if there is one.
-    let nv = HostDescription::of_this_machine(&EncoderKind::Nvenc { gpu: 0 });
-    assert!(nv.gpu.ends_with("H.264"), "{}", nv.gpu);
+    assert_eq!(unknown.gpu, "");
+    assert_eq!(
+        describe_gpu(Some("Radeon RX 7800 XT".into()), Some(Codec::Av1)),
+        "Radeon RX 7800 XT · AV1"
+    );
+    assert_eq!(describe_gpu(Some("GTX 1080".into()), None), "GTX 1080");
+    assert_eq!(describe_gpu(None, Some(Codec::Hevc)), "HEVC");
 }
 
 #[test]

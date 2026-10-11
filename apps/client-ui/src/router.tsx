@@ -43,7 +43,7 @@ const historyRoute = createRoute({
     <PlaceholderPage
       title="Verlauf"
       description="Vergangene Sitzungen mit Dauer, Modus und Latenz."
-      phase="Kommt mit dem Audit-Log in Phase 4."
+      phase="Noch nicht gebaut: kommt mit einem Protokoll der Sitzungen."
     />
   ),
 });
@@ -55,7 +55,7 @@ const accessRoute = createRoute({
     <PlaceholderPage
       title="Zugriffe & Rechte"
       description="Wer darf auf welche Geräte zugreifen, mit welchem Session-Typ (View, Control, Files, Gaming)."
-      phase="Kommt mit den Session-Typen in Phase 3."
+      phase="Noch nicht gebaut: kommt mit Session-Typen (nur ansehen, steuern, Dateien, Gaming)."
     />
   ),
 });

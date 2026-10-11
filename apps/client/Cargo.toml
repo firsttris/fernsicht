@@ -12,9 +12,11 @@ name = "fernsicht-client"
 path = "src/main.rs"
 
 [features]
-# Hardware H.264 over VAAPI (AMD, Intel); needs FFmpeg/libva headers.
+# Hardware AV1, HEVC and H.264 over VAAPI (AMD, Intel); needs FFmpeg/libva
+# headers.
 vaapi = ["fernsicht-codec/vaapi"]
-# Hardware H.264 decoding with NVDEC (NVIDIA); CUDA is loaded at runtime.
+# Hardware AV1, HEVC and H.264 decoding with NVDEC (NVIDIA); CUDA is loaded at
+# runtime.
 nvidia = ["fernsicht-codec/nvidia"]
 # The video window (Vulkan via ash, winit); without it the client is
 # headless and prints the overlay only.

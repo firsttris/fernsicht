@@ -169,8 +169,9 @@ function DemoForm() {
       onSubmit={(e) => {
         e.preventDefault();
         if (!valid) return;
-        // Phase 5: the one-time code goes to the rendezvous server, which
-        // asks the host to confirm and then sets up WebRTC (str0m).
+        // Later (docs/next-steps.md): the one-time code goes to a
+        // rendezvous server, which asks the host to confirm and then sets up
+        // WebRTC (str0m).
         void navigate({
           to: "/session/$deviceId",
           params: { deviceId: digits },

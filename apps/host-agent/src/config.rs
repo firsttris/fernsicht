@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use fernsicht_input::Recorder;
-use fernsicht_proto::CodecSet;
+use fernsicht_proto::{Codec, CodecSet};
 use serde::{Deserialize, Serialize};
 
 use crate::backends::{NVIDIA, render_nodes};
@@ -109,7 +109,8 @@ impl HostSettings {
 pub struct HostDescription {
     /// E.g. "Bazzite".
     pub os: String,
-    /// GPU and encoder, e.g. "Radeon RX 7700 XT / 7800 XT · H.264".
+    /// GPU and the best codec it encodes, e.g. "Radeon RX 7700 XT / 7800
+    /// XT · AV1".
     pub gpu: String,
 }
 
@@ -124,19 +125,44 @@ impl HostDescription {
                 .map(|(n, _)| n),
             EncoderKind::Synthetic => None,
         };
-        let gpu = match (
-            encoder,
-            node.and_then(|n| fernsicht_core::sysinfo::gpu_name(&n)),
-        ) {
-            (EncoderKind::Synthetic, _) => "Testbild".into(),
-            (_, Some(name)) => format!("{name} · H.264"),
-            (_, None) => "H.264".into(),
+        let gpu = match encoder {
+            EncoderKind::Synthetic => "Testbild".into(),
+            _ => describe_gpu(
+                node.and_then(|n| fernsicht_core::sysinfo::gpu_name(&n)),
+                best_codec(encoder),
+            ),
         };
         Self {
             os: fernsicht_core::sysinfo::os_name(),
             gpu,
         }
     }
+}
+
+/// "GPU · codec", either alone, or nothing when neither is known.
+pub(crate) fn describe_gpu(name: Option<String>, codec: Option<Codec>) -> String {
+    let codec = codec.map(crate::session::codec_label);
+    match (name, codec) {
+        (Some(name), Some(codec)) => format!("{name} · {codec}"),
+        (Some(name), None) => name,
+        (None, Some(codec)) => codec.into(),
+        (None, None) => String::new(),
+    }
+}
+
+/// The best codec (`CODEC_PREFERENCE`) the hardware behind `encoder`
+/// encodes, as far as this build can ask.
+#[allow(unused_variables)]
+fn best_codec(encoder: &EncoderKind) -> Option<Codec> {
+    crate::backends::CODEC_PREFERENCE
+        .into_iter()
+        .find(|&c| match encoder {
+            #[cfg(feature = "vaapi")]
+            EncoderKind::Vaapi { render_node } => fernsicht_codec::vaapi::encodes(render_node, c),
+            #[cfg(feature = "nvidia")]
+            EncoderKind::Nvenc { gpu } => fernsicht_codec::nvidia::encodes(*gpu, c),
+            _ => false,
+        })
 }
 
 /// Where the sound comes from.
@@ -178,8 +204,8 @@ pub enum CaptureKind {
         off: std::ops::Range<u64>,
         still: std::ops::Range<u64>,
     },
-    /// The monitor's scanout plane as DMA-BUF (needs the `kms` feature,
-    /// CAP_SYS_ADMIN and an encoder that takes DMA-BUFs, i.e. VAAPI; the
+    /// The monitor's scanout plane as DMA-BUF (needs the `kms` feature and
+    /// CAP_SYS_ADMIN; VAAPI imports it, NVENC through Vulkan and CUDA, the
     /// synthetic encoder ignores the picture). The encoder scales to the
     /// session resolution.
     Kms {
@@ -196,10 +222,11 @@ pub enum EncoderKind {
     /// Realistic frame sizes without real video; runs anywhere.
     #[default]
     Synthetic,
-    /// Hardware H.264 over VAAPI (needs the `vaapi` feature and a GPU).
+    /// Hardware AV1, HEVC or H.264 over VAAPI (needs the `vaapi` feature
+    /// and a GPU).
     Vaapi { render_node: String },
-    /// Hardware H.264 with NVENC (needs the `nvidia` feature and an NVIDIA
-    /// GPU; `gpu` is the CUDA device index). Test pattern only for now.
+    /// Hardware AV1, HEVC or H.264 with NVENC (needs the `nvidia` feature
+    /// and an NVIDIA GPU; `gpu` is the CUDA device index).
     Nvenc { gpu: u32 },
 }
 

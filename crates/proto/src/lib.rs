@@ -14,8 +14,8 @@ pub const VERSION: u8 = 1;
 pub const PREFIX_LEN: usize = 4;
 
 /// Largest datagram we ever send. Stays below a 1500-byte Ethernet MTU with
-/// IPv6 + UDP headers and leaves room for the per-packet AEAD tag added in
-/// phase 3.
+/// IPv6 + UDP headers, sealed (the AEAD header and tag, `SEALED_OVERHEAD`)
+/// included.
 pub const MAX_DATAGRAM: usize = 1400;
 
 /// Largest encoded frame accepted (8 MiB). A 4K keyframe at 80 Mbit/s is
@@ -491,7 +491,8 @@ pub struct HelloAck {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Codec {
-    /// Synthetic test payload (no real video), used until the VAAPI backend lands.
+    /// Synthetic test payload (no real video): tests, and hosts without a
+    /// hardware encoder.
     #[default]
     Synthetic = 0,
     H264 = 1,

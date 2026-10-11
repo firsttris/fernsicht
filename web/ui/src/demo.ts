@@ -1,6 +1,7 @@
 /**
- * Demo data until the rendezvous API (phase 3) and the native client
- * bridge (phase 4) exist. Values follow the app mockup.
+ * Demo data for the UIs in a plain browser (development, screenshots):
+ * devices of an account, which needs the rendezvous server that does not
+ * exist yet. Values follow the app mockup.
  */
 import type { Device, SessionStats, Stage } from "./types";
 

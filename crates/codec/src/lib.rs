@@ -4,9 +4,9 @@
 //! - [`synthetic`]: produces a checksummed payload of realistic size for the
 //!   configured bitrate. No real compression; it lets transport, FEC and
 //!   latency measurement run on machines without a GPU.
-//! - [`vaapi`] (feature `vaapi`): H.264 low-latency encode and decode in
-//!   hardware via FFmpeg (radeonsi on the RX 7800 XT, iHD on Intel).
-//!   Takes KMS DMA-BUFs without a copy.
+//! - [`vaapi`] (feature `vaapi`): AV1, HEVC and H.264 low-latency encode
+//!   and decode in hardware via FFmpeg (radeonsi on the RX 7800 XT, iHD on
+//!   Intel). Takes KMS DMA-BUFs without a copy.
 //! - [`nvidia`] (feature `nvidia`): H.264, HEVC and AV1 with NVENC and
 //!   NVDEC via FFmpeg (GTX 1080 and newer); pictures stay on the GPU (screen
 //!   input through Vulkan, decoded pictures exported from CUDA).
@@ -45,8 +45,8 @@ pub struct EncodedFrame {
     pub height: u16,
 }
 
-/// Decoder output: for now metadata only; GPU backends will hand out a
-/// texture handle here.
+/// What a decoder says about a decoded picture; the picture itself stays
+/// on the GPU and is handed out by `Decoder::picture`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DecodedFrame {
     pub width: u32,

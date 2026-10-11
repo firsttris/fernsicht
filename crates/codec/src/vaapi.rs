@@ -134,10 +134,27 @@ const VA_PROFILE_H264_HIGH: c_int = 7;
 const VA_PROFILE_HEVC_MAIN: c_int = 17;
 const VA_PROFILE_AV1_PROFILE0: c_int = 32;
 const VA_ENTRYPOINT_VLD: c_int = 1;
+const VA_ENTRYPOINT_ENC_SLICE: c_int = 6;
+const VA_ENTRYPOINT_ENC_SLICE_LP: c_int = 8;
 
-/// Whether the GPU behind `render_node` decodes `codec` (H.264 High or
-/// HEVC Main) in hardware. False if the node cannot be opened.
+/// Whether the GPU behind `render_node` decodes `codec` (H.264 High, HEVC
+/// Main or AV1 Main) in hardware. False if the node cannot be opened.
 pub fn decodes(render_node: &str, codec: Codec) -> bool {
+    supports(render_node, codec, &[VA_ENTRYPOINT_VLD])
+}
+
+/// Whether the GPU behind `render_node` encodes `codec` in hardware (full
+/// or low-power entry point). False if the node cannot be opened.
+pub fn encodes(render_node: &str, codec: Codec) -> bool {
+    supports(
+        render_node,
+        codec,
+        &[VA_ENTRYPOINT_ENC_SLICE, VA_ENTRYPOINT_ENC_SLICE_LP],
+    )
+}
+
+/// Whether the driver offers `codec`'s profile with one of `entrypoints`.
+fn supports(render_node: &str, codec: Codec, entrypoints: &[c_int]) -> bool {
     let profile = match codec {
         Codec::H264 => VA_PROFILE_H264_HIGH,
         Codec::Hevc => VA_PROFILE_HEVC_MAIN,
@@ -159,13 +176,13 @@ pub fn decodes(render_node: &str, codec: Codec) -> bool {
         if !profiles.contains(&profile) {
             return false;
         }
-        let mut entrypoints = vec![0; vaMaxNumEntrypoints(dpy).max(0) as usize];
+        let mut offered = vec![0; vaMaxNumEntrypoints(dpy).max(0) as usize];
         let mut n = 0;
-        if vaQueryConfigEntrypoints(dpy, profile, entrypoints.as_mut_ptr(), &mut n) != 0 {
+        if vaQueryConfigEntrypoints(dpy, profile, offered.as_mut_ptr(), &mut n) != 0 {
             return false;
         }
-        entrypoints.truncate(n.max(0) as usize);
-        entrypoints.contains(&VA_ENTRYPOINT_VLD)
+        offered.truncate(n.max(0) as usize);
+        entrypoints.iter().any(|e| offered.contains(e))
     }
 }
 
