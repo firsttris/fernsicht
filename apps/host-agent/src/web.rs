@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use fernsicht_codec::EncodedFrame;
 use fernsicht_proto::Monitor;
-use serde_json::json;
+use serde::Serialize;
 use str0m::change::{SdpAnswer, SdpOffer};
 
 use crate::shared::Shared;
@@ -87,32 +87,68 @@ pub(crate) struct WebAccepted {
     pub params: SessionParams,
 }
 
-/// Why a browser is turned away (the viewer shows it in words).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why a browser is turned away; the viewer shows it in words. On the wire
+/// as `{"error": "wrong-pin"}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum WebError {
     WrongPin,
     PairingClosed,
     TooManyAttempts,
     /// The session could not start (screen, GPU, WebRTC).
     Failed,
+    /// The request named another machine (DNS rebinding).
+    WrongHost,
+    /// A POST that is not the page's own.
+    Forbidden,
+    /// Not what the API takes.
+    BadRequest,
+    NotFound,
 }
 
 impl WebError {
-    fn code(self) -> &'static str {
-        match self {
-            WebError::WrongPin => "wrong-pin",
-            WebError::PairingClosed => "pairing-closed",
-            WebError::TooManyAttempts => "too-many-attempts",
-            WebError::Failed => "failed",
-        }
-    }
-
-    fn status(self) -> u16 {
+    pub(crate) fn status(self) -> u16 {
         match self {
             WebError::Failed => 500,
+            WebError::BadRequest => 400,
+            WebError::NotFound => 404,
             _ => 403,
         }
     }
+}
+
+/// What the host sends a browser as text on the data channel.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum ToBrowser {
+    /// The host's share of the overlay, once a second: the frames'
+    /// average capture and encode times, what is sent and its size.
+    Stats {
+        capture_us: u64,
+        encode_us: u64,
+        fps: f64,
+        bitrate_bps: u64,
+        width: u16,
+        height: u16,
+        codec: String,
+    },
+    /// The host's monitors and the one shown.
+    Monitors {
+        current: u8,
+        list: Vec<MonitorEntry>,
+    },
+}
+
+/// One of the host's monitors, for the browser.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct MonitorEntry {
+    pub name: String,
+    pub width: u16,
+    pub height: u16,
 }
 
 /// Forwards a web session's encoded frames to the WebRTC thread, with the
@@ -146,17 +182,16 @@ pub(crate) fn send_loop(
         }
         HostStats::bump(&shared.stats.frames_sent);
         if let Some(r) = throughput::close_after(&mut window, Instant::now(), STATS_EVERY) {
-            let stats = json!({
-                "type": "stats",
-                "captureUs": r.capture_us,
-                "encodeUs": r.encode_us,
-                "fps": r.fps,
-                "bitrateBps": r.bits_per_sec as u64,
-                "width": size.0,
-                "height": size.1,
-                "codec": codec,
-            });
-            let _ = out.try_send(WebOut::Text(stats.to_string()));
+            let stats = ToBrowser::Stats {
+                capture_us: r.capture_us,
+                encode_us: r.encode_us,
+                fps: r.fps,
+                bitrate_bps: r.bits_per_sec as u64,
+                width: size.0,
+                height: size.1,
+                codec: codec.to_owned(),
+            };
+            let _ = out.try_send(WebOut::Text(text(&stats)));
         }
     }
 }
@@ -168,16 +203,43 @@ pub(crate) fn out_channel() -> (Sender<WebOut>, Receiver<WebOut>) {
 
 /// The host's monitors for the data channel, and which one is shown.
 pub(crate) fn monitors_message(current: u8, list: &[Monitor<'_>]) -> String {
-    let list: Vec<_> = list
+    let list = list
         .iter()
-        .map(|m| json!({"name": m.name, "width": m.width, "height": m.height}))
+        .map(|m| MonitorEntry {
+            name: m.name.to_owned(),
+            width: m.width,
+            height: m.height,
+        })
         .collect();
-    json!({"type": "monitors", "current": current, "list": list}).to_string()
+    text(&ToBrowser::Monitors { current, list })
+}
+
+fn text(m: &ToBrowser) -> String {
+    serde_json::to_string(m).expect("plain data")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stats_go_to_the_browser_tagged_and_in_camel_case() {
+        let stats = ToBrowser::Stats {
+            capture_us: 900,
+            encode_us: 2_100,
+            fps: 60.0,
+            bitrate_bps: 20_000_000,
+            width: 1920,
+            height: 1080,
+            codec: "H.264".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text(&stats)).unwrap(),
+            json!({"type": "stats", "captureUs": 900, "encodeUs": 2_100, "fps": 60.0,
+                   "bitrateBps": 20_000_000, "width": 1920, "height": 1080, "codec": "H.264"})
+        );
+    }
 
     #[test]
     fn monitors_go_to_the_browser_as_json() {

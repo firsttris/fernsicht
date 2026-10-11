@@ -9,8 +9,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crossbeam_channel::{Sender, bounded};
-use serde_json::{Value, json};
-use str0m::change::SdpOffer;
+use serde::{Deserialize, Serialize};
+use str0m::change::{SdpAnswer, SdpOffer};
 
 use super::offer::local_ip_towards;
 use super::{WebError, WebRequest};
@@ -34,9 +34,46 @@ pub(crate) fn serve(
     Ok((t, local))
 }
 
-fn json_response(status: u16, v: &Value) -> Response {
-    Response::new(status, "application/json", v.to_string().into_bytes())
-        .with("Cache-Control", "no-store")
+/// `GET /api/info`: who the host is and whether it shows a PIN.
+#[derive(Debug, Serialize)]
+pub(crate) struct Info<'a> {
+    pub name: &'a str,
+    pub pairing: bool,
+}
+
+/// `POST /api/connect`: the PIN the host shows and the browser's offer.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ConnectRequest {
+    pub pin: String,
+    pub offer: SdpOffer,
+}
+
+/// The answer to a connect: our SDP and the stream's size and rate.
+#[derive(Debug, Serialize)]
+pub(crate) struct Connected {
+    pub answer: SdpAnswer,
+    pub width: u16,
+    pub height: u16,
+    pub fps: u16,
+}
+
+/// Any request turned away.
+#[derive(Debug, Serialize)]
+pub(crate) struct Refused {
+    pub error: WebError,
+}
+
+fn json_response(status: u16, v: &impl Serialize) -> Response {
+    let body = serde_json::to_vec(v).expect("plain data");
+    Response::new(status, "application/json", body).with("Cache-Control", "no-store")
+}
+
+fn refused(e: WebError) -> Response {
+    refused_with(e.status(), e)
+}
+
+fn refused_with(status: u16, error: WebError) -> Response {
+    json_response(status, &Refused { error })
 }
 
 /// Whether a request's `Host` names this machine: an IP address,
@@ -120,22 +157,20 @@ fn route(
     requests: &Sender<WebRequest>,
 ) -> Response {
     if head.path.starts_with("/api/") && !host_allowed(head.header("host"), sec.name()) {
-        return json_response(403, &json!({"error": "wrong-host"}));
+        return refused(WebError::WrongHost);
     }
     match (head.method, head.path.as_str()) {
         (Method::Get, "/api/info") => json_response(
             200,
-            &json!({
-                "name": sec.name(),
-                "pairing": sec.pairing_remaining().is_some(),
-            }),
+            &Info {
+                name: sec.name(),
+                pairing: sec.pairing_remaining().is_some(),
+            },
         ),
-        (Method::Post, "/api/connect") if !same_origin_post(head) => {
-            json_response(403, &json!({"error": "forbidden"}))
-        }
+        (Method::Post, "/api/connect") if !same_origin_post(head) => refused(WebError::Forbidden),
         (Method::Post, "/api/connect") => connect(body, from, requests),
         (Method::Get | Method::Head, path) => serve_file(root, path),
-        _ => json_response(404, &json!({"error": "not-found"})),
+        _ => refused(WebError::NotFound),
     }
 }
 
@@ -143,42 +178,35 @@ fn route(
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn connect(body: &[u8], browser: SocketAddr, requests: &Sender<WebRequest>) -> Response {
-    let bad = || json_response(400, &json!({"error": "bad-request"}));
-    let Ok(v) = serde_json::from_slice::<Value>(body) else {
-        return bad();
-    };
-    let (Some(pin), Some(offer)) = (v.get("pin").and_then(Value::as_str), v.get("offer")) else {
-        return bad();
-    };
-    let Ok(offer) = serde_json::from_value::<SdpOffer>(offer.clone()) else {
-        return bad();
+    let Ok(ConnectRequest { pin, offer }) = serde_json::from_slice(body) else {
+        return refused(WebError::BadRequest);
     };
     let Ok(local_ip) = local_ip_towards(browser.ip()) else {
-        return json_response(500, &json!({"error": "failed"}));
+        return refused(WebError::Failed);
     };
     let (reply, answer) = bounded(1);
     let req = WebRequest {
-        pin: pin.to_owned(),
+        pin,
         offer,
         browser,
         local_ip,
         reply,
     };
     if requests.send(req).is_err() {
-        return json_response(503, &json!({"error": "failed"}));
+        return refused_with(503, WebError::Failed);
     }
     match answer.recv_timeout(CONNECT_TIMEOUT) {
         Ok(Ok(a)) => json_response(
             200,
-            &json!({
-                "answer": a.answer,
-                "width": a.params.width,
-                "height": a.params.height,
-                "fps": a.params.fps,
-            }),
+            &Connected {
+                answer: a.answer,
+                width: a.params.width,
+                height: a.params.height,
+                fps: a.params.fps,
+            },
         ),
-        Ok(Err(e)) => json_response(e.status(), &json!({"error": e.code()})),
-        Err(_) => json_response(504, &json!({"error": "failed"})),
+        Ok(Err(e)) => refused(e),
+        Err(_) => refused_with(504, WebError::Failed),
     }
 }
 
@@ -397,7 +425,10 @@ mod tests {
             Err(WebError::TooManyAttempts)
         );
         assert_eq!(check_pin(&sec, "111111", other), Ok(()));
-        assert_eq!(WebError::WrongPin.code(), "wrong-pin");
+        assert_eq!(
+            serde_json::to_value(WebError::WrongPin).unwrap(),
+            "wrong-pin"
+        );
         assert_eq!(WebError::Failed.status(), 500);
     }
 }

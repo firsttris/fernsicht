@@ -1,7 +1,7 @@
 //! What the browser sends over the data channel: input as JSON.
 
 use fernsicht_proto::{BTN_PAD_FIRST, BTN_PAD_LAST, InputEvent, MAX_PADS, PadAxis};
-use serde_json::Value;
+use serde::Deserialize;
 
 /// What the browser sends over the data channel.
 #[derive(Debug, PartialEq)]
@@ -18,7 +18,7 @@ pub(crate) enum Command {
     Bye,
 }
 
-/// Parses one input message:
+/// A message from the browser on the data channel, as JSON:
 ///
 /// ```text
 /// {"t":"m","x":0..65535,"y":0..65535,"s":n}  pointer at a position (n numbers them)
@@ -28,65 +28,91 @@ pub(crate) enum Command {
 /// {"t":"k","c":30,"p":true}             key (Linux KEY_* code)
 /// {"t":"pb","n":0,"c":304,"p":true}     gamepad n's button (BTN_SOUTH..)
 /// {"t":"pa","n":0,"a":0,"v":-32768}     gamepad n's axis (ABS_* code)
+/// {"t":"monitor","i":1}                 show monitor i
 /// {"t":"release"}  {"t":"keyframe"}  {"t":"bye"}
 /// ```
-///
-/// Anything out of range is refused, as in the native protocol.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "t")]
+pub(crate) enum FromBrowser {
+    #[serde(rename = "m")]
+    At { x: u16, y: u16, s: Option<u32> },
+    #[serde(rename = "r")]
+    Moved { dx: i32, dy: i32 },
+    #[serde(rename = "b")]
+    Button { c: u16, p: bool },
+    #[serde(rename = "w")]
+    Wheel { dx: i32, dy: i32 },
+    #[serde(rename = "k")]
+    Key { c: u16, p: bool },
+    #[serde(rename = "pb")]
+    PadButton { n: u8, c: u16, p: bool },
+    #[serde(rename = "pa")]
+    PadAxis { n: u8, a: u16, v: i32 },
+    #[serde(rename = "monitor")]
+    Monitor { i: u8 },
+    #[serde(rename = "release")]
+    Release,
+    #[serde(rename = "keyframe")]
+    Keyframe,
+    #[serde(rename = "bye")]
+    Bye,
+}
+
+/// Parses one message from the browser. Anything out of range is refused,
+/// as in the native protocol.
 pub(crate) fn parse_input(data: &[u8]) -> Option<Command> {
-    let v: Value = serde_json::from_slice(data).ok()?;
-    let int = |k: &str, lo: i64, hi: i64| v.get(k)?.as_i64().filter(|n| (lo..=hi).contains(n));
-    let pressed = || v.get("p")?.as_bool();
-    const MOVE: i64 = 1 << 16;
-    const WHEEL: i64 = 120 * 100;
-    let event = match v.get("t")?.as_str()? {
-        "m" => {
-            let at = InputEvent::MouseAbs {
-                x: int("x", 0, 65535)? as u16,
-                y: int("y", 0, 65535)? as u16,
-            };
-            return Some(match v.get("s") {
-                Some(_) => Command::Position(at, int("s", 0, i64::from(u32::MAX))? as u32),
+    command(serde_json::from_slice(data).ok()?)
+}
+
+/// What a message asks for, if its values are in range.
+pub(crate) fn command(msg: FromBrowser) -> Option<Command> {
+    const MOVE: i32 = 1 << 16;
+    const WHEEL: i32 = 120 * 100;
+    let within = |v: i32, max: i32| (-max..=max).contains(&v).then_some(v);
+    let pad = |n: u8| (n < MAX_PADS).then_some(n);
+    let event = match msg {
+        FromBrowser::At { x, y, s } => {
+            let at = InputEvent::MouseAbs { x, y };
+            return Some(match s {
+                Some(seq) => Command::Position(at, seq),
                 None => Command::Event(at),
             });
         }
-        "r" => InputEvent::MouseRel {
-            dx: int("dx", -MOVE, MOVE)? as i32,
-            dy: int("dy", -MOVE, MOVE)? as i32,
+        FromBrowser::Moved { dx, dy } => InputEvent::MouseRel {
+            dx: within(dx, MOVE)?,
+            dy: within(dy, MOVE)?,
         },
-        "b" => InputEvent::Button {
-            code: int("c", 0x110, 0x117)? as u16,
-            pressed: pressed()?,
+        FromBrowser::Button { c, p } => InputEvent::Button {
+            code: (0x110..=0x117).contains(&c).then_some(c)?,
+            pressed: p,
         },
-        "w" => InputEvent::Scroll {
-            dx: int("dx", -WHEEL, WHEEL)? as i32,
-            dy: int("dy", -WHEEL, WHEEL)? as i32,
+        FromBrowser::Wheel { dx, dy } => InputEvent::Scroll {
+            dx: within(dx, WHEEL)?,
+            dy: within(dy, WHEEL)?,
         },
-        "k" => InputEvent::Key {
-            code: int("c", 1, 0x2ff)? as u16,
-            pressed: pressed()?,
+        FromBrowser::Key { c, p } => InputEvent::Key {
+            code: (1..=0x2ff).contains(&c).then_some(c)?,
+            pressed: p,
         },
-        "pb" => InputEvent::PadButton {
-            pad: int("n", 0, i64::from(MAX_PADS) - 1)? as u8,
-            code: int("c", i64::from(BTN_PAD_FIRST), i64::from(BTN_PAD_LAST))? as u16,
-            pressed: pressed()?,
+        FromBrowser::PadButton { n, c, p } => InputEvent::PadButton {
+            pad: pad(n)?,
+            code: (BTN_PAD_FIRST..=BTN_PAD_LAST).contains(&c).then_some(c)?,
+            pressed: p,
         },
-        "pa" => {
-            let axis = PadAxis::from_code(int("a", 0, 0xff)? as u16)?;
-            let r = axis.range();
+        FromBrowser::PadAxis { n, a, v } => {
+            let axis = PadAxis::from_code(a)?;
             InputEvent::PadAxis {
-                pad: int("n", 0, i64::from(MAX_PADS) - 1)? as u8,
+                pad: pad(n)?,
                 axis,
-                value: int("v", i64::from(*r.start()), i64::from(*r.end()))? as i32,
+                value: axis.range().contains(&v).then_some(v)?,
             }
         }
-        "release" => return Some(Command::ReleaseAll),
-        "keyframe" => return Some(Command::Keyframe),
-        "bye" => return Some(Command::Bye),
-        "monitor" => {
-            let max = fernsicht_proto::MAX_MONITORS as i64 - 1;
-            return Some(Command::Monitor(int("i", 0, max)? as u8));
+        FromBrowser::Monitor { i } => {
+            return (usize::from(i) < fernsicht_proto::MAX_MONITORS).then_some(Command::Monitor(i));
         }
-        _ => return None,
+        FromBrowser::Release => return Some(Command::ReleaseAll),
+        FromBrowser::Keyframe => return Some(Command::Keyframe),
+        FromBrowser::Bye => return Some(Command::Bye),
     };
     Some(Command::Event(event))
 }
