@@ -590,18 +590,20 @@ impl Gpu {
                         .queue_priorities(&priorities)
                 })
                 .collect();
-            let mut v11 = vk::PhysicalDeviceVulkan11Features::default()
-                .sampler_ycbcr_conversion(features.sampler_ycbcr_conversion);
-            let mut v12 = vk::PhysicalDeviceVulkan12Features::default()
-                .timeline_semaphore(features.timeline_semaphore);
-            let mut v13 = vk::PhysicalDeviceVulkan13Features::default()
-                .dynamic_rendering(true)
-                .synchronization2(features.synchronization2);
             // The NVIDIA driver now and then refuses a device right after
             // another one was released (seen in CI: about 1 in 25 runs).
             // It works a moment later, so try a few times.
             let mut attempt = 1;
             let device = loop {
+                // Fresh each attempt: push_next links them into a chain,
+                // and linking them again would make it a cycle.
+                let mut v11 = vk::PhysicalDeviceVulkan11Features::default()
+                    .sampler_ycbcr_conversion(features.sampler_ycbcr_conversion);
+                let mut v12 = vk::PhysicalDeviceVulkan12Features::default()
+                    .timeline_semaphore(features.timeline_semaphore);
+                let mut v13 = vk::PhysicalDeviceVulkan13Features::default()
+                    .dynamic_rendering(true)
+                    .synchronization2(features.synchronization2);
                 let created = instance.create_device(
                     physical,
                     &vk::DeviceCreateInfo::default()
