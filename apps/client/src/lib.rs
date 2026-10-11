@@ -26,12 +26,14 @@ mod summary;
 #[cfg(test)]
 mod tests;
 
+use std::net::UdpSocket;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::Context;
-use crossbeam_channel::bounded;
+use crossbeam_channel::{Receiver, Sender, bounded};
 use fernsicht_core::latency::Stage;
 use fernsicht_core::thread::{make_current_hot, spawn_hot};
 pub use fernsicht_input::{InputEvent, buttons};
@@ -41,8 +43,8 @@ pub use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
 
 use crate::audio::{AudioPacket, audio_loop};
 use crate::cursor::CursorTracker;
-use crate::network::{Pipe, ReceivedFrame, network_loop};
-use crate::present::{Hw, present_loop};
+use crate::network::{NetOutcome, Pipe, ReceivedFrame, network_loop};
+use crate::present::{Hw, PresentResult, present_loop};
 
 pub use config::{
     AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DecoderChoice, OverlayOutput,
@@ -86,20 +88,7 @@ pub fn run_with(
     stop: Arc<AtomicBool>,
     make_presenter: PresenterFactory,
 ) -> anyhow::Result<RunSummary> {
-    let socket = fernsicht_net::socket::connect_udp(&cfg.host)
-        .with_context(|| format!("connect {}", cfg.host))?;
-    socket.set_read_timeout(Some(Duration::from_millis(2)))?;
-    // Input, feedback and pings: small and urgent (WMM voice on Wi-Fi).
-    if let Err(e) =
-        fernsicht_net::socket::set_dscp(&socket, fernsicht_net::socket::Dscp::Interactive)
-    {
-        log::debug!("no DSCP marking: {e}");
-    }
-    // Bursts of video datagrams come in one receive.
-    if !fernsicht_net::socket::enable_gro(&socket) {
-        log::debug!("no UDP GRO: one datagram per receive");
-    }
-
+    let socket = open_socket(&cfg.host)?;
     let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
     let need_keyframe = Arc::new(AtomicBool::new(true));
     let info = Arc::new(Mutex::new(StreamInfo::default()));
@@ -108,47 +97,17 @@ pub fn run_with(
     for _ in 0..BUFFERS {
         free_tx.send(ReceivedFrame::empty()).unwrap();
     }
-
-    let mut record = match &cfg.record {
-        Some(path) => Some(std::io::BufWriter::new(
-            std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?,
-        )),
-        None => None,
-    };
-    let presenter = {
-        let (info, free_tx, need_keyframe) = (info.clone(), free_tx.clone(), need_keyframe.clone());
-        let cursor = cursor.clone();
-        let monitors = cfg.monitors.clone();
-        let input = cfg.input.clone();
-        let print = cfg.print_overlay;
-        let hw = Hw {
-            render_node: cfg.render_node.clone(),
-            decoder: cfg.decoder,
-        };
-        spawn_hot("present", move || {
-            let mut presenter = make_presenter().unwrap_or_else(|e| {
-                log::error!("no video window ({e}); running headless");
-                Box::new(HeadlessPresenter::default())
-            });
-            let r = present_loop(
-                &decode_rx,
-                &info,
-                &free_tx,
-                &need_keyframe,
-                print,
-                &hw,
-                record.as_mut().map(|w| w as &mut dyn std::io::Write),
-                presenter.as_mut(),
-                &cursor,
-                &monitors,
-                input.as_deref(),
-            );
-            if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
-                log::error!("recording: {e}");
-            }
-            r
-        })?
-    };
+    let presenter = spawn_present(
+        &cfg,
+        make_presenter,
+        decode_rx,
+        (
+            info.clone(),
+            free_tx.clone(),
+            need_keyframe.clone(),
+            cursor.clone(),
+        ),
+    )?;
 
     // Receives the picture and sends the input.
     make_current_hot("network");
@@ -179,13 +138,94 @@ pub fn run_with(
     let audio = audio
         .map(|t| t.join().expect("audio thread panicked"))
         .unwrap_or_default();
-    let net = net?;
-    let (cursor_positions, cursor_shapes) = cursor
+    let cursor = cursor
         .lock()
         .map(|t| (t.positions, t.shapes))
         .unwrap_or_default();
+    Ok(summary(net?, present, audio, cursor))
+}
 
-    Ok(RunSummary {
+/// The socket to the host: a short read timeout (the network thread also
+/// sends), marked as urgent, with received bursts coalesced.
+fn open_socket(host: &str) -> anyhow::Result<UdpSocket> {
+    let socket =
+        fernsicht_net::socket::connect_udp(host).with_context(|| format!("connect {host}"))?;
+    socket.set_read_timeout(Some(Duration::from_millis(2)))?;
+    // Input, feedback and pings: small and urgent (WMM voice on Wi-Fi).
+    if let Err(e) =
+        fernsicht_net::socket::set_dscp(&socket, fernsicht_net::socket::Dscp::Interactive)
+    {
+        log::debug!("no DSCP marking: {e}");
+    }
+    // Bursts of video datagrams come in one receive.
+    if !fernsicht_net::socket::enable_gro(&socket) {
+        log::debug!("no UDP GRO: one datagram per receive");
+    }
+    Ok(socket)
+}
+
+/// What the present thread shares with the network thread: the overlay's
+/// numbers, the free frame buffers, the keyframe flag and the pointer.
+type Shared = (
+    Arc<Mutex<StreamInfo>>,
+    Sender<ReceivedFrame>,
+    Arc<AtomicBool>,
+    Arc<Mutex<CursorTracker>>,
+);
+
+/// Starts the decode/present thread; it ends when the queue closes.
+fn spawn_present(
+    cfg: &ClientConfig,
+    make_presenter: PresenterFactory,
+    queue: Receiver<ReceivedFrame>,
+    (info, free_tx, need_keyframe, cursor): Shared,
+) -> anyhow::Result<JoinHandle<PresentResult>> {
+    let mut record = match &cfg.record {
+        Some(path) => Some(std::io::BufWriter::new(
+            std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?,
+        )),
+        None => None,
+    };
+    let monitors = cfg.monitors.clone();
+    let input = cfg.input.clone();
+    let print = cfg.print_overlay;
+    let hw = Hw {
+        render_node: cfg.render_node.clone(),
+        decoder: cfg.decoder,
+    };
+    Ok(spawn_hot("present", move || {
+        let mut presenter = make_presenter().unwrap_or_else(|e| {
+            log::error!("no video window ({e}); running headless");
+            Box::new(HeadlessPresenter::default())
+        });
+        let r = present_loop(
+            &queue,
+            &info,
+            &free_tx,
+            &need_keyframe,
+            print,
+            &hw,
+            record.as_mut().map(|w| w as &mut dyn std::io::Write),
+            presenter.as_mut(),
+            &cursor,
+            &monitors,
+            input.as_deref(),
+        );
+        if let Some(Err(e)) = record.as_mut().map(std::io::Write::flush) {
+            log::error!("recording: {e}");
+        }
+        r
+    })?)
+}
+
+/// What the threads report, as the run's summary.
+fn summary(
+    net: NetOutcome,
+    present: PresentResult,
+    audio: AudioSummary,
+    (cursor_positions, cursor_shapes): (u64, u64),
+) -> RunSummary {
+    RunSummary {
         session_id: net.session.map(|(id, _)| id),
         codec: net.session.map(|(_, codec)| codec),
         receiver: net.receiver,
@@ -205,5 +245,5 @@ pub fn run_with(
         cursor_positions,
         cursor_shapes,
         audio,
-    })
+    }
 }

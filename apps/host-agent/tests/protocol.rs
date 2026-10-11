@@ -1228,6 +1228,21 @@ mod secure {
         host.shutdown();
     }
 
+    /// Whether the session's sealed video arrives: the host took the
+    /// client's keys as proven (until then it sends nothing, not even a
+    /// goodbye).
+    fn streams(peer: &mut Peer, t: &Transport) -> bool {
+        let mut opened = [0u8; MAX_DATAGRAM];
+        let video = peer.wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Sealed(h, sealed) => {
+                let n = t.open(h.counter, sealed, &mut opened).ok()?;
+                matches!(Packet::decode(&opened[..n]), Ok(Packet::Video(..))).then_some(())
+            }
+            _ => None,
+        });
+        video.is_some()
+    }
+
     /// Whether a sealed Bye of the session arrives.
     fn says_bye(peer: &mut Peer, t: &Transport, session_id: u32) -> bool {
         let mut opened = [0u8; MAX_DATAGRAM];
@@ -1256,6 +1271,7 @@ mod secure {
         let client = Identity::generate();
         let key = pair(&mut peer, &client, "000000").unwrap();
         let (t, ack, _) = connect(&mut peer, &client, &key, 1).unwrap();
+        assert!(streams(&mut peer, &t), "the session runs");
         assert_eq!(sec.unpair("bazzite"), Ok(()));
         assert!(says_bye(&mut peer, &t, ack.session_id));
         host.shutdown();
@@ -1276,15 +1292,7 @@ mod secure {
         let key = pair(&mut peer, &client, "000000").unwrap();
         std::thread::sleep(Duration::from_millis(200));
         let (t, ack, _) = connect(&mut peer, &client, &key, 1).unwrap();
-        let mut opened = [0u8; MAX_DATAGRAM];
-        let video = peer.wait_for(Duration::from_secs(2), |p| match p {
-            Packet::Sealed(h, sealed) => {
-                let n = t.open(h.counter, sealed, &mut opened).ok()?;
-                matches!(Packet::decode(&opened[..n]), Ok(Packet::Video(..))).then_some(())
-            }
-            _ => None,
-        });
-        assert!(video.is_some(), "the session runs");
+        assert!(streams(&mut peer, &t), "the session runs");
         sec.end_session();
         assert!(says_bye(&mut peer, &t, ack.session_id));
         host.shutdown();

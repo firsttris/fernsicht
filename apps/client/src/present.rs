@@ -97,6 +97,7 @@ fn make_hw_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError
     )))
 }
 
+#[derive(Default)]
 pub(crate) struct PresentResult {
     pub(crate) stats: LatencyStats,
     pub(crate) presented: u64,
@@ -124,26 +125,17 @@ pub(crate) fn present_loop(
     let mut decoder: Option<(Codec, Box<dyn Decoder>)> = None;
     let mut decoded = DecodedFrame::default();
     let mut chain = RefChain::default();
-    let mut r = PresentResult {
-        stats: LatencyStats::default(),
-        presented: 0,
-        skipped: 0,
-        keyframes: 0,
-        awaiting_keyframe: 0,
-        decode_errors: 0,
-    };
+    let mut r = PresentResult::default();
     let mut last_overlay = Instant::now();
 
     while let Ok(rf) = queue.recv() {
-        let h = rf.header;
         if decoder.as_ref().is_none_or(|(codec, _)| *codec != rf.codec) {
-            decoder = match make_decoder(rf.codec, hw) {
-                Ok(d) => Some((rf.codec, d)),
-                Err(e) => {
-                    log::error!("no decoder for {}: {e}", overlay::codec_label(rf.codec));
-                    None
-                }
-            };
+            decoder = make_decoder(rf.codec, hw)
+                .inspect_err(|e| {
+                    log::error!("no decoder for {}: {e}", overlay::codec_label(rf.codec))
+                })
+                .ok()
+                .map(|d| (rf.codec, d));
             chain = RefChain::default();
         }
         let Some((_, decoder)) = decoder.as_mut() else {
@@ -151,7 +143,7 @@ pub(crate) fn present_loop(
             let _ = free_tx.send(rf);
             continue;
         };
-        if !chain.accept(h.frame_id, h.keyframe) {
+        if !chain.accept(rf.header.frame_id, rf.header.keyframe) {
             r.awaiting_keyframe += 1;
         } else {
             if let Some(w) = record.as_mut()
@@ -160,10 +152,9 @@ pub(crate) fn present_loop(
                 log::error!("recording stopped: {e}");
                 record = None;
             }
-            let result = decoder.decode(&rf.data, &mut decoded);
-            let decoded_us = now_us();
-            match result {
+            match decoder.decode(&rf.data, &mut decoded) {
                 Ok(()) => {
+                    let decoded_us = now_us();
                     r.keyframes += u64::from(decoded.keyframe);
                     // The host's stream takes the shape of the monitor shown;
                     // clicks map onto the picture as it is now.
@@ -178,31 +169,9 @@ pub(crate) fn present_loop(
                     if !queue.is_empty() {
                         r.skipped += 1;
                     } else {
-                        // The last picture's memory is free for the decoder
-                        // once the GPU has shown it (long done by now).
-                        presenter.settle();
-                        let picture = match presenter.wants() {
-                            Some(kind) => decoder.picture(kind).unwrap_or_else(|e| {
-                                log::debug!("picture: {e}");
-                                None
-                            }),
-                            None => None,
-                        };
-                        let pointer = cursor.lock().ok().and_then(|t| t.overlay());
-                        match presenter.present(&decoded, picture.as_ref(), pointer.as_ref()) {
-                            Ok(()) => r.presented += 1,
-                            Err(e) => log::warn!("present: {e}"),
-                        }
-                        let presented_us = now_us();
-                        let captured = h.capture_us as i64 - rf.offset_us;
-                        r.stats.record(&FrameTimings {
-                            captured,
-                            capture_ready: captured + i64::from(h.capture_ready_delta_us),
-                            encoded: captured + i64::from(h.encoded_delta_us),
-                            received: rf.completed_us as i64,
-                            decoded: decoded_us as i64,
-                            presented: presented_us as i64,
-                        });
+                        r.presented +=
+                            u64::from(show(presenter, decoder.as_mut(), &decoded, cursor));
+                        r.stats.record(&timings(&rf, decoded_us, now_us()));
                     }
                 }
                 Err(e) => {
@@ -220,28 +189,79 @@ pub(crate) fn present_loop(
         let _ = free_tx.send(rf);
 
         if last_overlay.elapsed() >= OVERLAY_INTERVAL {
-            let info = *info.lock().unwrap();
-            let lines = overlay::lines(&r.stats, &info);
-            presenter.overlay(&lines);
-            match print_overlay {
-                OverlayOutput::Off => {}
-                OverlayOutput::Text => {
-                    for line in &lines {
-                        println!("{line}");
-                    }
-                    println!();
-                }
-                OverlayOutput::Json => {
-                    let mut json = overlay::json(&r.stats, &info);
-                    if let Some(m) = monitors.list() {
-                        json.pop();
-                        json.push_str(&format!(",\"monitors\":{}}}", m.json()));
-                    }
-                    println!("{json}");
-                }
-            }
+            show_overlay(&r.stats, info, presenter, print_overlay, monitors);
             last_overlay = Instant::now();
         }
     }
     r
+}
+
+/// Shows a decoded frame (the decoder's GPU picture where the presenter
+/// takes one) with the pointer; whether that worked.
+fn show(
+    presenter: &mut dyn Presenter,
+    decoder: &mut dyn Decoder,
+    decoded: &DecodedFrame,
+    cursor: &Mutex<CursorTracker>,
+) -> bool {
+    // The last picture's memory is free for the decoder once the GPU has
+    // shown it (long done by now).
+    presenter.settle();
+    let picture = match presenter.wants() {
+        Some(kind) => decoder.picture(kind).unwrap_or_else(|e| {
+            log::debug!("picture: {e}");
+            None
+        }),
+        None => None,
+    };
+    let pointer = cursor.lock().ok().and_then(|t| t.overlay());
+    presenter
+        .present(decoded, picture.as_ref(), pointer.as_ref())
+        .inspect_err(|e| log::warn!("present: {e}"))
+        .is_ok()
+}
+
+/// A frame's way from capture to screen on this machine's clock: the
+/// host's times moved by the clock offset when the frame completed.
+pub(crate) fn timings(rf: &ReceivedFrame, decoded_us: u64, presented_us: u64) -> FrameTimings {
+    let h = &rf.header;
+    let captured = h.capture_us as i64 - rf.offset_us;
+    FrameTimings {
+        captured,
+        capture_ready: captured + i64::from(h.capture_ready_delta_us),
+        encoded: captured + i64::from(h.encoded_delta_us),
+        received: rf.completed_us as i64,
+        decoded: decoded_us as i64,
+        presented: presented_us as i64,
+    }
+}
+
+/// The overlay on the picture, and on stdout as text or JSON if asked.
+fn show_overlay(
+    stats: &LatencyStats,
+    info: &Mutex<StreamInfo>,
+    presenter: &mut dyn Presenter,
+    print: OverlayOutput,
+    monitors: &MonitorControl,
+) {
+    let info = *info.lock().unwrap();
+    let lines = overlay::lines(stats, &info);
+    presenter.overlay(&lines);
+    match print {
+        OverlayOutput::Off => {}
+        OverlayOutput::Text => {
+            for line in &lines {
+                println!("{line}");
+            }
+            println!();
+        }
+        OverlayOutput::Json => {
+            let mut json = overlay::json(stats, &info);
+            if let Some(m) = monitors.list() {
+                json.pop();
+                json.push_str(&format!(",\"monitors\":{}}}", m.json()));
+            }
+            println!("{json}");
+        }
+    }
 }

@@ -50,7 +50,7 @@ flowchart BT
 
 | App | What it does |
 |---|---|
-| `apps/host-agent` | `fernsicht-host-agent`: the control loop (`lib.rs`) and its answers (`requests.rs`), starting a session (`start.rs`) and its threads (`capture.rs`, `encode.rs`, `send.rs`, `audio.rs`), the way to the client (`link.rs`: our UDP protocol or a browser's WebRTC), keys and pairing (`security.rs`), the control socket (`control.rs`), the web viewer and WebRTC (`web/`), the monitor arrangement for input mapping (`layout.rs`), GPU clocks during sessions (`power.rs`) |
+| `apps/host-agent` | `fernsicht-host-agent`: the control loop (`lib.rs`, its steps in `dispatch.rs`) and its answers (`requests.rs`), starting a session (`start.rs`) and its threads (`capture.rs`, `encode.rs`, `send.rs`, `audio.rs`), the way to the client (`link.rs`: our UDP protocol or a browser's WebRTC), keys and pairing (`security.rs`), the control socket (`control.rs`), the web viewer and WebRTC (`web/`), the monitor arrangement for input mapping (`layout.rs`), GPU clocks during sessions (`power.rs`) |
 | `apps/client` | `fernsicht-client`: the network thread (`network.rs`), decoding and presenting (`present.rs`), sound (`audio.rs`), hosts and pairing (`hosts.rs`), discovery (`discover.rs`), the pointer (`cursor.rs`), the window with its keys and system-shortcut lock (`window.rs`, `shortcuts.rs`) |
 | `apps/client-ui` | The app's interface (React 19, TanStack Router and Query, Tailwind, shadcn-style components); demo data in a browser, the real backend in the app |
 | `apps/desktop` | The Tauri app around `client-ui`: devices, pairing, sessions through the client (`backend.rs`), sharing this computer from the AppImage (`share.rs`). Its own Cargo workspace (it needs WebKitGTK) |

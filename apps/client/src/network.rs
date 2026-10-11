@@ -13,8 +13,8 @@ use fernsicht_core::now_us;
 use fernsicht_net::keyframe::Asks;
 use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats, keyframe};
 use fernsicht_proto::{
-    Bye, ClockPing, Codec, Feedback, Handshake, Hello, InputHeader, KeyframeRequest, MAX_DATAGRAM,
-    Packet, SealedHeader, SelectMonitor, VideoHeader,
+    Bye, ClockPing, Codec, Feedback, Handshake, Hello, HelloAck, InputHeader, KeyframeRequest,
+    MAX_DATAGRAM, Packet, SealedHeader, SelectMonitor, VideoHeader,
 };
 use fernsicht_render::overlay;
 use fernsicht_render::overlay::StreamInfo;
@@ -101,6 +101,33 @@ pub(crate) struct Pipe<'a> {
     pub(crate) cursor: &'a Mutex<CursorTracker>,
 }
 
+/// The network thread's state between datagrams.
+struct Net {
+    hello: Hello,
+    reassembler: Reassembler,
+    clock: ClockSync,
+    loss: LossSim,
+    /// The session and its codec, once the host acked.
+    session: Option<(u32, Codec)>,
+    /// The host's frame interval, from its HelloAck.
+    frame_interval: Duration,
+    keyframe_asks: Asks,
+    last_hello: Option<Instant>,
+    last_ping: Option<Instant>,
+    ping_seq: u32,
+    last_feedback: Instant,
+    last_packet: Instant,
+    rates: RateWindow,
+    overflowed: u64,
+    acked_at: Option<Instant>,
+    video_seen: bool,
+    /// Secure: the handshake in flight, then the session's keys.
+    handshake: Option<(Initiator, Vec<u8>)>,
+    crypto: Option<Arc<Transport>>,
+    /// Packets on their way out are encoded here.
+    out: [u8; MAX_DATAGRAM],
+}
+
 pub(crate) fn network_loop(
     cfg: &ClientConfig,
     socket: &UdpSocket,
@@ -108,8 +135,51 @@ pub(crate) fn network_loop(
     pipe: &Pipe<'_>,
     info: &Mutex<StreamInfo>,
 ) -> anyhow::Result<NetOutcome> {
-    let started = Instant::now();
-    let deadline = cfg.duration.map(|d| started + d);
+    let deadline = cfg.duration.map(|d| Instant::now() + d);
+    let mut net = start(cfg)?;
+    // A run of datagrams the kernel coalesced (GRO), or one.
+    let mut rx = vec![0u8; 65_536];
+    let mut opened = [0u8; MAX_DATAGRAM];
+
+    'session: loop {
+        // Acquire: what the window queued before it set `stop` (the keys it
+        // released on closing) is seen below.
+        if stop.load(Ordering::Acquire) || deadline.is_some_and(|d| Instant::now() >= d) {
+            break;
+        }
+        check_host(cfg, &mut net)?;
+        send_due(cfg, socket, pipe, info, &mut net);
+        let Some((len, size)) = receive(socket, &mut rx)? else {
+            continue;
+        };
+        let now = now_us();
+        // With GRO a run of datagrams comes at once.
+        for datagram in rx[..len].chunks(size) {
+            let Ok(outer) = Packet::decode(datagram) else {
+                continue;
+            };
+            let Some(packet) = authentic(cfg, &mut net, outer, &mut opened)? else {
+                continue;
+            };
+            if !on_packet(cfg, socket, pipe, &mut net, packet, datagram.len(), now)? {
+                break 'session;
+            }
+        }
+    }
+
+    say_goodbye(cfg, socket, &mut net);
+    Ok(NetOutcome {
+        receiver: net.reassembler.totals(),
+        overflowed: net.overflowed,
+        session: net.session,
+        clock_offset_us: net.clock.offset_at(now_us()),
+        rtt_us: net.clock.rtt_us(),
+    })
+}
+
+/// The hello for `cfg` (the codecs this machine decodes) and, for a secure
+/// session, the handshake that carries it.
+fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
     let hw = Hw {
         render_node: cfg.render_node.clone(),
         decoder: cfg.decoder,
@@ -134,28 +204,7 @@ pub(crate) fn network_loop(
         bitrate_kbps: cfg.bitrate_kbps,
         codecs,
     };
-    // A run of datagrams the kernel coalesced (GRO), or one.
-    let mut rx = vec![0u8; 65_536];
-    let mut out = [0u8; MAX_DATAGRAM];
-    let mut reassembler = Reassembler::new();
-    let mut clock = ClockSync::new();
-    let mut loss = LossSim::new(cfg.loss, 0xF00D);
-    let mut session: Option<(u32, Codec)> = None;
-    // The host's frame interval, from its HelloAck.
-    let mut frame_interval = Duration::from_millis(16);
-    let mut keyframe_asks = Asks::default();
-    let mut last_hello: Option<Instant> = None;
-    let mut last_ping: Option<Instant> = None;
-    let mut ping_seq = 0u32;
-    let mut last_feedback = Instant::now();
-    let mut last_packet = Instant::now();
-    let mut rates = RateWindow::new();
-    let mut overflowed = 0u64;
-    let mut acked_at: Option<Instant> = None;
-    let mut video_seen = false;
-    let mut opened = [0u8; MAX_DATAGRAM];
-    // Secure: the handshake in flight, then the session's keys.
-    let mut handshake: Option<(Initiator, Vec<u8>)> = match &cfg.security {
+    let handshake = match &cfg.security {
         Some(sec) => {
             let unix_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -168,363 +217,464 @@ pub(crate) fn network_loop(
         }
         None => None,
     };
-    let mut crypto: Option<Arc<Transport>> = None;
+    Ok(Net {
+        hello,
+        reassembler: Reassembler::new(),
+        clock: ClockSync::new(),
+        loss: LossSim::new(cfg.loss, 0xF00D),
+        session: None,
+        frame_interval: Duration::from_millis(16),
+        keyframe_asks: Asks::default(),
+        last_hello: None,
+        last_ping: None,
+        ping_seq: 0,
+        last_feedback: Instant::now(),
+        last_packet: Instant::now(),
+        rates: RateWindow::new(),
+        overflowed: 0,
+        acked_at: None,
+        video_seen: false,
+        handshake,
+        crypto: None,
+        out: [0; MAX_DATAGRAM],
+    })
+}
 
-    'session: loop {
-        // Acquire: what the window queued before it set `stop` (the keys it
-        // released on closing) is seen below.
-        if stop.load(Ordering::Acquire) || deadline.is_some_and(|d| Instant::now() >= d) {
-            break;
-        }
-        if !video_seen && acked_at.is_some_and(|t| t.elapsed() >= NO_VIDEO_WARNING) {
-            log::warn!(
-                "the host accepted the session but sends no video for {NO_VIDEO_WARNING:?}; \
-                 the host agent's log says why"
-            );
-            video_seen = true; // warn once
-        }
-        if last_packet.elapsed() > cfg.host_timeout {
-            anyhow::bail!("no packets from {} for {:?}", cfg.host, cfg.host_timeout);
-        }
-        if session.is_none() && last_hello.is_none_or(|t| t.elapsed() >= HELLO_INTERVAL) {
-            let n = match &handshake {
-                Some((_, msg1)) => Handshake {
-                    reply: false,
-                    message: msg1,
-                }
-                .encode(&mut out),
-                None => hello.encode(&mut out),
-            };
-            let _ = socket.send(&out[..n]);
-            last_hello = Some(Instant::now());
-        }
-        // Sealed with the session's keys once secure.
-        let seal_with = crypto.as_deref().zip(session.map(|(id, _)| id));
-        // Ping fast until the clock offset settles, then slowly to track drift.
-        let ping_every = if ping_seq < 20 {
-            Duration::from_millis(50)
-        } else {
-            Duration::from_millis(500)
-        };
-        if let (Some((session_id, _)), Some(input)) = (session, &cfg.input) {
-            let n = input.queue.lock().ok().and_then(|mut q| {
-                q.due(Instant::now())
-                    .map(|events| InputHeader::encode(session_id, events, &mut out))
-            });
-            if let Some(n) = n {
-                send_packet(socket, seal_with, &out[..n]);
-            }
-        }
-        // A broken picture asks for a keyframe at once, not at the next
-        // feedback tick.
-        if let Some((session_id, _)) = session {
-            let needed = reassembler.needs_keyframe() || pipe.need_keyframe.load(Ordering::Relaxed);
-            let rtt = Duration::from_micros(clock.rtt_us().unwrap_or(0));
-            let wait = keyframe::in_flight_for(rtt, frame_interval);
-            if keyframe_asks.due(needed, Instant::now(), wait) {
-                let ask = KeyframeRequest {
-                    session_id,
-                    last_complete: reassembler.last_completed(),
-                    rtt_us: u32::try_from(rtt.as_micros()).unwrap_or(u32::MAX),
-                };
-                let n = ask.encode(&mut out);
-                send_packet(socket, seal_with, &out[..n]);
-            }
-        }
-        // A secure host answers sealed pings only, so wait for the session.
-        let can_ping = cfg.security.is_none() || seal_with.is_some();
-        if can_ping && last_ping.is_none_or(|t| t.elapsed() >= ping_every) {
-            let ping = ClockPing {
-                seq: ping_seq,
-                client_send_us: now_us(),
-            };
-            let n = ping.encode(&mut out);
-            send_packet(socket, seal_with, &out[..n]);
-            ping_seq += 1;
-            last_ping = Some(Instant::now());
-        }
-        if let Some((session_id, _)) = session
-            && let Some(request) = cfg.monitors.take_request()
-        {
-            match cfg.monitors.list().and_then(|l| l.resolve(request)) {
-                Some(index) => {
-                    let n = SelectMonitor { session_id, index }.encode(&mut out);
-                    send_packet(socket, seal_with, &out[..n]);
-                    log::info!("asked the host for monitor {index}");
-                }
-                None => log::info!("no monitor for {request:?} (the host listed none or fewer)"),
-            }
-        }
-        if let Some((session_id, codec)) = session
-            && last_feedback.elapsed() >= FEEDBACK_INTERVAL
-        {
-            let s = reassembler.take_interval();
-            let fb = Feedback {
-                session_id,
-                request_keyframe: reassembler.needs_keyframe()
-                    || pipe.need_keyframe.load(Ordering::Relaxed),
-                request_cursor: pipe.cursor.lock().is_ok_and(|t| t.needs_shape()),
-                highest_frame_id: s.highest_frame_id,
-                frames_completed: s.frames_completed,
-                frames_dropped: s.frames_dropped,
-                packets_received: s.packets_received,
-                packets_lost: s.packets_lost,
-                packets_recovered: s.packets_recovered,
-            };
-            let n = fb.encode(&mut out);
-            send_packet(socket, seal_with, &out[..n]);
-            rates.add(&s);
-            if rates.started.elapsed() >= OVERLAY_INTERVAL
-                && let Ok(mut i) = info.lock()
-            {
-                rates.publish(&mut i, codec, clock.rtt_us());
-                rates = RateWindow::new();
-            }
-            last_feedback = Instant::now();
-        }
+/// Warns once when the host acked but sends no video; fails when it has
+/// been silent for longer than `cfg.host_timeout`.
+fn check_host(cfg: &ClientConfig, net: &mut Net) -> anyhow::Result<()> {
+    if !net.video_seen
+        && net
+            .acked_at
+            .is_some_and(|t| t.elapsed() >= NO_VIDEO_WARNING)
+    {
+        log::warn!(
+            "the host accepted the session but sends no video for {NO_VIDEO_WARNING:?}; \
+             the host agent's log says why"
+        );
+        net.video_seen = true; // warn once
+    }
+    if net.last_packet.elapsed() > cfg.host_timeout {
+        anyhow::bail!("no packets from {} for {:?}", cfg.host, cfg.host_timeout);
+    }
+    Ok(())
+}
 
-        let (len, size) = match fernsicht_net::socket::recv_segments(socket, &mut rx) {
-            Ok(n) => n,
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
+/// The keys packets to the host are sealed with, once the session is secure.
+fn seal_with(net: &Net) -> Option<(&Transport, u32)> {
+    net.crypto.as_deref().zip(net.session.map(|(id, _)| id))
+}
+
+/// Sends what is due: the hello until the host answers, then input, a
+/// keyframe request, clock pings, a monitor switch and feedback.
+fn send_due(
+    cfg: &ClientConfig,
+    socket: &UdpSocket,
+    pipe: &Pipe<'_>,
+    info: &Mutex<StreamInfo>,
+    net: &mut Net,
+) {
+    send_hello(socket, net);
+    if let Some((session_id, _)) = net.session {
+        send_input(cfg, socket, net, session_id);
+        ask_keyframe(socket, pipe, net, session_id);
+    }
+    ping(cfg, socket, net);
+    if let Some((session_id, codec)) = net.session {
+        ask_monitor(cfg, socket, net, session_id);
+        send_feedback(socket, pipe, info, net, session_id, codec);
+    }
+}
+
+fn send_hello(socket: &UdpSocket, net: &mut Net) {
+    if net.session.is_some() || net.last_hello.is_some_and(|t| t.elapsed() < HELLO_INTERVAL) {
+        return;
+    }
+    let n = match &net.handshake {
+        Some((_, msg1)) => Handshake {
+            reply: false,
+            message: msg1,
+        }
+        .encode(&mut net.out),
+        None => net.hello.encode(&mut net.out),
+    };
+    let _ = socket.send(&net.out[..n]);
+    net.last_hello = Some(Instant::now());
+}
+
+/// Input the queue has due (new, or not acked in time).
+fn send_input(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net, session_id: u32) {
+    let Some(input) = &cfg.input else { return };
+    let n = input.queue.lock().ok().and_then(|mut q| {
+        q.due(Instant::now())
+            .map(|events| InputHeader::encode(session_id, events, &mut net.out))
+    });
+    if let Some(n) = n {
+        send_packet(socket, seal_with(net), &net.out[..n]);
+    }
+}
+
+/// A broken picture asks for a keyframe at once, not at the next feedback
+/// tick, and again only when the answer should have come.
+fn ask_keyframe(socket: &UdpSocket, pipe: &Pipe<'_>, net: &mut Net, session_id: u32) {
+    let needed = net.reassembler.needs_keyframe() || pipe.need_keyframe.load(Ordering::Relaxed);
+    let rtt = Duration::from_micros(net.clock.rtt_us().unwrap_or(0));
+    let wait = keyframe::in_flight_for(rtt, net.frame_interval);
+    if !net.keyframe_asks.due(needed, Instant::now(), wait) {
+        return;
+    }
+    let ask = KeyframeRequest {
+        session_id,
+        last_complete: net.reassembler.last_completed(),
+        rtt_us: u32::try_from(rtt.as_micros()).unwrap_or(u32::MAX),
+    };
+    let n = ask.encode(&mut net.out);
+    send_packet(socket, seal_with(net), &net.out[..n]);
+}
+
+/// Pings fast until the clock offset settles, then slowly to track drift.
+fn ping(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net) {
+    // A secure host answers sealed pings only, so wait for the session.
+    let can_ping = cfg.security.is_none() || seal_with(net).is_some();
+    let every = if net.ping_seq < 20 {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_millis(500)
+    };
+    if !can_ping || net.last_ping.is_some_and(|t| t.elapsed() < every) {
+        return;
+    }
+    let ping = ClockPing {
+        seq: net.ping_seq,
+        client_send_us: now_us(),
+    };
+    let n = ping.encode(&mut net.out);
+    send_packet(socket, seal_with(net), &net.out[..n]);
+    net.ping_seq += 1;
+    net.last_ping = Some(Instant::now());
+}
+
+/// The monitor the user asked for, if the host listed it.
+fn ask_monitor(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net, session_id: u32) {
+    let Some(request) = cfg.monitors.take_request() else {
+        return;
+    };
+    match cfg.monitors.list().and_then(|l| l.resolve(request)) {
+        Some(index) => {
+            let n = SelectMonitor { session_id, index }.encode(&mut net.out);
+            send_packet(socket, seal_with(net), &net.out[..n]);
+            log::info!("asked the host for monitor {index}");
+        }
+        None => log::info!("no monitor for {request:?} (the host listed none or fewer)"),
+    }
+}
+
+/// What arrived since the last feedback, and the overlay's numbers once a
+/// window is full.
+fn send_feedback(
+    socket: &UdpSocket,
+    pipe: &Pipe<'_>,
+    info: &Mutex<StreamInfo>,
+    net: &mut Net,
+    session_id: u32,
+    codec: Codec,
+) {
+    if net.last_feedback.elapsed() < FEEDBACK_INTERVAL {
+        return;
+    }
+    let s = net.reassembler.take_interval();
+    let fb = Feedback {
+        session_id,
+        request_keyframe: net.reassembler.needs_keyframe()
+            || pipe.need_keyframe.load(Ordering::Relaxed),
+        request_cursor: pipe.cursor.lock().is_ok_and(|t| t.needs_shape()),
+        highest_frame_id: s.highest_frame_id,
+        frames_completed: s.frames_completed,
+        frames_dropped: s.frames_dropped,
+        packets_received: s.packets_received,
+        packets_lost: s.packets_lost,
+        packets_recovered: s.packets_recovered,
+    };
+    let n = fb.encode(&mut net.out);
+    send_packet(socket, seal_with(net), &net.out[..n]);
+    net.rates.add(&s);
+    if net.rates.started.elapsed() >= OVERLAY_INTERVAL
+        && let Ok(mut i) = info.lock()
+    {
+        net.rates.publish(&mut i, codec, net.clock.rtt_us());
+        net.rates = RateWindow::new();
+    }
+    net.last_feedback = Instant::now();
+}
+
+/// The next datagrams (a run of one size with GRO): their length and the
+/// size of each; `None` when the wait ran out or the host is not up yet.
+fn receive(socket: &UdpSocket, rx: &mut [u8]) -> anyhow::Result<Option<(usize, usize)>> {
+    match fernsicht_net::socket::recv_segments(socket, rx) {
+        Ok(n) => Ok(Some(n)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Ok(None)
+        }
+        // ICMP port unreachable while the host isn't up yet.
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => Ok(None),
+        Err(e) => Err(e).context("recv"),
+    }
+}
+
+/// The packet as far as it comes from the host. Only that keeps the session
+/// alive: in a secure session the sealed packets (opened into `opened`) and
+/// the handshake's answer, else any packet.
+fn authentic<'a>(
+    cfg: &ClientConfig,
+    net: &mut Net,
+    outer: Packet<'a>,
+    opened: &'a mut [u8],
+) -> anyhow::Result<Option<Packet<'a>>> {
+    if cfg.security.is_none() {
+        net.last_packet = Instant::now();
+        return Ok(Some(outer));
+    }
+    match outer {
+        Packet::Sealed(h, sealed) => {
+            let (Some(t), Some((id, _))) = (net.crypto.as_deref(), net.session) else {
+                return Ok(None);
+            };
+            if h.session_id != id {
+                return Ok(None);
+            }
+            let Ok(n) = t.open(h.counter, sealed, opened) else {
+                return Ok(None);
+            };
+            let opened: &'a [u8] = opened;
+            let Ok(inner) = Packet::decode(&opened[..n]) else {
+                return Ok(None);
+            };
+            net.last_packet = Instant::now();
+            Ok(Some(inner))
+        }
+        Packet::Handshake(h) if h.reply => {
+            let Some((initiator, _)) = net.handshake.as_mut() else {
+                return Ok(None);
+            };
+            // A reply that does not verify is someone else's: wait for the
+            // host's.
+            let payload = match initiator.read_reply(h.message) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::debug!("{}: ignoring a handshake answer: {e}", cfg.host);
+                    return Ok(None);
+                }
+            };
+            let (initiator, _) = net.handshake.take().expect("checked above");
+            let transport = initiator
+                .into_transport()
+                .map_err(|e| anyhow::anyhow!("handshake with {} failed: {e}", cfg.host))?;
+            net.last_packet = Instant::now();
+            let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
+                anyhow::bail!("handshake with {}: no session in the answer", cfg.host);
+            };
+            net.crypto = Some(Arc::new(transport));
+            Ok(Some(Packet::HelloAck(ack)))
+        }
+        // Not authenticated: believed only while asking for a session, never
+        // during one (anyone could end it with five bytes).
+        Packet::Reject(r) if net.session.is_none() => {
+            anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Handles one packet from the host; `false` when the host ended the
+/// session.
+fn on_packet(
+    cfg: &ClientConfig,
+    socket: &UdpSocket,
+    pipe: &Pipe<'_>,
+    net: &mut Net,
+    packet: Packet<'_>,
+    datagram_len: usize,
+    now: u64,
+) -> anyhow::Result<bool> {
+    let ours = |id: u32| net.session.is_some_and(|(s, _)| s == id);
+    match packet {
+        // Plain mode (tests): the host could not start the session.
+        Packet::Reject(r) if net.session.is_none() => {
+            anyhow::bail!("{}: {}", cfg.host, reject_text(r))
+        }
+        Packet::HelloAck(ack) => on_hello_ack(cfg, socket, net, &ack),
+        Packet::ClockPong(pong) => {
+            net.clock.on_pong(&pong, now);
+            // Lost input goes again after a few round trips.
+            if let (Some(input), Some(rtt)) = (&cfg.input, net.clock.rtt_us())
+                && let Ok(mut q) = input.queue.lock()
             {
-                continue;
+                q.set_resend_after(fernsicht_input::resend_wait(Some(Duration::from_micros(
+                    rtt,
+                ))));
             }
-            // ICMP port unreachable while the host isn't up yet.
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => continue,
-            Err(e) => return Err(e).context("recv"),
-        };
-        let now = now_us();
-        // With GRO a run of datagrams comes at once.
-        for datagram in rx[..len].chunks(size) {
-            let Ok(outer) = Packet::decode(datagram) else {
-                continue;
-            };
-            // Only what proves to come from the host keeps the session alive:
-            // in a secure session the sealed packets and the handshake answer
-            // (marked below), else any packet.
-            if cfg.security.is_none() {
-                last_packet = Instant::now();
+        }
+        Packet::InputAck(a) => {
+            if ours(a.session_id)
+                && let Some(input) = &cfg.input
+                && let Ok(mut q) = input.queue.lock()
+            {
+                q.ack(a.seq);
             }
-            // A secure session: only sealed packets count (opened here), plus
-            // the handshake's answer and rejections.
-            let packet = match (outer, cfg.security.is_some()) {
-                (Packet::Sealed(h, sealed), true) => {
-                    let (Some(t), Some((id, _))) = (crypto.as_deref(), session) else {
-                        continue;
-                    };
-                    if h.session_id != id {
-                        continue;
-                    }
-                    let Ok(n) = t.open(h.counter, sealed, &mut opened) else {
-                        continue;
-                    };
-                    let Ok(inner) = Packet::decode(&opened[..n]) else {
-                        continue;
-                    };
-                    last_packet = Instant::now();
-                    inner
-                }
-                (Packet::Handshake(h), true) if h.reply => {
-                    let Some((initiator, _)) = handshake.as_mut() else {
-                        continue;
-                    };
-                    // A reply that does not verify is someone else's: wait for
-                    // the host's.
-                    let payload = match initiator.read_reply(h.message) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            log::debug!("{}: ignoring a handshake answer: {e}", cfg.host);
-                            continue;
-                        }
-                    };
-                    let (initiator, _) = handshake.take().expect("checked above");
-                    let transport = initiator
-                        .into_transport()
-                        .map_err(|e| anyhow::anyhow!("handshake with {} failed: {e}", cfg.host))?;
-                    last_packet = Instant::now();
-                    let Ok(Packet::HelloAck(ack)) = Packet::decode(&payload) else {
-                        anyhow::bail!("handshake with {}: no session in the answer", cfg.host);
-                    };
-                    crypto = Some(Arc::new(transport));
-                    Packet::HelloAck(ack)
-                }
-                // Not authenticated: believed only while asking for a session,
-                // never during one (anyone could end it with five bytes).
-                (Packet::Reject(r), true) if session.is_none() => {
-                    anyhow::bail!("{}: {}", cfg.host, reject_text(r))
-                }
-                (_, true) => continue,
-                (p, false) => p,
-            };
-            match packet {
-                // Plain mode (tests): the host could not start the session.
-                Packet::Reject(r) if session.is_none() => {
-                    anyhow::bail!("{}: {}", cfg.host, reject_text(r))
-                }
-                Packet::HelloAck(ack) => {
-                    if session.is_none() {
-                        acked_at = Some(Instant::now());
-                        log::info!(
-                            "session {:08x}: {}x{}@{} {}",
-                            ack.session_id,
-                            ack.width,
-                            ack.height,
-                            ack.fps,
-                            overlay::codec_label(ack.codec)
-                        );
-                    }
-                    if let Some(input) = &cfg.input {
-                        input.set_stream((u32::from(ack.width), u32::from(ack.height)));
-                        if session.is_none() {
-                            // From now on input goes out the moment it comes.
-                            input.connect(socket.try_clone().ok().map(|s| InputLink {
-                                socket: Arc::new(s),
-                                session_id: ack.session_id,
-                                crypto: crypto.clone(),
-                            }));
-                        }
-                    }
-                    session = Some((ack.session_id, ack.codec));
-                    frame_interval = Duration::from_secs(1) / u32::from(ack.fps.max(1));
-                }
-                Packet::ClockPong(pong) => {
-                    clock.on_pong(&pong, now);
-                    // Lost input goes again after a few round trips.
-                    if let (Some(input), Some(rtt)) = (&cfg.input, clock.rtt_us())
-                        && let Ok(mut q) = input.queue.lock()
-                    {
-                        q.set_resend_after(fernsicht_input::resend_wait(Some(
-                            Duration::from_micros(rtt),
-                        )));
-                    }
-                }
-                Packet::InputAck(a) => {
-                    if session.is_some_and(|(id, _)| id == a.session_id)
-                        && let Some(input) = &cfg.input
-                        && let Ok(mut q) = input.queue.lock()
-                    {
-                        q.ack(a.seq);
-                    }
-                }
-                Packet::Audio(h, frame, previous) => {
-                    if session.is_some_and(|(id, _)| id == h.session_id)
-                        && let Some(tx) = pipe.audio_tx
-                        // The parser bounds both; no allocation per frame.
-                        && let (Some(frame), Some(previous)) =
-                            (Encoded::new(frame), Encoded::new(previous))
-                    {
-                        // Full only if playback stalls; then dropping is right.
-                        let _ = tx.try_send(AudioPacket {
-                            seq: h.seq,
-                            frame,
-                            previous,
-                            captured_local: h.capture_us as i64 - clock.offset_at(now),
-                        });
-                    }
-                }
-                Packet::Monitors(m) => {
-                    if session.is_some_and(|(id, _)| id == m.session_id) {
-                        cfg.monitors.set_list(MonitorList {
-                            current: m.current,
-                            list: m
-                                .iter()
-                                .map(|e| (e.name.to_string(), e.width, e.height))
-                                .collect(),
-                        });
-                    }
-                }
-                Packet::Cursor(c) => {
-                    if session.is_some_and(|(id, _)| id == c.session_id)
-                        && let Ok(mut t) = pipe.cursor.lock()
-                    {
-                        t.on_position(c);
-                    }
-                }
-                Packet::CursorShape(s, data) => {
-                    if session.is_some_and(|(id, _)| id == s.session_id)
-                        && let Ok(mut t) = pipe.cursor.lock()
-                    {
-                        t.on_shape(&s, data);
-                    }
-                }
-                Packet::Video(h, payload) => {
-                    if session.is_none_or(|(id, _)| id != h.session_id) {
-                        continue;
-                    }
-                    video_seen = true;
-                    if loss.drop_packet() {
-                        continue;
-                    }
-                    rates.bytes += datagram.len() as u64;
-                    if let Some(done) = reassembler.push(&h, payload, now) {
-                        let (header, completed_us) = (done.header, done.completed_us);
-                        rates.frames += 1;
-                        // The decoder fell behind by a whole queue: drop the
-                        // frame; the gap makes it ask for a keyframe.
-                        let Ok(mut rf) = pipe.free_rx.try_recv() else {
-                            overflowed += 1;
-                            continue;
-                        };
-                        rf.header = header;
-                        rf.codec = session.map_or(Codec::Synthetic, |(_, codec)| codec);
-                        // The bytes change hands, no copy.
-                        if !reassembler.take_completed(header.frame_id, &mut rf.data) {
-                            let _ = pipe.free_tx.send(rf);
-                            continue;
-                        }
-                        rf.completed_us = completed_us;
-                        rf.offset_us = clock.offset_at(now);
-                        if let Err(TrySendError::Full(rf) | TrySendError::Disconnected(rf)) =
-                            pipe.decode_tx.try_send(rf)
-                        {
-                            overflowed += 1;
-                            let _ = pipe.free_tx.send(rf);
-                        }
-                    }
-                }
-                Packet::Bye(_) => {
-                    log::info!("host closed the session");
-                    break 'session;
-                }
-                _ => {}
+        }
+        Packet::Audio(h, frame, previous) => {
+            if ours(h.session_id)
+                && let Some(tx) = pipe.audio_tx
+                // The parser bounds both; no allocation per frame.
+                && let (Some(frame), Some(previous)) =
+                    (Encoded::new(frame), Encoded::new(previous))
+            {
+                // Full only if playback stalls; then dropping is right.
+                let _ = tx.try_send(AudioPacket {
+                    seq: h.seq,
+                    frame,
+                    previous,
+                    captured_local: h.capture_us as i64 - net.clock.offset_at(now),
+                });
             }
+        }
+        Packet::Monitors(m) => {
+            if ours(m.session_id) {
+                cfg.monitors.set_list(MonitorList {
+                    current: m.current,
+                    list: m
+                        .iter()
+                        .map(|e| (e.name.to_string(), e.width, e.height))
+                        .collect(),
+                });
+            }
+        }
+        Packet::Cursor(c) => {
+            if ours(c.session_id)
+                && let Ok(mut t) = pipe.cursor.lock()
+            {
+                t.on_position(c);
+            }
+        }
+        Packet::CursorShape(s, data) => {
+            if ours(s.session_id)
+                && let Ok(mut t) = pipe.cursor.lock()
+            {
+                t.on_shape(&s, data);
+            }
+        }
+        Packet::Video(h, payload) => {
+            if ours(h.session_id) {
+                on_video(pipe, net, &h, payload, datagram_len, now);
+            }
+        }
+        Packet::Bye(_) => {
+            log::info!("host closed the session");
+            return Ok(false);
+        }
+        _ => {}
+    }
+    Ok(true)
+}
+
+/// The host's answer: the session starts (or, repeated, its stream size
+/// changed).
+fn on_hello_ack(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net, ack: &HelloAck) {
+    if net.session.is_none() {
+        net.acked_at = Some(Instant::now());
+        log::info!(
+            "session {:08x}: {}x{}@{} {}",
+            ack.session_id,
+            ack.width,
+            ack.height,
+            ack.fps,
+            overlay::codec_label(ack.codec)
+        );
+    }
+    if let Some(input) = &cfg.input {
+        input.set_stream((u32::from(ack.width), u32::from(ack.height)));
+        if net.session.is_none() {
+            // From now on input goes out the moment it comes.
+            input.connect(socket.try_clone().ok().map(|s| InputLink {
+                socket: Arc::new(s),
+                session_id: ack.session_id,
+                crypto: net.crypto.clone(),
+            }));
         }
     }
+    net.session = Some((ack.session_id, ack.codec));
+    net.frame_interval = Duration::from_secs(1) / u32::from(ack.fps.max(1));
+}
 
+/// One video packet: into the reassembler, and a completed frame on to the
+/// decoder.
+fn on_video(
+    pipe: &Pipe<'_>,
+    net: &mut Net,
+    h: &VideoHeader,
+    payload: &[u8],
+    datagram_len: usize,
+    now: u64,
+) {
+    net.video_seen = true;
+    if net.loss.drop_packet() {
+        return;
+    }
+    net.rates.bytes += datagram_len as u64;
+    let Some(done) = net.reassembler.push(h, payload, now) else {
+        return;
+    };
+    let (header, completed_us) = (done.header, done.completed_us);
+    net.rates.frames += 1;
+    // The decoder fell behind by a whole queue: drop the frame; the gap
+    // makes it ask for a keyframe.
+    let Ok(mut rf) = pipe.free_rx.try_recv() else {
+        net.overflowed += 1;
+        return;
+    };
+    rf.header = header;
+    rf.codec = net.session.map_or(Codec::Synthetic, |(_, codec)| codec);
+    // The bytes change hands, no copy.
+    if !net
+        .reassembler
+        .take_completed(header.frame_id, &mut rf.data)
+    {
+        let _ = pipe.free_tx.send(rf);
+        return;
+    }
+    rf.completed_us = completed_us;
+    rf.offset_us = net.clock.offset_at(now);
+    if let Err(TrySendError::Full(rf) | TrySendError::Disconnected(rf)) =
+        pipe.decode_tx.try_send(rf)
+    {
+        net.overflowed += 1;
+        let _ = pipe.free_tx.send(rf);
+    }
+}
+
+/// Ends the session on the host: input still due first, then the goodbye.
+fn say_goodbye(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net) {
     // The window may still push; nothing goes out from it any more.
     if let Some(input) = &cfg.input {
         input.connect(None);
     }
-    if let Some((session_id, _)) = session {
-        let seal_with = crypto.as_deref().map(|t| (t, session_id));
-        // Keys and buttons released on the way out (closing releases what
-        // the window held) leave before the goodbye.
-        if let Some(input) = &cfg.input
-            && let Some(n) = input.queue.lock().ok().and_then(|mut q| {
-                q.due(Instant::now())
-                    .map(|events| InputHeader::encode(session_id, events, &mut out))
-            })
-        {
-            send_packet(socket, seal_with, &out[..n]);
-        }
-        // More than once: a lost goodbye would keep the session, and
-        // anything still pressed, on the host until it times out.
-        let n = Bye { session_id }.encode(&mut out);
-        for _ in 0..BYE_REPEATS {
-            send_packet(socket, seal_with, &out[..n]);
-        }
+    let Some((session_id, _)) = net.session else {
+        return;
+    };
+    // Keys and buttons released on the way out (closing releases what the
+    // window held) leave before the goodbye.
+    send_input(cfg, socket, net, session_id);
+    // More than once: a lost goodbye would keep the session, and anything
+    // still pressed, on the host until it times out.
+    let n = Bye { session_id }.encode(&mut net.out);
+    for _ in 0..BYE_REPEATS {
+        send_packet(socket, seal_with(net), &net.out[..n]);
     }
-    Ok(NetOutcome {
-        receiver: reassembler.totals(),
-        overflowed,
-        session,
-        clock_offset_us: clock.offset_at(now_us()),
-        rtt_us: clock.rtt_us(),
-    })
 }
 
 /// Accumulates receive rates for the overlay over [`OVERLAY_INTERVAL`], so

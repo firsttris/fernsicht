@@ -7,8 +7,8 @@ use clap::Parser;
 use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
     AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice, Identity,
-    OverlayOutput, Trusted, default_state_dir, find_host, pair, printable, remember_address, run,
-    with_default_port,
+    OverlayOutput, Peer, RunSummary, Trusted, default_state_dir, find_host, pair, printable,
+    remember_address, run, with_default_port,
 };
 use fernsicht_render::overlay::ms;
 
@@ -278,86 +278,14 @@ fn main() -> anyhow::Result<()> {
     };
     let identity =
         Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;
-    // An address given (by the app: where discovery just found the host)
-    // is used; for a name, where the host was last.
-    let target = if args.key.is_some() || fernsicht_client::is_address(&wanted) {
-        with_default_port(&wanted)
-    } else {
-        host.address
-            .clone()
-            .unwrap_or_else(|| with_default_port(&wanted))
-    };
-    let cfg = ClientConfig {
-        host: target,
-        security: Some(Arc::new(ClientSecurity {
-            identity,
-            host: host.key,
-        })),
-        width: args.width,
-        height: args.height,
-        fps: args.fps,
-        bitrate_kbps: args.bitrate,
-        loss: args.loss,
-        duration: args.duration.map(Duration::from_secs),
-        print_overlay: if args.app {
-            OverlayOutput::Json
-        } else {
-            OverlayOutput::Text
-        },
-        render_node: args.render_node,
-        decoder: match args.decoder {
-            DecoderArg::Auto => DecoderChoice::Auto,
-            DecoderArg::Vaapi => DecoderChoice::Vaapi,
-            DecoderArg::Nvdec => DecoderChoice::Nvdec,
-        },
-        codec: match args.codec {
-            CodecArg::Auto => CodecChoice::Auto,
-            CodecArg::H264 => CodecChoice::H264,
-            CodecArg::Hevc => CodecChoice::Hevc,
-            CodecArg::Av1 => CodecChoice::Av1,
-        },
-        record: args.record,
-        audio: if args.no_audio {
-            AudioOutput::Off
-        } else {
-            AudioOutput::Speakers
-        },
-        ..ClientConfig::default()
-    };
+    let cfg = session_config(&args, &wanted, &host, identity);
     let stop = Arc::new(AtomicBool::new(false));
     // Before any thread starts: Ctrl+C (or SIGTERM) ends the session with a
     // goodbye, so nothing stays pressed on the host.
     fernsicht_core::signal::stop_on_signals(stop.clone())?;
     let (commands_tx, commands) = crossbeam_channel::unbounded();
     if args.app {
-        let (stop, muted) = (stop.clone(), cfg.muted.clone());
-        let monitors = cfg.monitors.clone();
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-                match line.trim() {
-                    "mute" => muted.store(true, std::sync::atomic::Ordering::Relaxed),
-                    "unmute" => muted.store(false, std::sync::atomic::Ordering::Relaxed),
-                    "gaming" => {
-                        let _ = commands_tx.send(AppCommand::Mode(true));
-                    }
-                    "desktop" => {
-                        let _ = commands_tx.send(AppCommand::Mode(false));
-                    }
-                    line => {
-                        if let Some(codes) = fernsicht_client::parse_keys_command(line) {
-                            let _ = commands_tx.send(AppCommand::Keys(codes));
-                        } else if let Some(r) = fernsicht_client::parse_monitor_command(line) {
-                            monitors.request(r);
-                        } else {
-                            log::debug!("unknown command {line:?}");
-                        }
-                    }
-                }
-            }
-            // The app let go of stdin: the session is over.
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        });
+        read_app_commands(stop.clone(), &cfg, commands_tx);
     } else {
         drop(commands_tx);
     }
@@ -398,6 +326,98 @@ fn main() -> anyhow::Result<()> {
             log::warn!("remembering the host's address: {e}");
         }
     }
+    print_summary(&s);
+    Ok(())
+}
+
+/// The session `args` ask for with the paired `host`.
+fn session_config(args: &Args, wanted: &str, host: &Peer, identity: Identity) -> ClientConfig {
+    // An address given (by the app: where discovery just found the host)
+    // is used; for a name, where the host was last.
+    let target = if args.key.is_some() || fernsicht_client::is_address(wanted) {
+        with_default_port(wanted)
+    } else {
+        host.address
+            .clone()
+            .unwrap_or_else(|| with_default_port(wanted))
+    };
+    ClientConfig {
+        host: target,
+        security: Some(Arc::new(ClientSecurity {
+            identity,
+            host: host.key,
+        })),
+        width: args.width,
+        height: args.height,
+        fps: args.fps,
+        bitrate_kbps: args.bitrate,
+        loss: args.loss,
+        duration: args.duration.map(Duration::from_secs),
+        print_overlay: if args.app {
+            OverlayOutput::Json
+        } else {
+            OverlayOutput::Text
+        },
+        render_node: args.render_node.clone(),
+        decoder: match args.decoder {
+            DecoderArg::Auto => DecoderChoice::Auto,
+            DecoderArg::Vaapi => DecoderChoice::Vaapi,
+            DecoderArg::Nvdec => DecoderChoice::Nvdec,
+        },
+        codec: match args.codec {
+            CodecArg::Auto => CodecChoice::Auto,
+            CodecArg::H264 => CodecChoice::H264,
+            CodecArg::Hevc => CodecChoice::Hevc,
+            CodecArg::Av1 => CodecChoice::Av1,
+        },
+        record: args.record.clone(),
+        audio: if args.no_audio {
+            AudioOutput::Off
+        } else {
+            AudioOutput::Speakers
+        },
+        ..ClientConfig::default()
+    }
+}
+
+/// Reads the app's commands on stdin until it lets go, which ends the
+/// session.
+fn read_app_commands(
+    stop: Arc<AtomicBool>,
+    cfg: &ClientConfig,
+    commands: crossbeam_channel::Sender<AppCommand>,
+) {
+    let muted = cfg.muted.clone();
+    let monitors = cfg.monitors.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            match line.trim() {
+                "mute" => muted.store(true, std::sync::atomic::Ordering::Relaxed),
+                "unmute" => muted.store(false, std::sync::atomic::Ordering::Relaxed),
+                "gaming" => {
+                    let _ = commands.send(AppCommand::Mode(true));
+                }
+                "desktop" => {
+                    let _ = commands.send(AppCommand::Mode(false));
+                }
+                line => {
+                    if let Some(codes) = fernsicht_client::parse_keys_command(line) {
+                        let _ = commands.send(AppCommand::Keys(codes));
+                    } else if let Some(r) = fernsicht_client::parse_monitor_command(line) {
+                        monitors.request(r);
+                    } else {
+                        log::debug!("unknown command {line:?}");
+                    }
+                }
+            }
+        }
+        // The app let go of stdin: the session is over.
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+fn print_summary(s: &RunSummary) {
     println!();
     println!("── Zusammenfassung ──");
     println!(
@@ -444,7 +464,6 @@ fn main() -> anyhow::Result<()> {
             s.frames_awaiting_keyframe
         );
     }
-    Ok(())
 }
 
 /// What the app tells a running client on stdin (used by the window).

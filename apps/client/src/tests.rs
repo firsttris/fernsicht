@@ -17,7 +17,8 @@ use crate::input::{
     window_to_stream,
 };
 use crate::monitors::{MonitorList, MonitorRequest, parse_monitor_command};
-use crate::network::{RateWindow, ratio};
+use crate::network::{RateWindow, ReceivedFrame, ratio};
+use crate::present::timings;
 
 #[test]
 fn gamepads_follow_the_focus() {
@@ -331,4 +332,24 @@ fn rate_window_publishes_ratios() {
     assert_eq!(info.rtt_us, Some(500));
     assert!(info.fps > 0.0 && info.bitrate_bps > 0);
     assert_eq!(ratio(1, 0), 0.0);
+}
+
+#[test]
+fn frame_timings_are_put_on_the_clients_clock() {
+    let mut rf = ReceivedFrame::empty();
+    rf.header.capture_us = 10_000;
+    rf.header.capture_ready_delta_us = 1_000;
+    rf.header.encoded_delta_us = 3_000;
+    rf.completed_us = 9_000;
+    // The host's clock runs 4 ms ahead of ours.
+    rf.offset_us = 4_000;
+    let t = timings(&rf, 11_000, 12_500);
+    assert_eq!(
+        (t.captured, t.capture_ready, t.encoded),
+        (6_000, 7_000, 9_000)
+    );
+    assert_eq!(
+        (t.received, t.decoded, t.presented),
+        (9_000, 11_000, 12_500)
+    );
 }
