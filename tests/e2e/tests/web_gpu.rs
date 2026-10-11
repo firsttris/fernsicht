@@ -68,7 +68,7 @@ fn http(addr: SocketAddr, path: &str, body: &Value) -> (u16, Value) {
     let body = body.to_string();
     write!(
         s,
-        "POST {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     )

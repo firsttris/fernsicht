@@ -1041,7 +1041,10 @@ mod tests {
         }
         assert!(!host_allowed(None, "zentrale"));
         // A machine whose name has its domain.
-        assert!(host_allowed(Some("bazzite.fritz.box:47800"), "bazzite.fritz.box"));
+        assert!(host_allowed(
+            Some("bazzite.fritz.box:47800"),
+            "bazzite.fritz.box"
+        ));
         assert!(host_allowed(Some("bazzite:47800"), "bazzite.fritz.box"));
         assert!(!host_allowed(Some("evil.fritz.box"), "bazzite.fritz.box"));
     }
