@@ -49,6 +49,9 @@ struct Swapchain {
     rendered: Vec<vk::Semaphore>,
 }
 
+/// How long to wait for a free swapchain image before skipping a frame.
+const ACQUIRE_TIMEOUT_NS: u64 = 100_000_000;
+
 pub struct WindowPresenter {
     window: Arc<Window>,
     renderer: Renderer,
@@ -277,10 +280,19 @@ impl WindowPresenter {
         let gpu = self.renderer.gpu().clone();
         let swapchain_fn = gpu.swapchain.as_ref().expect("created for a window");
         let sc = self.swapchain.as_ref().expect("ensured");
+        // Everything that can fail before an image is taken: an image
+        // acquired and then not presented is lost to the swapchain, and its
+        // semaphore stays signalled (VUID-vkAcquireNextImageKHR-semaphore-01286).
+        let frame = self.renderer.prepare(picture, cursor, sc.format)?;
         // SAFETY: valid swapchain; the semaphore is unsignalled because the
         // previous frame was waited for.
         let acquired = unsafe {
-            swapchain_fn.acquire_next_image(sc.handle, u64::MAX, sc.acquired, vk::Fence::null())
+            swapchain_fn.acquire_next_image(
+                sc.handle,
+                ACQUIRE_TIMEOUT_NS,
+                sc.acquired,
+                vk::Fence::null(),
+            )
         };
         let index = match acquired {
             Ok((i, _suboptimal)) => i as usize,
@@ -289,6 +301,9 @@ impl WindowPresenter {
                 self.destroy_swapchain();
                 return Ok(());
             }
+            // No image free (a hidden window whose compositor holds them):
+            // skip this frame instead of blocking the present thread.
+            Err(vk::Result::TIMEOUT | vk::Result::NOT_READY) => return Ok(()),
             Err(e) => return Err(RenderError::Other(format!("acquire: {e}"))),
         };
         let target = Target {
@@ -300,7 +315,7 @@ impl WindowPresenter {
         };
         let (handle, wait, done) = (sc.handle, sc.acquired, sc.rendered[index]);
         self.renderer
-            .render(picture, cursor, &target, Some(wait), Some(done), |_, _| {})?;
+            .submit(frame, &target, Some(wait), Some(done), |_, _| {})?;
         let waits = [done];
         let swapchains = [handle];
         let indices = [index as u32];

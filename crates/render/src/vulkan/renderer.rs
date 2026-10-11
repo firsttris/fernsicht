@@ -142,6 +142,18 @@ enum Source {
     Foreign(u64),
 }
 
+/// A frame made ready to draw: the work that can fail (staging, imports,
+/// pipelines) is done, recording and submitting are left. A window
+/// prepares before it takes a swapchain image, so a failure never leaves
+/// an acquired image behind.
+pub(crate) struct Prepared<'c> {
+    source: Source,
+    size: (u32, u32),
+    pipeline: vk::Pipeline,
+    /// The pointer, whether its image was staged anew, and its pipeline.
+    pointer: Option<(&'c CursorOverlay, bool, vk::Pipeline)>,
+}
+
 pub struct Renderer {
     gpu: Arc<Gpu>,
     shader: vk::ShaderModule,
@@ -531,6 +543,18 @@ impl Renderer {
         signal: Option<vk::Semaphore>,
         after: impl FnOnce(&ash::Device, vk::CommandBuffer),
     ) -> Result<(), RenderError> {
+        let frame = self.prepare(picture, cursor, target.format)?;
+        self.submit(frame, target, wait, signal, after)
+    }
+
+    /// Stages or imports `picture` and the pointer and finds the pipelines
+    /// for a target of `format`: everything about a frame that can fail.
+    pub(crate) fn prepare<'c>(
+        &mut self,
+        picture: Option<&Picture<'_>>,
+        cursor: Option<&'c CursorOverlay>,
+        format: vk::Format,
+    ) -> Result<Prepared<'c>, RenderError> {
         let (source, size) = match picture {
             None => (Source::None, (1, 1)),
             Some(Picture::Nv12 {
@@ -546,16 +570,40 @@ impl Renderer {
                 (Source::Foreign(*key), (image.width, image.height))
             }
         };
-        let pipeline = self.pipeline(target.format, false)?;
+        let pipeline = self.pipeline(format, false)?;
         // The pointer only makes sense on a picture.
         let pointer = match (cursor, &source) {
             (Some(c), Source::Cpu | Source::Foreign(_)) => {
                 let upload = self.stage_cursor(c)?;
-                let pipeline = self.pipeline(target.format, true)?;
+                let pipeline = self.pipeline(format, true)?;
                 Some((c, upload, pipeline))
             }
             _ => None,
         };
+        Ok(Prepared {
+            source,
+            size,
+            pipeline,
+            pointer,
+        })
+    }
+
+    /// Records and submits a prepared frame into `target` and waits until
+    /// the GPU is done.
+    pub(crate) fn submit(
+        &mut self,
+        frame: Prepared<'_>,
+        target: &Target,
+        wait: Option<vk::Semaphore>,
+        signal: Option<vk::Semaphore>,
+        after: impl FnOnce(&ash::Device, vk::CommandBuffer),
+    ) -> Result<(), RenderError> {
+        let Prepared {
+            source,
+            size,
+            pipeline,
+            pointer,
+        } = frame;
         let planes = match source {
             Source::None => None,
             Source::Cpu => self.cpu.as_ref().map(|c| &c.planes),

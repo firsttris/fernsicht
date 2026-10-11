@@ -126,7 +126,11 @@ the limits FFmpeg puts on the next latency step.
   every time it triggers. The next acquire breaks the spec and can block forever (`u64::MAX`).
 - **Fix:** prepare before acquiring; on an error after acquiring, still submit a clear pass and
   present; finite acquire timeout.
-- **Status:** open
+- **Status:** fixed. `Renderer::prepare` does the work that can fail (staging, import, pipelines)
+  before the window takes an image; `submit` only records and submits. Acquire waits at most
+  100 ms and skips the frame otherwise (a hidden window whose compositor holds its images no
+  longer blocks the present thread). Left: a failed submit after acquire (device lost) still loses
+  the image, but then the renderer is broken anyway.
 
 ### A8 · Use-after-free when the client exits on Wayland
 
