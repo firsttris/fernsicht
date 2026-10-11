@@ -439,7 +439,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   every user owns their own `/run/user/<uid>`. Another local or SSH user can become the allowed uid
   and pair a device.
 - **Fix:** ask logind for the active session on seat0.
-- **Status:** open
+- **Status:** fixed. As root, the desktop's user is the user of the active session on seat0 from
+  `sd_seat_get_active` (libsystemd, loaded at runtime; its state file says "do not parse"), and
+  only a regular user (uid ≥ 1000) counts. Files under `/run/user` are not looked at any more.
+  Without logind or an active session there is no desktop user (only root and the service may use
+  the socket). Tests: `only_regular_users_sit_at_the_desktop`, `logind_names_the_active_user_if_there_is_one`.
 
 ### B3 · Weak handshake replay protection; the host streams before key confirmation
 

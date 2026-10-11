@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 libc.workspace = true
+libloading.workspace = true
 log.workspace = true
 
 [dev-dependencies]

@@ -3,10 +3,14 @@
 //! The host often runs as root (a system service, or sudo for KMS
 //! capture), but the sound server and the desktop's settings belong to
 //! the logged-in user. This finds that user: the one sudo was run by, else
-//! (as root) the owner of a graphical session under `/run/user`, else the
-//! current user.
+//! (as root) the user of the active session on the machine's seat, as
+//! logind says (`sd_seat_get_active`), else the current user.
+//!
+//! Not files under `/run/user`: every user owns their own directory
+//! there and could pretend to have a desktop (the control socket lets the
+//! desktop's user pair devices).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopUser {
@@ -22,23 +26,10 @@ impl DesktopUser {
     }
 }
 
-/// What a `/run/user/<uid>` directory shows about its session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Session {
-    pub uid: u32,
-    pub wayland: bool,
-    pub pulse: bool,
-}
-
-/// The session to serve among those under `/run/user`: a graphical one
-/// (Wayland) first, then one with sound; among equals the lowest uid of a
-/// regular user (≥ 1000).
-pub fn choose(sessions: &[Session]) -> Option<u32> {
-    sessions
-        .iter()
-        .filter(|s| s.uid >= 1000 && (s.wayland || s.pulse))
-        .min_by_key(|s| (!s.wayland, !s.pulse, s.uid))
-        .map(|s| s.uid)
+/// The desktop's user among what logind reports: a regular user (not root
+/// nor a system account such as the login screen's).
+pub fn regular_user(uid: Option<u32>) -> Option<u32> {
+    uid.filter(|&u| u >= 1000)
 }
 
 /// Name and home of `uid` from `/etc/passwd`'s text.
@@ -50,21 +41,24 @@ pub fn passwd_entry(passwd: &str, uid: u32) -> Option<(String, PathBuf)> {
     })
 }
 
-fn scan(run_user: &Path) -> Vec<Session> {
-    std::fs::read_dir(run_user)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let uid = e.file_name().to_str()?.parse().ok()?;
-            let dir = e.path();
-            Some(Session {
-                uid,
-                wayland: dir.join("wayland-0").exists(),
-                pulse: dir.join("pulse/native").exists(),
-            })
-        })
-        .collect()
+/// The user of the active session on seat0, from logind
+/// (`sd_seat_get_active` in libsystemd, loaded at runtime); `None` without
+/// logind or an active session.
+fn active_seat_uid() -> Option<u32> {
+    type SeatGetActive = unsafe extern "C" fn(
+        seat: *const std::ffi::c_char,
+        session: *mut *mut std::ffi::c_char,
+        uid: *mut libc::uid_t,
+    ) -> std::ffi::c_int;
+    // SAFETY: loading libsystemd runs no code of ours; the symbol has the
+    // signature of sd-login.h. The session may be NULL (only the uid is
+    // asked for), as sd-login.c allows.
+    unsafe {
+        let lib = libloading::Library::new("libsystemd.so.0").ok()?;
+        let get: libloading::Symbol<SeatGetActive> = lib.get(b"sd_seat_get_active\0").ok()?;
+        let mut uid: libc::uid_t = 0;
+        (get(c"seat0".as_ptr(), std::ptr::null_mut(), &mut uid) >= 0).then_some(uid)
+    }
 }
 
 fn effective_uid() -> u32 {
@@ -94,38 +88,36 @@ pub fn desktop_user() -> Option<DesktopUser> {
         }
         return Some(u);
     }
-    choose(&scan(Path::new("/run/user"))).map(user)
+    regular_user(active_seat_uid()).map(user)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn s(uid: u32, wayland: bool, pulse: bool) -> Session {
-        Session {
-            uid,
-            wayland,
-            pulse,
-        }
+    #[test]
+    fn only_regular_users_sit_at_the_desktop() {
+        assert_eq!(regular_user(Some(1000)), Some(1000));
+        // Root on a console, the login screen's account, nobody active.
+        assert_eq!(regular_user(Some(0)), None);
+        assert_eq!(regular_user(Some(980)), None);
+        assert_eq!(regular_user(None), None);
     }
 
     #[test]
-    fn the_graphical_session_wins() {
-        assert_eq!(
-            choose(&[s(1001, false, true), s(1000, true, true)]),
-            Some(1000)
-        );
-        assert_eq!(
-            choose(&[s(1000, false, true), s(1002, true, false)]),
-            Some(1002)
-        );
-        assert_eq!(
-            choose(&[s(1003, true, true), s(1001, true, true)]),
-            Some(1001)
-        );
-        // System users (gdm, sddm at uid < 1000) and empty dirs don't count.
-        assert_eq!(choose(&[s(42, true, true), s(1000, false, false)]), None);
-        assert_eq!(choose(&[]), None);
+    fn logind_names_the_active_user_if_there_is_one() {
+        // Compared with logind's own state file where there is one (the
+        // test may read it; the code uses the public API). In a container
+        // without a seat there is no active user.
+        let expected = std::fs::read_to_string("/run/systemd/seats/seat0")
+            .ok()
+            .and_then(|t| {
+                t.lines()
+                    .find_map(|l| l.strip_prefix("ACTIVE_UID=")?.parse::<u32>().ok())
+            });
+        if expected.is_some() {
+            assert_eq!(active_seat_uid(), expected);
+        }
     }
 
     #[test]
@@ -139,21 +131,6 @@ mod tests {
         );
         assert_eq!(passwd_entry(passwd, 0).unwrap().0, "root");
         assert_eq!(passwd_entry(passwd, 1001), None);
-    }
-
-    #[test]
-    fn sessions_are_read_from_run_user() {
-        let dir = std::env::temp_dir().join(format!("fernsicht-run-user-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("1000/pulse")).unwrap();
-        std::fs::write(dir.join("1000/wayland-0"), "").unwrap();
-        std::fs::write(dir.join("1000/pulse/native"), "").unwrap();
-        std::fs::create_dir_all(dir.join("1001")).unwrap();
-        std::fs::create_dir_all(dir.join("not-a-uid")).unwrap();
-        let mut found = scan(&dir);
-        found.sort_by_key(|s| s.uid);
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(found, vec![s(1000, true, true), s(1001, false, false)]);
     }
 
     #[test]

@@ -56,7 +56,9 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
   `/dev/uinput`. A small privileged helper for capture only is a possible next step
   ([next steps](next-steps.md)).
 - The control socket (`/run/fernsicht/control.sock`) is local only; pairing and unpairing go through
-  it.
+  it. It answers root, the service's own user and the user of the active session on the machine's
+  seat, as logind reports it (`sd_seat_get_active`): another local or SSH user cannot open pairing.
+  The same user's sound and monitor layout are the ones streamed.
 - `fernsicht-host-agent unpair <name>` or the app forgets a device; it is turned away from then on and
   the app says why.
 

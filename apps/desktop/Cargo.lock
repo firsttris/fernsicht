@@ -1346,6 +1346,7 @@ name = "fernsicht-core"
 version = "0.1.4"
 dependencies = [
  "libc",
+ "libloading 0.8.9",
  "log",
 ]
 
