@@ -317,10 +317,21 @@ export function RemoteScreen({
       const code = linuxButton(e.button);
       if (code === undefined) return;
       e.preventDefault();
+      const down = e.type === "pointerdown";
       if (mode === "gaming" && !locked()) {
-        if (e.type === "pointerdown") void el.requestPointerLock?.();
+        // The click that captures the pointer stays here; a release still
+        // goes on (the button may be down on the host since before Esc let
+        // the pointer go; releasing a button that is up does nothing).
+        if (down) {
+          void el.requestPointerLock?.();
+          return;
+        }
+        session.send({ t: "b", c: code, p: false });
         return;
       }
+      // The release comes here even when the mouse is let go over the
+      // toolbar (dragging a window up to the top of the screen).
+      if (down) el.setPointerCapture?.(e.pointerId);
       if (mode === "desktop")
         session.send({ t: "m", ...toAbsolute(e.clientX, e.clientY, picture()) });
       session.send({ t: "b", c: code, p: e.type === "pointerdown" });

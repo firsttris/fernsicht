@@ -1,7 +1,7 @@
 //! Session lifecycle across real host and client.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use fernsicht_client::{AudioOutput, ClientConfig, InputEvent, InputHandle, run};
@@ -156,6 +156,63 @@ fn keys_arrive_once_and_in_order_through_loss() {
     drop(link);
     host.stop();
     assert_eq!(*recorder.0.lock().unwrap(), typed);
+}
+
+#[test]
+fn keys_held_when_the_client_closes_are_released_on_the_host() {
+    let _serial = fernsicht_e2e::exclusive();
+    let recorder = Recorder::default();
+    let host = Host::start(HostConfig {
+        input: InputKind::Record(recorder.clone()),
+        ..HostConfig::default()
+    });
+    let input = std::sync::Arc::new(InputHandle::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    let closer = {
+        let (input, stop) = (input.clone(), stop.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            // Ctrl+Alt+Shift held (the quit chord), then the window closes:
+            // it lets go of everything and stops the session at once.
+            for code in [29, 56, 42] {
+                input.push(InputEvent::Key {
+                    code,
+                    pressed: true,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            input.release_all();
+            stop.store(true, Ordering::Release);
+        })
+    };
+    run(
+        ClientConfig {
+            host: host.addr().to_string(),
+            width: 640,
+            height: 360,
+            input: Some(input),
+            ..ClientConfig::default()
+        },
+        stop,
+    )
+    .expect("client failed");
+    closer.join().unwrap();
+    host.stop();
+    let mut ups: Vec<u16> = recorder
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match *e {
+            InputEvent::Key {
+                code,
+                pressed: false,
+            } => Some(code),
+            _ => None,
+        })
+        .collect();
+    ups.sort_unstable();
+    assert_eq!(ups, [29, 42, 56], "released on the host before the goodbye");
 }
 
 fn opus() -> bool {

@@ -137,6 +137,9 @@ impl std::fmt::Debug for ClientSecurity {
     }
 }
 
+/// How often the goodbye is sent at the end of a session.
+const BYE_REPEATS: usize = 3;
+
 /// Sends `packet` to the host: sealed once the session is secure.
 fn send_packet(socket: &UdpSocket, crypto: Option<(&Transport, u32)>, packet: &[u8]) {
     let Some((t, session_id)) = crypto else {
@@ -857,7 +860,9 @@ fn network_loop(
     let mut crypto: Option<Arc<Transport>> = None;
 
     loop {
-        if stop.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
+        // Acquire: what the window queued before it set `stop` (the keys it
+        // released on closing) is seen below.
+        if stop.load(Ordering::Acquire) || deadline.is_some_and(|d| Instant::now() >= d) {
             break;
         }
         if !video_seen && acked_at.is_some_and(|t| t.elapsed() >= NO_VIDEO_WARNING) {
@@ -1115,12 +1120,25 @@ fn network_loop(
     }
 
     if let Some((session_id, _)) = session {
+        let seal_with = crypto.as_deref().map(|t| (t, session_id));
+        // Keys and buttons released on the way out (closing releases what
+        // the window held) leave before the goodbye.
+        if let Some(input) = &cfg.input
+            && let Some(events) = input
+                .queue
+                .lock()
+                .ok()
+                .and_then(|mut q| q.due(Instant::now()))
+        {
+            let n = InputHeader::encode(session_id, &events, &mut out);
+            send_packet(socket, seal_with, &out[..n]);
+        }
+        // More than once: a lost goodbye would keep the session, and
+        // anything still pressed, on the host until it times out.
         let n = Bye { session_id }.encode(&mut out);
-        send_packet(
-            socket,
-            crypto.as_deref().map(|t| (t, session_id)),
-            &out[..n],
-        );
+        for _ in 0..BYE_REPEATS {
+            send_packet(socket, seal_with, &out[..n]);
+        }
     }
     Ok(NetOutcome {
         receiver: reassembler.totals(),

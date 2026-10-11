@@ -374,6 +374,57 @@ fn sigterm_ends_the_host_cleanly_and_tells_the_client() {
 }
 
 #[test]
+fn ctrl_c_ends_the_client_with_a_goodbye() {
+    let host = spawn_host(&state_dir("host-ctrl-c"));
+    let client_dir = state_dir("client-ctrl-c");
+    let out = bin("fernsicht-client")
+        .args(["pair", &host.addr, &host.pin, "--state-dir"])
+        .arg(&client_dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let client = bin("fernsicht-client")
+        .args([&host.addr, "--duration", "20", "--no-audio", "--state-dir"])
+        .arg(&client_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !host_command(&host, &["status"]).contains("Verbunden") {
+        assert!(Instant::now() < deadline, "the session did not start");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let stopped = Instant::now();
+    let kill = Command::new("kill")
+        .args(["-INT", &client.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    let out = client.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "client ended with {}: {stdout}",
+        out.status
+    );
+    assert!(stdout.contains("Zusammenfassung"), "{stdout}");
+    // The host heard the goodbye: the session is over before its 5 s
+    // timeout would have ended it.
+    while host_command(&host, &["status"]).contains("Verbunden") {
+        assert!(
+            stopped.elapsed() < Duration::from_secs(3),
+            "the host waited for its timeout"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn an_unpaired_host_is_refused_with_a_hint() {
     let dir = state_dir("unpaired");
     let out = bin("fernsicht-client")

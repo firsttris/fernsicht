@@ -289,7 +289,8 @@ pub struct Uinput {
     absolute: Device,
     relative: Device,
     pointer: Pointer,
-    held: BTreeSet<u16>,
+    /// Keys and buttons down, and the pointer a button went down on.
+    held: BTreeMap<u16, Pointer>,
     area: AbsArea,
     pads: Vec<Option<Device>>,
     pad_held: BTreeSet<(u8, u16)>,
@@ -406,7 +407,7 @@ impl Uinput {
             absolute,
             relative,
             pointer: Pointer::Absolute,
-            held: BTreeSet::new(),
+            held: BTreeMap::new(),
             area,
             pads: (0..MAX_PADS).map(|_| None).collect(),
             pad_held: BTreeSet::new(),
@@ -426,12 +427,16 @@ impl Uinput {
         }
         Ok(slot.as_mut().expect("just created"))
     }
+}
 
-    fn pointer_device(&mut self) -> &mut Device {
-        match self.pointer {
-            Pointer::Absolute => &mut self.absolute,
-            Pointer::Relative => &mut self.relative,
-        }
+/// The pointer a mouse button event goes to: a release to the one that has
+/// the button down (the other pointer may have moved since, e.g. the
+/// pointer was captured or let go meanwhile), a press to the one that
+/// moved last.
+fn button_pointer(pressed: bool, down_on: Option<Pointer>, last_moved: Pointer) -> Pointer {
+    match (pressed, down_on) {
+        (false, Some(p)) => p,
+        _ => last_moved,
     }
 }
 
@@ -502,12 +507,14 @@ impl Uinput {
 
 impl InputSink for Uinput {
     fn inject(&mut self, event: &InputEvent) -> Result<(), String> {
+        // Where a button event goes (scrolling goes to the last moved one).
+        let mut pointer = self.pointer;
         match *event {
             InputEvent::Key { code, pressed } | InputEvent::Button { code, pressed } => {
+                let down_on = self.held.remove(&code);
+                pointer = button_pointer(pressed, down_on, self.pointer);
                 if pressed {
-                    self.held.insert(code);
-                } else {
-                    self.held.remove(&code);
+                    self.held.insert(code, pointer);
                 }
             }
             InputEvent::PadButton { pad, code, pressed } => {
@@ -540,19 +547,22 @@ impl InputSink for Uinput {
                 self.pointer = Pointer::Relative;
                 &mut self.relative
             }
-            Target::Pointer => self.pointer_device(),
+            Target::Pointer => match pointer {
+                Pointer::Absolute => &mut self.absolute,
+                Pointer::Relative => &mut self.relative,
+            },
             Target::Pad(n) => self.pad(n)?,
         };
         device.emit(&events)
     }
 
     fn release_all(&mut self) {
-        for code in std::mem::take(&mut self.held) {
+        for (code, pointer) in std::mem::take(&mut self.held) {
             let up = [(EV_KEY, code, 0)];
-            let device = if (BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&code) {
-                self.pointer_device()
-            } else {
-                &mut self.keyboard
+            let device = match pointer {
+                _ if !(BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&code) => &mut self.keyboard,
+                Pointer::Absolute => &mut self.absolute,
+                Pointer::Relative => &mut self.relative,
             };
             if let Err(e) = device.emit(&up) {
                 log::warn!("releasing {code:#x}: {e}");
@@ -584,6 +594,20 @@ impl Drop for Uinput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_button_goes_up_where_it_went_down() {
+        use Pointer::*;
+        // Pressed on the absolute pointer, then the relative one moved
+        // (captured in gaming mode): released on the absolute one.
+        assert_eq!(button_pointer(false, Some(Absolute), Relative), Absolute);
+        assert_eq!(button_pointer(false, Some(Relative), Absolute), Relative);
+        // Presses go to the pointer that moved last.
+        assert_eq!(button_pointer(true, None, Relative), Relative);
+        assert_eq!(button_pointer(true, Some(Absolute), Relative), Relative);
+        // A release of a button not down: the last moved one (harmless).
+        assert_eq!(button_pointer(false, None, Absolute), Absolute);
+    }
 
     #[test]
     fn event_layout_matches_struct_input_event() {

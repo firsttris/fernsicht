@@ -152,7 +152,14 @@ the limits FFmpeg puts on the next latency step.
   over the toolbar is lost.
 - **Fix:** flush input and send Bye a few times on stop; signal handler; forward releases of held
   buttons always; release on the pressing device; `setPointerCapture` in the viewer.
-- **Status:** open
+- **Status:** fixed. The client sends what is queued (the releases of closing) before its goodbye,
+  sends Bye three times, and `stop` is set and read with Release/Acquire so the queued releases are
+  seen; Ctrl+C and SIGTERM end the session through `stop_on_signals`. In gaming mode only the
+  capturing press stays local, releases go on (native client and viewer). The host's uinput
+  releases each button on the pointer it went down on (`button_pointer`), also in `release_all`.
+  The viewer captures the pointer on a press. Tests: `keys_held_when_the_client_closes_are_released_on_the_host`
+  (fails without the fix), `ctrl_c_ends_the_client_with_a_goodbye`, `a_button_goes_up_where_it_went_down`,
+  `live.test.tsx`.
 
 ### A10 · "Zu viele falsche PINs" is never shown
 

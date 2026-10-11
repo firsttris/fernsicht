@@ -311,9 +311,10 @@ fn handshake_and_stream() {
         seen.hellos, 1,
         "client must stop sending Hello after the ack"
     );
-    // On a clean run the client says goodbye with the right session.
-    assert_eq!(seen.byes.len(), 1);
-    assert_eq!(seen.byes[0].session_id, SESSION);
+    // On a clean run the client says goodbye with the right session, more
+    // than once (one may get lost).
+    assert_eq!(seen.byes.len(), 3);
+    assert!(seen.byes.iter().all(|b| b.session_id == SESSION));
 }
 
 #[test]

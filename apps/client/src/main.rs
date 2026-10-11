@@ -312,6 +312,9 @@ fn main() -> anyhow::Result<()> {
         ..ClientConfig::default()
     };
     let stop = Arc::new(AtomicBool::new(false));
+    // Before any thread starts: Ctrl+C (or SIGTERM) ends the session with a
+    // goodbye, so nothing stays pressed on the host.
+    fernsicht_core::signal::stop_on_signals(stop.clone())?;
     let (commands_tx, commands) = crossbeam_channel::unbounded();
     if args.app {
         let (stop, muted) = (stop.clone(), cfg.muted.clone());
@@ -518,7 +521,9 @@ mod window {
             if let Some(input) = &self.input {
                 input.release_all();
             }
-            self.stop.store(true, Ordering::Relaxed);
+            // Release: the network thread sends the releases queued above
+            // before it says goodbye.
+            self.stop.store(true, Ordering::Release);
             event_loop.exit();
         }
 
@@ -717,11 +722,16 @@ mod window {
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     // In gaming mode the first click captures the pointer
-                    // and stays here.
-                    if self.gaming && !self.captured && self.input.is_some() {
-                        if state == ElementState::Pressed {
-                            self.capture(true);
-                        }
+                    // and stays here. A release still goes on: the button
+                    // may have been pressed before the pointer was let go
+                    // (Ctrl+Alt+Shift+M), and must not stay down on the
+                    // host (a release of a button that is up does nothing).
+                    if self.gaming
+                        && !self.captured
+                        && self.input.is_some()
+                        && state == ElementState::Pressed
+                    {
+                        self.capture(true);
                         return;
                     }
                     if let (Some(input), Some(code)) = (&self.input, mouse_button(button)) {

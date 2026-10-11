@@ -124,10 +124,14 @@ describe("Web-Viewer am Host", () => {
   it("sends mouse and keyboard to the host", async () => {
     const { pc, screenEl } = await connected();
     const sent = () => pc.channel.sent;
+    const capture = vi.fn();
+    Object.assign(screenEl, { setPointerCapture: capture });
     fireEvent.pointerMove(screenEl, { clientX: 0, clientY: 0 });
     expect(sent().at(-1)).toEqual({ t: "m", x: 0, y: 0 });
-    fireEvent.pointerDown(screenEl, { button: 0 });
+    fireEvent.pointerDown(screenEl, { button: 0, pointerId: 7 });
     expect(sent().at(-1)).toEqual({ t: "b", c: 0x110, p: true });
+    // The release comes to the picture even over the toolbar.
+    expect(capture).toHaveBeenCalledWith(7);
     fireEvent.pointerUp(screenEl, { button: 2 });
     expect(sent().at(-1)).toEqual({ t: "b", c: 0x111, p: false });
     fireEvent.pointerDown(screenEl, { button: 9 });
@@ -222,6 +226,10 @@ describe("Web-Viewer am Host", () => {
     fireEvent.pointerDown(screenEl, { button: 0 });
     expect(pc.channel.sent.at(-1)).toEqual({ t: "b", c: 0x110, p: true });
     Reflect.deleteProperty(document, "pointerLockElement");
+    // Esc let the pointer go with the button still down: its release still
+    // reaches the host.
+    fireEvent.pointerUp(screenEl, { button: 0 });
+    expect(pc.channel.sent.at(-1)).toEqual({ t: "b", c: 0x110, p: false });
   });
 
   it("a finger taps where it is, and works as a touchpad in gaming mode", async () => {
