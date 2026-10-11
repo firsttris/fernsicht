@@ -122,7 +122,8 @@ export function LiveSessionPage({
       onModeChange={onModeChange}
       onMuteChange={setMuted}
       fullscreen={fullscreen}
-      onFullscreenChange={setFullscreen}
+      // No button where pages cannot go full screen (the iPhone).
+      onFullscreenChange={document.fullscreenEnabled ? setFullscreen : undefined}
       monitors={monitors}
       onSelectMonitor={(i) => session.send({ t: "monitor", i })}
       onShowKeyboard={() => keyboard.current?.focus()}

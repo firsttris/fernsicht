@@ -17,8 +17,8 @@ ones first:
 
 - **Online / Offline**, the operating system, the GPU and its best codec, “Kopplung offen” (pairing
   open, a PIN is shown there now) and “In Benutzung” (in use by someone else).
-- Search by name or address (“Name oder Adresse suchen …”), filter with “Alle”, “Online”,
-  “Favoriten” (all, online, favourites).
+- Search by name or address (“Name oder Adresse suchen …”), filter with “Alle” or “Online” (all,
+  online).
 - **Desktop** and **Gaming** start a session in that mode.
 - “Gerät vergessen” (forget device) removes a paired host here; it has to be paired again.
 - The list refreshes every 5 seconds. The computer's own host is not listed: it is “Dieser Rechner”
@@ -134,4 +134,6 @@ the host (buttons are let go, sticks centred).
 With a host on this computer there is one more section, “Dieser Rechner als Host” (this computer as
 host): “Grafikkarte während Sitzungen hochtakten” (raise the GPU's clocks during sessions). Between
 two frames a GPU clocks down and the next frame takes longer to encode; while a session runs the
-host keeps it at full clocks and restores everything afterwards (AMD and Intel).
+host keeps it at full clocks and restores everything afterwards (AMD and Intel). Below it, “Gekoppelte Geräte” (paired devices) lists the devices that may connect to this
+computer; “Entfernen” (remove) forgets one, ends its session if it has one, and it has to be
+paired again.

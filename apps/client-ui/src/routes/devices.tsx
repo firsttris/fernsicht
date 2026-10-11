@@ -21,7 +21,7 @@ import { useMemo, useRef, useState } from "react";
 
 import { actions, devicesQuery, errorText, inApp } from "../lib/api";
 
-type Filter = "all" | "online" | "favorites";
+type Filter = "all" | "online";
 
 export function DevicesPage() {
   const { data: devices, isPending, isError } = useQuery(devicesQuery);
@@ -41,7 +41,6 @@ export function DevicesPage() {
     const qDigits = q.replace(/\s/g, "");
     return (devices ?? []).filter((d) => {
       if (filter === "online" && !d.online) return false;
-      if (filter === "favorites" && !d.favorite) return false;
       if (!q) return true;
       return (
         d.name.toLowerCase().includes(q) ||
@@ -99,7 +98,6 @@ export function DevicesPage() {
           options={[
             { value: "all", label: "Alle" },
             { value: "online", label: "Online" },
-            { value: "favorites", label: "Favoriten" },
           ]}
         />
       </div>

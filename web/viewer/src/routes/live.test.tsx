@@ -10,11 +10,13 @@ import { FakePeerConnection, installFakes } from "../test-rtc";
 import { renderViewer } from "../test-utils";
 
 let pinOk = true;
+let pairing = true;
 
 beforeEach(() => {
   pinOk = true;
+  pairing = true;
   installFakes((path) => {
-    if (path === "/api/info") return { status: 200, body: { name: "zentrale", pairing: true } };
+    if (path === "/api/info") return { status: 200, body: { name: "zentrale", pairing } };
     return pinOk
       ? {
           status: 200,
@@ -79,6 +81,18 @@ describe("Web-Viewer am Host", () => {
     await user.clear(screen.getByLabelText("PIN"));
     await user.type(screen.getByLabelText("PIN"), "123{Enter}");
     expect(submit).toBeDisabled();
+  });
+
+  it("says when the host shows no PIN yet", async () => {
+    pairing = false;
+    await renderViewer("/");
+    expect(await screen.findByText(/keine Kopplung offen/)).toBeVisible();
+  });
+
+  it("offers full screen only where the browser has it", async () => {
+    await connected();
+    // jsdom, like the iPhone's Safari, has no full screen for pages.
+    expect(screen.queryByRole("button", { name: "Vollbild" })).not.toBeInTheDocument();
   });
 
   it("says when the PIN is wrong", async () => {

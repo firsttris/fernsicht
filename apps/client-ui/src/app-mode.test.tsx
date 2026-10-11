@@ -60,6 +60,15 @@ vi.mock("@tauri-apps/api/core", () => ({
           service: { ...service(), installed: true, active: true, version: "0.2.0" },
         };
         return null;
+      case "unpair_from_host": {
+        const { device } = args as { device: string };
+        const h = backend.thisMachine.host!;
+        backend.thisMachine = {
+          ...backend.thisMachine,
+          host: { ...h, paired: h.paired.filter((p) => p.key !== device) },
+        };
+        return null;
+      }
       case "stop_sharing":
         backend.thisMachine = { ...backend.thisMachine, host: null, service: service() };
         return null;
@@ -78,7 +87,6 @@ const zentrale = (over: Partial<Device> = {}): Device => ({
   id: "k1",
   name: "zentrale",
   online: true,
-  favorite: false,
   os: "Bazzite",
   gpu: "Radeon RX 7700 XT / 7800 XT · H.264",
   paired: true,
@@ -417,6 +425,14 @@ describe("Desktop-App", () => {
     await waitFor(() =>
       expect(screen.getByRole("checkbox", { name: "Hochtakten" })).not.toBeChecked(),
     );
+  });
+
+  it("removes a device paired with this computer", async () => {
+    backend.thisMachine = { name: "zentrale", host: host() };
+    const { user } = await renderApp("/settings");
+    await user.click(await screen.findByRole("button", { name: "zentrale entfernen" }));
+    expect(called("unpair_from_host")).toEqual([["unpair_from_host", { device: "bbbb" }]]);
+    expect(await screen.findByText("Noch keine.")).toBeInTheDocument();
   });
 
   it("shows no host settings without a host", async () => {

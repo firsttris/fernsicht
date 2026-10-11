@@ -1,4 +1,4 @@
-import { Segmented } from "@fernsicht/ui";
+import { Button, Segmented } from "@fernsicht/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -128,10 +128,9 @@ export function SettingsPage() {
 function HostSettings() {
   const queryClient = useQueryClient();
   const { data } = useQuery(thisMachineQuery);
-  const boost = useMutation({
-    mutationFn: actions.setGpuBoost,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["this-machine"] }),
-  });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["this-machine"] });
+  const boost = useMutation({ mutationFn: actions.setGpuBoost, onSuccess: refresh });
+  const unpair = useMutation({ mutationFn: actions.unpairFromHost, onSuccess: refresh });
   const host = data?.host;
   if (!host) return null;
   return (
@@ -155,6 +154,39 @@ function HostSettings() {
       {boost.isError && (
         <p role="alert" className="m-0 text-xs text-muted-foreground">
           {errorText(boost.error)}
+        </p>
+      )}
+      <Setting
+        title="Gekoppelte Geräte"
+        hint="Diese Geräte dürfen sich mit diesem Rechner verbinden. Ein entferntes Gerät muss neu gekoppelt werden; läuft gerade eine Sitzung mit ihm, endet sie."
+      >
+        {host.paired.length === 0 ? (
+          <p className="m-0 text-muted-foreground">Noch keine.</p>
+        ) : (
+          <ul className="m-0 flex list-none flex-col gap-2 p-0">
+            {host.paired.map((d) => (
+              <li key={d.key} className="flex items-center justify-between gap-3">
+                <span className="flex flex-col">
+                  <span className="font-medium">{d.name}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{d.key}</span>
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={unpair.isPending}
+                  aria-label={`${d.name} entfernen`}
+                  onClick={() => unpair.mutate(d.key)}
+                >
+                  Entfernen
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Setting>
+      {unpair.isError && (
+        <p role="alert" className="m-0 text-xs text-muted-foreground">
+          {errorText(unpair.error)}
         </p>
       )}
     </section>

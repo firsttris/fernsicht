@@ -2,8 +2,8 @@ import type { SessionMode } from "../types";
 
 /** The session modes, the first the usual one. */
 export const SESSION_MODES: readonly { mode: SessionMode; label: string; hint: string }[] = [
-  { mode: "desktop", label: "Desktop", hint: "Steuern, Dateien, Zwischenablage" },
-  { mode: "gaming", label: "Gaming", hint: "Pointer-Lock, Gamepad, Ton" },
+  { mode: "desktop", label: "Desktop", hint: "Maus und Tastatur, der Zeiger bleibt frei" },
+  { mode: "gaming", label: "Gaming", hint: "Zeiger gefangen (Pointer-Lock), Gamepads" },
 ];
 
 /** A session page's search: the mode, desktop unless it says gaming. */

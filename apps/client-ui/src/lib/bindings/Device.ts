@@ -7,7 +7,7 @@ export type Device = {
 /**
  * The host key's fingerprint.
  */
-id: string, name: string, online: boolean, favorite: boolean, os: string, gpu: string, paired: boolean, 
+id: string, name: string, online: boolean, os: string, gpu: string, paired: boolean, 
 /**
  * Pairing is open there.
  */

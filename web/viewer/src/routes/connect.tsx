@@ -27,6 +27,8 @@ export const hostInfoQuery = {
   queryFn: fetchHostInfo,
   staleTime: Infinity,
   retry: false,
+  // Whether the host shows a PIN changes while the page is open.
+  refetchInterval: 3000,
 } as const;
 
 export function ConnectPage() {
@@ -125,6 +127,11 @@ function HostForm({ host }: { host: HostInfo }) {
       </div>
 
       <PinField id="pin" value={pin} onChange={setPin} />
+      {!host.pairing && (
+        <p className="m-0 text-xs leading-normal text-muted-foreground">
+          Am Host ist gerade keine Kopplung offen: dort zuerst „Gerät koppeln“ wählen.
+        </p>
+      )}
 
       <ModeChoice mode={mode} onChange={setMode} />
 

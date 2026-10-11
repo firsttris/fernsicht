@@ -69,7 +69,6 @@ export const deviceQuery = (id: string) =>
           id,
           name: id.replace(/(\d{3})(?=\d)/g, "$1 "),
           online: true,
-          favorite: false,
           os: "",
           gpu: "",
         }
@@ -162,6 +161,9 @@ export const actions = {
   openPairing: () => invoke<PairingOpened>("open_pairing"),
   share: () => invoke<void>("share_this_machine"),
   setGpuBoost: (on: boolean) => invoke<void>("set_gpu_boost", { on }),
+  /** Removes a device paired with this computer's host (by its key); its
+   * session ends. */
+  unpairFromHost: (device: string) => invoke<void>("unpair_from_host", { device }),
   stopSharing: () => invoke<void>("stop_sharing"),
 };
 

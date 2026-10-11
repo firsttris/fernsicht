@@ -11,7 +11,6 @@ export interface Device {
   id: string;
   name: string;
   online: boolean;
-  favorite: boolean;
   os: string;
   /** GPU and best available encoder, e.g. "RX 7800 XT · AV1". */
   gpu: string;

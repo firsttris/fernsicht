@@ -249,10 +249,6 @@ export class TouchController {
     this.zoom = scale === 1 ? NO_ZOOM : { scale, x, y };
     this.act({ kind: "zoom", zoom: this.zoom });
   }
-
-  resetZoom() {
-    this.setZoom(NO_ZOOM);
-  }
 }
 
 function dist(a: Point, b: Point) {

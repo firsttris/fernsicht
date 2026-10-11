@@ -1,5 +1,4 @@
 import {
-  ClipboardList,
   Keyboard,
   MousePointer2,
   ZoomOut,
@@ -7,8 +6,6 @@ import {
   Minimize,
   Monitor,
   MonitorPlay,
-  Settings2,
-  Upload,
   Volume2,
   VolumeX,
 } from "lucide-react";
@@ -195,12 +192,6 @@ export function SessionView({
                   }))}
                 />
               )}
-              <Button size="icon" variant="ghost" aria-label="Zwischenablage">
-                <ClipboardList size={16} />
-              </Button>
-              <Button size="icon" variant="ghost" aria-label="Dateien senden">
-                <Upload size={16} />
-              </Button>
               <Button
                 size="icon"
                 variant="ghost"
@@ -224,9 +215,6 @@ export function SessionView({
                   {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
                 </Button>
               )}
-              <Button size="icon" variant="ghost" aria-label="Einstellungen">
-                <Settings2 size={16} />
-              </Button>
               <Divider />
               <Button size="sm" variant="destructive" onClick={onDisconnect}>
                 Trennen

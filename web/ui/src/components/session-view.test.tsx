@@ -224,15 +224,7 @@ describe("SessionView", () => {
       onSendKeys: vi.fn(),
       onFullscreenChange: vi.fn(),
     });
-    for (const name of [
-      "Bildschirm wählen",
-      "Tasten senden",
-      "Zwischenablage",
-      "Dateien senden",
-      "Ton ausschalten",
-      "Vollbild",
-      "Einstellungen",
-    ]) {
+    for (const name of ["Bildschirm wählen", "Tasten senden", "Ton ausschalten", "Vollbild"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
   });

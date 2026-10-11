@@ -8,7 +8,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
 
 pub struct Slot<T> {
     value: Mutex<SlotState<T>>,
@@ -71,24 +70,10 @@ impl<T> Slot<T> {
         }
     }
 
-    /// Like [`take`](Self::take) but gives up after `timeout`.
-    pub fn take_timeout(&self, timeout: Duration) -> Option<T> {
-        let state = self.value.lock().unwrap();
-        let (mut state, _) = self
-            .ready
-            .wait_timeout_while(state, timeout, |s| s.value.is_none() && !s.closed)
-            .unwrap();
-        state.value.take()
-    }
-
     /// Wakes the consumer; subsequent `take` calls return `None` once empty.
     pub fn close(&self) {
         self.value.lock().unwrap().closed = true;
         self.ready.notify_all();
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.value.lock().unwrap().closed
     }
 
     /// Number of values that were replaced before the consumer took them.
@@ -102,6 +87,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn latest_value_wins() {
@@ -136,13 +122,5 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
         slot.close();
         assert_eq!(consumer.join().unwrap(), None);
-    }
-
-    #[test]
-    fn take_timeout_expires() {
-        let slot = Slot::<u32>::new();
-        assert_eq!(slot.take_timeout(Duration::from_millis(5)), None);
-        slot.put(7);
-        assert_eq!(slot.take_timeout(Duration::from_millis(5)), Some(7));
     }
 }

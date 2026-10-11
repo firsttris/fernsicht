@@ -96,8 +96,6 @@ impl Frame {
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
-    #[error("capture source stopped")]
-    Stopped,
     #[error("frame buffer does not match source format")]
     FormatMismatch,
     #[error("capture backend: {0}")]

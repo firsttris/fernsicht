@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { LONG_PRESS_MS, NO_ZOOM, TouchController, type TouchMode, type Zoom } from "./touch";
+import { LONG_PRESS_MS, TouchController, type TouchMode, type Zoom } from "./touch";
 
 /** A controller over a 1000×500 box whose picture fills it exactly. */
 function setup(mode: TouchMode = "direct") {
@@ -153,9 +153,6 @@ describe("TouchController, two fingers", () => {
     expect(sent).toEqual([]);
     c.cancel(1);
     c.cancel(2);
-
-    c.resetZoom();
-    expect(zooms.at(-1)).toEqual(NO_ZOOM);
   });
 
   it("never pans past the picture's edge", () => {

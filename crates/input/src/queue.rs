@@ -240,11 +240,6 @@ impl InputQueue {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-
-    /// Keys and buttons held right now.
-    pub fn held(&self) -> impl Iterator<Item = u16> + '_ {
-        self.held.iter().copied()
-    }
 }
 
 #[cfg(test)]
@@ -381,9 +376,7 @@ mod tests {
             pressed: true,
         });
         q.push(key(30, false)); // never pressed
-        assert_eq!(q.held().collect::<Vec<_>>(), vec![42, 0x110]);
         q.release_all();
-        assert_eq!(q.held().count(), 0);
         let out: Vec<InputEvent> = q
             .due(Instant::now())
             .unwrap()

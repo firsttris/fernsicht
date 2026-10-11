@@ -42,13 +42,12 @@ describe("Geräte", () => {
     expect(screen.getByText("Keine Geräte gefunden.")).toBeInTheDocument();
   });
 
-  it("filters online devices and favourites", async () => {
+  it("filters online devices", async () => {
     const { user } = await renderApp("/devices");
     await cards();
     await user.click(screen.getByRole("radio", { name: "Online" }));
     expect(names(screen.getAllByRole("article"))).toEqual(["zentrale", "heimserver"]);
-    await user.click(screen.getByRole("radio", { name: "Favoriten" }));
-    expect(names(screen.getAllByRole("article"))).toEqual(["zentrale", "werkstatt-pc"]);
+    expect(screen.queryByRole("radio", { name: "Favoriten" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: "Alle" }));
     expect(screen.getAllByRole("article")).toHaveLength(4);
   });
