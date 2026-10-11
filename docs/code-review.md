@@ -540,7 +540,15 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   `apps/desktop/src/share.rs:79-88`.
 - **Fix:** `CapabilityBoundingSet`, `DevicePolicy=closed` with `DeviceAllow`, `ProtectSystem=strict`,
   `ProtectHome=read-only`, `ProtectKernel*`, `RestrictNamespaces`, `SystemCallFilter`, `UMask=0077`.
-- **Status:** open
+- **Status:** partly fixed; the rest needs a live test as root. Added: `CapabilityBoundingSet`
+  (SYS_ADMIN, DAC_OVERRIDE, DAC_READ_SEARCH, SYS_NICE, NET_ADMIN), `ProtectSystem=strict`,
+  `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectHostname`, `RestrictNamespaces`,
+  `RestrictSUIDSGID`, `SystemCallArchitectures=native`, `UMask=0077` (`systemd-analyze verify`
+  passes). Left out on purpose: `DeviceAllow`/`ProtectClock` (one entry closes DRM, NVIDIA and
+  uinput), `ProtectKernelTunables` (the GPU clocks are in /sys), `ProtectHome` and a
+  `SystemCallFilter` until the service has run with them on both machines (handover, live test 1).
+  The firewall rule stays in the default zone: with NetworkManager's defaults that is the zone of
+  every network anyway.
 
 ### B11 · The privileged install from the app
 

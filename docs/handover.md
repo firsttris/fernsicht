@@ -154,6 +154,10 @@ Confirmed live (2026-10-10, according to the user):
        `/run/user/1000/pulse/native`).
      - Monitor layout (KWin config of the desktop user).
      - Input via uinput.
+     - GPU clocks raised during a session and back afterwards.
+     - These with the hardened unit (review B10: capability bounding set,
+       `ProtectSystem=strict`): sound through the user's socket and the
+       GPU's sysfs clocks are the likeliest to need something more.
      - Log: `journalctl -u fernsicht-host -f`.
 2. **App on both machines.**
    - Install: `./packaging/build.sh && ./packaging/install-app.sh`.

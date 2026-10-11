@@ -23,12 +23,25 @@ StateDirectory=fernsicht
 StateDirectoryMode=0700
 RuntimeDirectory=fernsicht
 RuntimeDirectoryMode=0755
-# Hardening that leaves KMS, uinput and the desktop's sound working.
+# Hardening that leaves KMS, uinput, the GPU's clocks (/sys) and the
+# desktop's sound working. Only the capabilities it uses: KMS framebuffers
+# (SYS_ADMIN), /dev/uinput and the desktop user's sound socket and cookie
+# (DAC_*), thread priorities (SYS_NICE), large UDP buffers (NET_ADMIN).
+# Not DeviceAllow= (or ProtectClock=, which sets it): any entry closes all
+# other devices (DRM, NVIDIA, uinput); not ProtectKernelTunables=: /sys.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_NICE CAP_NET_ADMIN
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=full
+ProtectSystem=strict
 ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
 LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
