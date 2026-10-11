@@ -453,7 +453,13 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   victim from one 150-byte packet.
 - **Fix:** reject `sent_ms` far from the host clock and persist the last value per key; replace the
   session and start sending only after the first authenticated packet from the client.
-- **Status:** open
+- **Status:** fixed, in part differently: the link of a secure session sends nothing until the
+  client's first sealed packet (no amplification; the stream starts with a keyframe), and the last
+  handshake time per device is kept in `handshakes.json` next to the paired list (reset by pairing
+  again). A window against the host clock was left out: it would lock out clients whose clock is
+  off, and the persisted times already cover restarts. A live session can still be replaced by a
+  handshake captured undelivered and replayed before the device's next connection. Tests:
+  `nothing_is_sent_before_the_client_proves_its_keys`, `handshake_times_outlive_a_restart_and_reset_on_pairing`.
 
 ### B4 · Unauthenticated discovery answers rewrite a paired host's address
 

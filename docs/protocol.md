@@ -99,8 +99,9 @@ asked directly at their last known address.
    replayed recording is older than the last accepted one).
 2. The host checks the client's key against its paired list, picks the codec and answers with the
    second handshake message carrying the HelloAck.
-3. From then on everything is sealed. Without security (tests, `--state-dir` with no keys) Hello and
-   HelloAck are sent plain.
+3. From then on everything is sealed. The host sends nothing until the client's first sealed packet
+   (a clock ping, right away) proves it holds the keys; the stream then starts with a keyframe.
+   Without security (tests, `--state-dir` with no keys) Hello and HelloAck are sent plain.
 
 A new client replaces a running session; a session ends with Bye or after 5 s of silence.
 Errors that only cost packets (the network gone for a moment, a full buffer, a monitor in standby)

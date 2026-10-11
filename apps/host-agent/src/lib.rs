@@ -471,10 +471,18 @@ struct UdpLink {
     peer: SocketAddr,
     session_id: u32,
     crypto: Option<Arc<Transport>>,
+    /// The client proved it holds the session's keys (its first sealed
+    /// packet came). Until then nothing is sent: a replayed handshake from
+    /// a forged address would otherwise turn one small packet into seconds
+    /// of video at someone else.
+    confirmed: Arc<AtomicBool>,
 }
 
 impl UdpLink {
     fn send(&self, packet: &[u8]) -> std::io::Result<()> {
+        if !self.confirmed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let Some(crypto) = &self.crypto else {
             return self.socket.send_to(packet, self.peer).map(|_| ());
         };
@@ -491,6 +499,11 @@ impl UdpLink {
             .send_to(&buf[..SealedHeader::LEN + n], self.peer)
             .map(|_| ())
     }
+}
+
+/// Where the handshake times live: next to the paired list.
+fn handshakes_path(trusted: &Path) -> PathBuf {
+    trusted.with_file_name("handshakes.json")
 }
 
 /// How long pairing mode stays open, and how many wrong PINs it takes.
@@ -518,6 +531,10 @@ pub struct HostSecurity {
     /// Where the paired list is saved (none: kept in memory, tests).
     trusted_path: Option<PathBuf>,
     pairing: Mutex<Option<PairingWindow>>,
+    /// The newest handshake time (the client's clock, ms) per device: an
+    /// older or equal one is a replay. Kept next to the paired list, so a
+    /// restart does not forget it.
+    handshakes: Mutex<HashMap<PublicKey, u64>>,
 }
 
 impl std::fmt::Debug for HostSecurity {
@@ -533,12 +550,49 @@ impl HostSecurity {
         trusted: Trusted,
         trusted_path: Option<PathBuf>,
     ) -> Self {
+        let handshakes = trusted_path
+            .as_deref()
+            .map(handshakes_path)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<Vec<(PublicKey, u64)>>(&t).ok())
+            .map(|v| v.into_iter().collect())
+            .unwrap_or_default();
         Self {
             identity,
             name: name.to_owned(),
             trusted: Mutex::new(trusted),
             trusted_path,
             pairing: Mutex::new(None),
+            handshakes: Mutex::new(handshakes),
+        }
+    }
+
+    /// Whether a handshake of `key` sent at `sent_ms` (its clock) is newer
+    /// than the last one accepted: older or equal ones are replays.
+    fn handshake_is_new(&self, key: &PublicKey, sent_ms: u64) -> bool {
+        let times = self.handshakes.lock().unwrap_or_else(|e| e.into_inner());
+        times.get(key).is_none_or(|&t| sent_ms > t)
+    }
+
+    /// Notes an accepted handshake, also on disk.
+    fn note_handshake(&self, key: PublicKey, sent_ms: u64) {
+        let mut times = self.handshakes.lock().unwrap_or_else(|e| e.into_inner());
+        times.insert(key, sent_ms);
+        self.save_handshakes(&times);
+    }
+
+    fn save_handshakes(&self, times: &HashMap<PublicKey, u64>) {
+        let Some(path) = self.trusted_path.as_deref().map(handshakes_path) else {
+            return;
+        };
+        let list: Vec<(&PublicKey, &u64)> = times.iter().collect();
+        let tmp = path.with_extension("json.tmp");
+        let saved = serde_json::to_string(&list)
+            .map_err(std::io::Error::other)
+            .and_then(|t| std::fs::write(&tmp, t))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = saved {
+            log::warn!("saving handshake times: {e}");
         }
     }
 
@@ -593,6 +647,13 @@ impl HostSecurity {
     }
 
     fn add(&self, peer: Peer) {
+        // Paired anew: its clock may have been set back meanwhile.
+        {
+            let mut times = self.handshakes.lock().unwrap_or_else(|e| e.into_inner());
+            if times.remove(&peer.key).is_some() {
+                self.save_handshakes(&times);
+            }
+        }
         let mut t = self.trusted.lock().unwrap_or_else(|e| e.into_inner());
         t.add(peer);
         if let Some(path) = &self.trusted_path
@@ -602,8 +663,8 @@ impl HostSecurity {
         }
     }
 
-    /// The PIN if pairing is open; counts the attempt.
-    /// Uses up an attempt: the PIN and the window's generation.
+    /// The PIN and the window's generation if pairing is open; uses up an
+    /// attempt.
     fn pairing_attempt(&self) -> Result<(String, u64), RejectReason> {
         let mut w = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
         match w.as_mut() {
@@ -746,8 +807,6 @@ impl HostAgent {
         let mut out = [0u8; MAX_DATAGRAM];
         let mut session: Option<Session> = None;
         let mut pairing: Option<PairingExchange> = None;
-        // Newest handshake per client (its clock, ms): older ones are replays.
-        let mut handshake_times: HashMap<PublicKey, u64> = HashMap::new();
         let mut announce_budget = AnnounceBudget::new(Instant::now());
         let control_stop = Arc::new(AtomicBool::new(false));
         let control = match (&self.cfg.control, &self.cfg.security) {
@@ -841,6 +900,13 @@ impl HostAgent {
             };
             if authentic && let Some(s) = session.as_mut() {
                 s.last_seen = Instant::now();
+                if let Link::Udp(l) = &s.link
+                    && !l.confirmed.swap(true, Ordering::AcqRel)
+                {
+                    // The stream starts now, with a picture of its own.
+                    s.shared.keyframe_requested.store(true, Ordering::Relaxed);
+                    log::debug!("session {:08x}: client confirmed", s.params.session_id);
+                }
             }
 
             match packet {
@@ -868,13 +934,7 @@ impl HostAgent {
                     let _ = self.socket.send_to(&out[..n], from);
                 }
                 Packet::Handshake(h) if !h.reply => {
-                    self.on_handshake(
-                        h.message,
-                        from,
-                        &mut session,
-                        &mut handshake_times,
-                        &mut out,
-                    );
+                    self.on_handshake(h.message, from, &mut session, &mut out);
                 }
                 Packet::Pair(p) => self.on_pair(p, from, &mut pairing, &mut out),
                 Packet::Discover(d) => {
@@ -1051,7 +1111,6 @@ impl HostAgent {
         msg: &[u8],
         from: SocketAddr,
         session: &mut Option<Session>,
-        times: &mut HashMap<PublicKey, u64>,
         out: &mut [u8],
     ) {
         let Some(sec) = &self.cfg.security else {
@@ -1090,7 +1149,7 @@ impl HostAgent {
         let Some((hello, sent_ms)) = Hello::decode_with_time(&responder.payload) else {
             return;
         };
-        if times.get(&client.key).is_some_and(|&t| sent_ms <= t) {
+        if !sec.handshake_is_new(&client.key, sent_ms) {
             log::warn!("{from}: replayed handshake of {} dropped", client.name);
             return;
         }
@@ -1104,7 +1163,7 @@ impl HostAgent {
             Ok((mut s, Some(reply))) => {
                 // Noted only now: had the start failed, a later try with
                 // the same handshake would count as a replay.
-                times.insert(client.key, sent_ms);
+                sec.note_handshake(client.key, sent_ms);
                 log_session(&s, &format!("{} ({from})", client.name));
                 self.set_status(Some(&s), &client.name);
                 let n = Handshake {
@@ -1384,6 +1443,8 @@ impl HostAgent {
                 socket: self.socket.clone(),
                 peer,
                 session_id: params.session_id,
+                // A plain session (tests) has no keys to prove.
+                confirmed: Arc::new(AtomicBool::new(crypto.is_none())),
                 crypto,
             }),
         };
@@ -2481,6 +2542,7 @@ mod tests {
             socket,
             session_id: 1,
             crypto: None,
+            confirmed: Arc::new(AtomicBool::new(true)),
         });
         let mut cursor = CursorSender::new(link, 1, (2560, 1440));
 
@@ -2660,6 +2722,42 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&sys).unwrap();
+    }
+
+    #[test]
+    fn handshake_times_outlive_a_restart_and_reset_on_pairing() {
+        let dir = std::env::temp_dir().join(format!("fernsicht-hs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = || {
+            HostSecurity::new(
+                Identity::generate(),
+                "zentrale",
+                Trusted::default(),
+                Some(dir.join("clients.json")),
+            )
+        };
+        let client = Identity::generate().public;
+        let sec = open();
+        assert!(sec.handshake_is_new(&client, 1000));
+        sec.note_handshake(client, 1000);
+        assert!(
+            !sec.handshake_is_new(&client, 1000),
+            "the same again: a replay"
+        );
+        // After a restart the replay is still recognized.
+        let sec = open();
+        assert!(!sec.handshake_is_new(&client, 999));
+        assert!(sec.handshake_is_new(&client, 1001));
+        // Paired anew (its clock may have been set back): forgotten.
+        sec.add(Peer {
+            key: client,
+            name: "bazzite".into(),
+            address: None,
+            paired_at: 0,
+        });
+        assert!(open().handshake_is_new(&client, 5));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

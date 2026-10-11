@@ -40,8 +40,11 @@ pattern WireGuard uses):
 - The client knows the host's key from pairing and sends its own key encrypted in the first message,
   so the host checks it against its paired list before answering. Unknown clients get a Reject.
 - One round trip; both sides end up with fresh keys (forward secrecy). The payloads of both messages
-  are encrypted too: the Hello with the client's wall clock (a replayed recording of an old handshake
-  is refused) and the HelloAck.
+  are encrypted too: the Hello with the client's wall clock and the HelloAck. A handshake not newer
+  than the last one accepted from that device is a replay and is refused; the times are kept with
+  the paired list, so a restart does not forget them (pairing a device again resets its time).
+- The host sends nothing to a new session until the client's first sealed packet proves it holds the
+  keys. A handshake replayed from a forged address therefore cannot point a video stream at someone.
 
 ## Sealed packets
 

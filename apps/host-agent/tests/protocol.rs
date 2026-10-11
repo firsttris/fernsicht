@@ -854,8 +854,32 @@ mod secure {
         Ok(p.on_done(&m4).map_err(|e| e.to_string())?.key)
     }
 
-    /// Handshake as `client`; returns the session's keys and the ack.
+    /// Handshake as `client`, then a first sealed packet (a clock ping, as
+    /// the real client sends at once): the host streams only to a client
+    /// that proved it has the keys. Returns the session's keys and the ack.
     fn connect(
+        peer: &mut Peer,
+        client: &Identity,
+        host: &fernsicht_secure::PublicKey,
+        ms: u64,
+    ) -> Option<(Transport, HelloAck, Vec<u8>)> {
+        let (t, ack, m1) = connect_unconfirmed(peer, client, host, ms)?;
+        let mut b = [0u8; MAX_DATAGRAM];
+        let n = ClockPing {
+            seq: 0,
+            client_send_us: 0,
+        }
+        .encode(&mut b);
+        let sealed = seal(&t, ack.session_id, &b[..n]);
+        peer.send(|out| {
+            out[..sealed.len()].copy_from_slice(&sealed);
+            sealed.len()
+        });
+        Some((t, ack, m1))
+    }
+
+    /// The handshake alone.
+    fn connect_unconfirmed(
         peer: &mut Peer,
         client: &Identity,
         host: &fernsicht_secure::PublicKey,
@@ -1067,6 +1091,50 @@ mod secure {
             "TooManyAttempts"
         );
         assert!(sec.paired().is_empty());
+        host.shutdown();
+    }
+
+    #[test]
+    fn nothing_is_sent_before_the_client_proves_its_keys() {
+        // A replayed handshake from a forged address must not make the host
+        // stream at that address: it waits for a sealed packet.
+        let sec = security();
+        sec.open_pairing("000000");
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        let key = pair(&mut peer, &client, "000000").unwrap();
+        let (t, ack, _) = connect_unconfirmed(&mut peer, &client, &key, 1).unwrap();
+        let early = peer.wait_for(Duration::from_millis(500), |p| match p {
+            Packet::Sealed(..) => Some(()),
+            _ => None,
+        });
+        assert!(
+            early.is_none(),
+            "the host sent before the client proved its keys"
+        );
+        // The first sealed packet: the stream starts.
+        let mut b = [0u8; MAX_DATAGRAM];
+        let n = ClockPing {
+            seq: 1,
+            client_send_us: 0,
+        }
+        .encode(&mut b);
+        let sealed = seal(&t, ack.session_id, &b[..n]);
+        peer.send(|out| {
+            out[..sealed.len()].copy_from_slice(&sealed);
+            sealed.len()
+        });
+        assert!(
+            peer.wait_for(Duration::from_secs(2), |p| match p {
+                Packet::Sealed(..) => Some(()),
+                _ => None,
+            })
+            .is_some()
+        );
         host.shutdown();
     }
 
