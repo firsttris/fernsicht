@@ -43,7 +43,7 @@ jobs:
     runs-on: [self-hosted, linux, "gpu-${{ matrix.gpu }}"]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: GPU capabilities and hardware H.264 smoke test
         run: dev/gpu-check.sh --expect ${{ matrix.gpu }} --summary "$GITHUB_STEP_SUMMARY"
       # Everything but the GPU's own tests, in parallel. fernsicht-gpu runs

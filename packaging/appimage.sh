@@ -39,11 +39,17 @@ done
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 out=target/release/bundle/appimage/Fernsicht-$version-x86_64.AppImage
-tool=../../target/tools/appimagetool
-if [ ! -x "$tool" ]; then
+# appimagetool, a fixed release, checked against the digest GitHub publishes
+# for it: what packs the release must not change under us.
+tool_version=1.9.1
+tool_sha256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+tool=../../target/tools/appimagetool-$tool_version
+if ! echo "$tool_sha256  $tool" | sha256sum --check --quiet --status 2>/dev/null; then
     mkdir -p ../../target/tools
-    curl -fsSL -o "$tool" \
-        https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+    curl -fsSL -o "$tool.part" \
+        "https://github.com/AppImage/appimagetool/releases/download/$tool_version/appimagetool-x86_64.AppImage"
+    echo "$tool_sha256  $tool.part" | sha256sum --check --quiet
+    mv "$tool.part" "$tool"
     chmod +x "$tool"
 fi
 ARCH=x86_64 "$tool" --appimage-extract-and-run --no-appstream "$appdir" "$out"

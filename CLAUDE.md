@@ -82,7 +82,8 @@ Functional, not object-oriented:
 
 ## Checks
 
-Green before every push:
+Green before every push: `scripts/check.sh` runs all of the following that needs no GPU
+(`--quick` leaves out the end-to-end and browser tests while working):
 
 ```sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings

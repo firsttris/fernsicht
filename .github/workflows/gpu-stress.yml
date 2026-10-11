@@ -28,7 +28,7 @@ jobs:
     runs-on: [self-hosted, linux, "gpu-${{ inputs.gpu }}"]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build the tests
         run: cargo test -p fernsicht-render --features vulkan --test vulkan --no-run
       # The job runs as the container's root; gdb stays until the runner

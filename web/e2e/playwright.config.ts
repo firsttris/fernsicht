@@ -4,6 +4,11 @@ const CLIENT = "http://localhost:4301";
 const VIEWER = "http://localhost:4302";
 
 // Browser E2E against production builds of both apps (vite preview).
+/** Builds the UI before serving it, unless CI brought it built
+ * (FERNSICHT_UI_BUILT). */
+const build = (pkg: string) =>
+  process.env.FERNSICHT_UI_BUILT ? "" : `pnpm --filter ${pkg} build && `;
+
 export default defineConfig({
   testDir: "tests",
   fullyParallel: true,
@@ -22,15 +27,13 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command:
-        "pnpm --filter @fernsicht/client-ui build && pnpm --filter @fernsicht/client-ui preview --port 4301 --strictPort",
+      command: `${build("@fernsicht/client-ui")}pnpm --filter @fernsicht/client-ui preview --port 4301 --strictPort`,
       url: CLIENT,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
     {
-      command:
-        "pnpm --filter @fernsicht/viewer build && pnpm --filter @fernsicht/viewer preview --port 4302 --strictPort",
+      command: `${build("@fernsicht/viewer")}pnpm --filter @fernsicht/viewer preview --port 4302 --strictPort`,
       url: VIEWER,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,

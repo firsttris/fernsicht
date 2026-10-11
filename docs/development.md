@@ -89,7 +89,8 @@ See [installation](installation.md) for the details.
 
 ## Checks
 
-What CI runs, to run before pushing:
+What CI runs without a GPU, to run before pushing; `scripts/check.sh` runs all of it (`--quick`
+leaves out the end-to-end and browser tests):
 
 ```sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
