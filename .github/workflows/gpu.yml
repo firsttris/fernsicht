@@ -47,7 +47,7 @@ jobs:
       - name: GPU capabilities and hardware H.264 smoke test
         run: dev/gpu-check.sh --expect ${{ matrix.gpu }} --summary "$GITHUB_STEP_SUMMARY"
       - name: Tests on this machine
-        run: cargo test --workspace --exclude fernsicht-e2e
+        run: scripts/annotate-failures.sh cargo test --workspace --exclude fernsicht-e2e
       # AMD: decoded pictures shown without a copy (DMA-BUF import);
       # NVIDIA: CPU upload and screen input (Vulkan → CUDA) on the
       # proprietary driver.

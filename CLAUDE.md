@@ -80,6 +80,7 @@ Green before every push:
 ```sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+PROPTEST_CASES=1024 cargo test --workspace --test properties   # CI's strength; rare cases fail there
 pnpm format:check && pnpm -r typecheck && pnpm test
 pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
 cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test

@@ -194,7 +194,8 @@ proptest! {
             let (at, d) = pacer::admit(debt, now, size, r, burst);
             prop_assert!(at >= now);
             if (i + 1) * size <= burst {
-                prop_assert_eq!(at, t);
+                // Each step rounds to whole nanoseconds.
+                prop_assert!(at - t <= Duration::from_nanos(i as u64 + 1), "{:?}", at - t);
             }
             (debt, now) = (Some(d), at);
         }

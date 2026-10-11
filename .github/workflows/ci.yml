@@ -70,7 +70,8 @@ jobs:
           echo 'SUBSYSTEM=="input", KERNEL=="event*", MODE="0666"' |
             sudo tee /etc/udev/rules.d/99-fernsicht-test.rules
           sudo udevadm control --reload-rules
-      - run: cargo test --workspace --exclude fernsicht-e2e --features fernsicht-input/uinput,fernsicht-input/gamepad
+      # Failed tests become annotations: readable without a login.
+      - run: scripts/annotate-failures.sh cargo test --workspace --exclude fernsicht-e2e --features fernsicht-input/uinput,fernsicht-input/gamepad
         env:
           PROPTEST_CASES: "1024"
           # libopus is loaded at runtime; the audio tests must not skip.
@@ -79,10 +80,10 @@ jobs:
           FERNSICHT_UINPUT_TEST: "1"
       # Builds the hardware tests; without a GPU they skip themselves (and
       # NVENC/NVDEC must fail cleanly without the NVIDIA driver).
-      - run: cargo test -p fernsicht-codec --features vaapi,nvidia
+      - run: scripts/annotate-failures.sh cargo test -p fernsicht-codec --features vaapi,nvidia
       # KMS capture: selection logic and error paths (capturing itself
       # needs a monitor and CAP_SYS_ADMIN, see docs/kms-capture.md).
-      - run: cargo test -p fernsicht-capture -p fernsicht-host-agent --features fernsicht-capture/kms,fernsicht-host-agent/kms
+      - run: scripts/annotate-failures.sh cargo test -p fernsicht-capture -p fernsicht-host-agent --features fernsicht-capture/kms,fernsicht-host-agent/kms
       # Vulkan renderer on the software rasterizer (llvmpipe): NV12 → RGB,
       # letterboxing, error paths. REQUIRE makes a missing driver a failure
       # instead of a silent skip.
@@ -120,7 +121,7 @@ jobs:
         run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - name: libopus (loaded at runtime by the sound tests)
         run: sudo apt-get update -q && sudo apt-get install -y -q libopus0
-      - run: cargo test -p fernsicht-e2e
+      - run: scripts/annotate-failures.sh cargo test -p fernsicht-e2e
         env:
           FERNSICHT_REQUIRE_OPUS: "1"
 

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 30ad3b81452e45a5dae80f2fbbb6f38b5e28c330d011e4fe08b3d7f6a3b9e3de # shrinks to packets = [(0, 4, 1, 0, 1, 1, 5, 2, 1)]
+cc 897fcac3a302b7c2d26c2b0855234b11462b7598c74495500ee67c59ba55e6ae # shrinks to rate = 404889229, n = 132, size = 2, burst = 202, budget_us = 1
