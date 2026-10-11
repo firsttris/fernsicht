@@ -1,8 +1,10 @@
 //! Property tests for FEC, reassembly, pacing and clock sync.
 
+use std::time::{Duration, Instant};
+
 use fernsicht_net::clock_sync::ClockSync;
 use fernsicht_net::fec::{MIN_RECOVERY_CAP, TARGET_GROUP_FAILURE, group_failure};
-use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, Pacer, Packetizer, Reassembler};
+use fernsicht_net::{FecConfig, FrameMeta, LossEstimator, Packetizer, Reassembler, pacer};
 use fernsicht_proto::{ClockPong, Packet, VideoHeader};
 use proptest::prelude::*;
 
@@ -178,18 +180,26 @@ proptest! {
         prop_assert!(group_failure(d, r + 1, p) <= f + 1e-12);
     }
 
-    /// Pacing offsets never decrease and stay inside the budget.
+    /// Paced packets never go earlier than the one before, the burst goes
+    /// at once, and a frame leaves within its budget.
     #[test]
     fn pacer_schedule_is_monotonic(rate in 1u64..1_000_000_000, n in 1usize..500,
-                                   size in 1usize..1500, budget in 0u64..50_000) {
-        let p = Pacer { rate_bytes_per_sec: rate, burst: 1 };
-        let mut prev = 0;
+                                   size in 1usize..1500, burst in 0usize..100_000,
+                                   budget_us in 1u64..50_000) {
+        let budget = Duration::from_micros(budget_us);
+        let r = pacer::rate_for(rate, burst, n * size, budget);
+        let t = Instant::now();
+        let (mut debt, mut now) = (None, t);
         for i in 0..n {
-            let off = p.offset_us(i, i * size, n, budget);
-            prop_assert!(off >= prev);
-            prop_assert!(off <= budget);
-            prev = off;
+            let (at, d) = pacer::admit(debt, now, size, r, burst);
+            prop_assert!(at >= now);
+            if (i + 1) * size <= burst {
+                prop_assert_eq!(at, t);
+            }
+            (debt, now) = (Some(d), at);
         }
+        // Rounding of the float rate: a microsecond per packet at most.
+        prop_assert!(now - t <= budget + Duration::from_micros(n as u64));
     }
 
     /// With a symmetric path the estimate is exact, whatever the offset.

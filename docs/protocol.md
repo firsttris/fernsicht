@@ -39,8 +39,12 @@ by property tests and a fuzz target ([testing](testing.md)).
   loss rate the client reports, so that a group fails with a probability of at most 10⁻⁵ (sized
   binomially). The estimate never drops below 1 % loss; recovery is capped at 50 % of a group, with
   at least 3 recovery shards allowed for tiny frames.
-- The **pacer** spreads a frame's datagrams over time: at link rate, but never later than an even
-  spread over the frame's budget, so switch and Wi-Fi buffers do not overflow.
+- A frame's **data shards go first**, all groups in order, then the recovery shards: without loss a
+  frame is complete with its last data shard.
+- The **pacer** is a token bucket: up to 64 KiB leave back-to-back (a P-frame usually fits whole and
+  goes at line rate), the rest at the pacing rate (`--pace-mbit`, 400 Mbit/s), so that switch and
+  Wi-Fi buffers do not overflow on keyframes. The bucket refills between frames. A frame too large
+  to leave within one frame interval at that rate goes faster, so the sender never falls behind.
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one.

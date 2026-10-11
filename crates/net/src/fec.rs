@@ -182,17 +182,16 @@ impl Packetizer {
             ..VideoHeader::default()
         };
 
+        // Data first, all groups, then their parity: without loss a frame is
+        // complete with its last data shard, not only after the parity of
+        // the groups before it.
         for group in 0..group_count {
-            let first_shard = group * self.cfg.max_data_per_group;
-            let data = (data_total - first_shard).min(self.cfg.max_data_per_group);
-            let recovery = self.cfg.recovery_for(data);
+            let (first_shard, data, recovery) = self.group(data_total, group);
             let offset = first_shard * shard;
             header.group_index = group as u16;
             header.group_offset = offset as u32;
             header.data_shards = data as u16;
             header.recovery_shards = recovery as u16;
-
-            let group_start = self.len;
             for i in 0..data {
                 let start = offset + i * shard;
                 let end = (start + shard).min(frame.len());
@@ -203,10 +202,16 @@ impl Packetizer {
                 payload[..end - start].copy_from_slice(&frame[start..end]);
                 payload[end - start..].fill(0);
             }
-
+        }
+        for group in 0..group_count {
+            let (first_shard, data, recovery) = self.group(data_total, group);
             if recovery == 0 {
                 continue;
             }
+            header.group_index = group as u16;
+            header.group_offset = (first_shard * shard) as u32;
+            header.data_shards = data as u16;
+            header.recovery_shards = recovery as u16;
             let encoder = match &mut self.encoder {
                 Some(enc) => {
                     enc.reset(data, recovery, shard)?;
@@ -216,7 +221,8 @@ impl Packetizer {
                     .encoder
                     .insert(ReedSolomonEncoder::new(data, recovery, shard)?),
             };
-            for pkt in &self.packets[group_start..group_start + data] {
+            // A group's data packets sit at its shard numbers.
+            for pkt in &self.packets[first_shard..first_shard + data] {
                 encoder.add_original_shard(&pkt[VideoHeader::LEN..])?;
             }
             let result = encoder.encode()?;
@@ -233,6 +239,14 @@ impl Packetizer {
             }
         }
         Ok(&self.packets[..self.len])
+    }
+
+    /// Group `group` of a frame with `data_total` data shards: its first
+    /// shard, data shards and recovery shards.
+    fn group(&self, data_total: usize, group: usize) -> (usize, usize, usize) {
+        let first = group * self.cfg.max_data_per_group;
+        let data = (data_total - first).min(self.cfg.max_data_per_group);
+        (first, data, self.cfg.recovery_for(data))
     }
 
     fn next_packet(&mut self) -> &mut Vec<u8> {
@@ -397,6 +411,32 @@ mod tests {
         }
         assert_eq!(groups, vec![(0, 10, 3), (640, 10, 3), (1280, 6, 2)]);
         assert_eq!(packets.len(), 10 + 3 + 10 + 3 + 6 + 2);
+    }
+
+    #[test]
+    fn data_goes_before_parity() {
+        let cfg = FecConfig {
+            shard_size: 64,
+            max_data_per_group: 10,
+            redundancy: 0.3,
+            loss: 0.0,
+            ..FecConfig::default()
+        };
+        let mut p = Packetizer::new(cfg).unwrap();
+        let packets = p.packetize(&meta(), &vec![7u8; 64 * 25 + 1]).unwrap();
+        let order: Vec<(u16, bool)> = packets
+            .iter()
+            .map(|pkt| {
+                let Packet::Video(h, _) = Packet::decode(pkt).unwrap() else {
+                    panic!()
+                };
+                (h.group_index, h.shard_index >= h.data_shards)
+            })
+            .collect();
+        // All 26 data shards in frame order, then the parity of each group.
+        assert!(order[..26].iter().all(|&(_, parity)| !parity));
+        assert!(order[26..].iter().all(|&(_, parity)| parity));
+        assert!(order.is_sorted_by_key(|&(g, parity)| (parity, g)));
     }
 
     #[test]

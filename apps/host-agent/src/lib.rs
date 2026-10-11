@@ -41,7 +41,7 @@ use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
 use fernsicht_net::keyframe::{self, Sent};
 use fernsicht_net::{
-    FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer, RateController,
+    FecConfig, FrameMeta, LossEstimator, LossSim, Pacer, Packetizer, RateController, pacer,
 };
 use fernsicht_proto::{Announce, Discover, MAX_ANNOUNCE_INFO, MAX_ANNOUNCE_NAME, clip};
 use fernsicht_proto::{
@@ -1640,10 +1640,7 @@ impl HostAgent {
             })?
         } else {
             let (shared, link) = (shared.clone(), link.clone());
-            let pacer = Pacer {
-                rate_bytes_per_sec: self.cfg.pace_bytes_per_sec,
-                burst: 4,
-            };
+            let pacer = Pacer::new(self.cfg.pace_bytes_per_sec, pacer::BURST_BYTES);
             let loss = LossSim::new(self.cfg.loss, u64::from(params.session_id) | 1);
             spawn_hot("send", move || {
                 let _guard = StopOnExit {
@@ -2508,11 +2505,12 @@ fn send_loop(
     free_enc: &Sender<EncodedFrame>,
     link: &Link,
     params: SessionParams,
-    pacer: Pacer,
+    mut pacer: Pacer,
     mut loss: LossSim,
 ) -> anyhow::Result<()> {
     let mut packetizer = Packetizer::new(FecConfig::default())?;
-    let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)) / 2);
+    // A frame leaves before the next one is encoded.
+    let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)));
     let mut window_start = Instant::now();
     let (mut frames, mut bytes, mut packets) = (0u32, 0u64, 0u64);
     let mut errors = RepeatedError::default();

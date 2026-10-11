@@ -37,7 +37,7 @@ fn transfer(frames: u32, loss: f64, redundancy: f32) -> (u32, fernsicht_net::Rec
             ..FecConfig::default()
         })
         .unwrap();
-        let pacer = Pacer::default();
+        let mut pacer = Pacer::default();
         let mut l = LossSim::new(loss, 99);
         for id in 0..frames {
             let meta = FrameMeta {

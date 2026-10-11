@@ -639,7 +639,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   frames above ~416 kB go out faster than the pacing rate. Recovery shards of earlier groups go
   before data of later groups.
 - **Fix:** token bucket with a burst allowance; rate from measured capacity; data first, parity last.
-- **Status:** open
+- **Status:** fixed, except the measured rate. The pacer is a token bucket (GCRA): 64 KiB at once,
+  the rest at the pacing rate, faster only when a frame would not leave within one frame interval
+  (the budget was half of one). The packetizer sends all data shards before the recovery shards.
+  On the clean 1080p60 scenario at 20 Mbit/s the network stage fell from 865 to 268 µs on
+  average (p95 938 → 319 µs). The rate still comes from `--pace-mbit`; deriving it from measured
+  capacity belongs to the delay-based congestion control (D3).
 
 ### C4 · The FEC group layout is weak against bursts
 

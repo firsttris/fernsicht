@@ -37,7 +37,7 @@ struct Args {
     /// Drop this fraction of outgoing video packets (e.g. 0.01 = 1 %).
     #[arg(long, default_value_t = 0.0)]
     loss: f64,
-    /// Pacing rate in Mbit/s.
+    /// Pacing rate in Mbit/s for what goes beyond a 64 KiB burst (keyframes).
     #[arg(long, default_value_t = 400)]
     pace_mbit: u64,
     /// Video encoder: "auto" (the GPU's: VAAPI on AMD/Intel, NVENC on
