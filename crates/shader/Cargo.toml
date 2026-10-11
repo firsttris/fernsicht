@@ -1,0 +1,14 @@
+[package]
+name = "fernsicht-shader"
+description = "WGSL to SPIR-V at build time, for the crates that run shaders"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+naga.workspace = true
+
+[lints]
+workspace = true

@@ -17,7 +17,8 @@ use crate::CursorOverlay;
 use super::Gpu;
 use super::import;
 
-const WGSL: &str = include_str!("shader.wgsl");
+/// The shaders (`shader.wgsl`), compiled by the build script.
+const SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.spv"));
 
 /// Imported decoder surfaces kept at most; a decoder cycles through far
 /// fewer, more means surfaces of an old decoder are still cached.
@@ -45,20 +46,9 @@ fn other(what: &str) -> impl Fn(vk::Result) -> RenderError + '_ {
     move |e| RenderError::Other(format!("{what}: {e}"))
 }
 
-/// Compiles the WGSL shaders to SPIR-V (both entry points in one module).
-pub fn spirv() -> Result<Vec<u32>, String> {
-    use naga::back::spv;
-    use naga::valid::{Capabilities, ValidationFlags, Validator};
-    let module = naga::front::wgsl::parse_str(WGSL).map_err(|e| e.emit_to_string(WGSL))?;
-    let info = Validator::new(ValidationFlags::all(), Capabilities::IMMEDIATES)
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(WGSL))?;
-    let mut options = spv::Options::default();
-    // The shader is written for Vulkan's clip space; no y flip.
-    options
-        .flags
-        .remove(spv::WriterFlags::ADJUST_COORDINATE_SPACE);
-    spv::write_vec(&module, &info, &options, None).map_err(|e| e.to_string())
+/// The shaders' SPIR-V words (both entry points in one module).
+pub fn spirv() -> Vec<u32> {
+    ash::util::read_spv(&mut std::io::Cursor::new(SPIRV)).expect("SPIR-V from the build script")
 }
 
 /// Quad size in normalized device coordinates for a `src` picture shown
@@ -200,7 +190,7 @@ unsafe impl Send for Renderer {}
 
 impl Renderer {
     pub fn new(gpu: Arc<Gpu>) -> Result<Self, String> {
-        let words = spirv()?;
+        let words = spirv();
         let d = &gpu.device;
         // SAFETY: plain object creation on a valid device; Drop destroys
         // whatever was created (null handles are ignored by Vulkan).
@@ -1322,8 +1312,7 @@ mod tests {
 
     #[test]
     fn shader_compiles_to_spirv() {
-        let words = spirv().unwrap();
-        assert_eq!(words[0], 0x0723_0203, "SPIR-V magic");
+        assert_eq!(spirv()[0], 0x0723_0203, "SPIR-V magic");
     }
 
     #[test]

@@ -8,10 +8,7 @@ use fernsicht_capture::DmaBuf;
 use fernsicht_capture::dmabuf::{formats, fourcc_name};
 
 use crate::Gpu;
-
-fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
-    move |e| format!("{what}: {e}")
-}
+use crate::device::err;
 
 /// An image that owns its memory and view.
 pub struct Plane {

@@ -1349,6 +1349,7 @@ dependencies = [
  "env_logger",
  "escargot",
  "fernsicht-client",
+ "fernsicht-core",
  "fernsicht-host-agent",
  "fernsicht-secure",
  "log",

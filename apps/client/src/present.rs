@@ -30,6 +30,14 @@ pub(crate) struct Hw {
 }
 
 impl Hw {
+    /// The hardware decoders `cfg` allows.
+    pub(crate) fn of(cfg: &crate::ClientConfig) -> Self {
+        Self {
+            render_node: cfg.render_node.clone(),
+            decoder: cfg.decoder,
+        }
+    }
+
     /// Whether one of the allowed hardware decoders reports `codec`.
     #[allow(unused_variables)]
     pub(crate) fn decodes(&self, codec: Codec) -> bool {

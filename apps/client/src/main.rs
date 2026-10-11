@@ -125,11 +125,7 @@ enum Command {
 }
 
 fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_owned())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "client".into())
+    fernsicht_core::sysinfo::hostname().unwrap_or_else(|| "client".into())
 }
 
 /// Where to pair: an address as given, else the host of that name in the

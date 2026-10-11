@@ -192,10 +192,7 @@ fn spawn_present(
     let monitors = cfg.monitors.clone();
     let input = cfg.input.clone();
     let print = cfg.print_overlay;
-    let hw = Hw {
-        render_node: cfg.render_node.clone(),
-        decoder: cfg.decoder,
-    };
+    let hw = Hw::of(cfg);
     Ok(spawn_hot("present", move || {
         let mut presenter = make_presenter().unwrap_or_else(|e| {
             log::error!("no video window ({e}); running headless");

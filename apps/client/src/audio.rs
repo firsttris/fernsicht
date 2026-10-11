@@ -52,20 +52,19 @@ pub(crate) fn audio_loop(
     muted: &AtomicBool,
 ) -> AudioSummary {
     use fernsicht_audio::jitter::{Jitter, Next};
-    let mut summary = AudioSummary::default();
     let Ok(first) = rx.recv() else {
-        return summary;
+        return AudioSummary::default();
     };
     let Some(mut sink) = audio_sink(out) else {
         // Drain, so the network thread never blocks on us.
         while rx.recv().is_ok() {}
-        return summary;
+        return AudioSummary::default();
     };
     let mut decoder = match fernsicht_audio::opus::Decoder::new() {
         Ok(d) => d,
         Err(e) => {
             log::warn!("no sound: {e}");
-            return summary;
+            return AudioSummary::default();
         }
     };
     let mut jitter = Jitter::new(AUDIO_JITTER_FRAMES);
@@ -103,11 +102,7 @@ pub(crate) fn audio_loop(
                 Ok(p) => take(p, &mut jitter, &mut captured),
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    summary.played = jitter.played;
-                    summary.concealed = jitter.concealed;
-                    summary.dropped = jitter.dropped;
-                    summary.delay_us = delays.0.checked_div(delays.1).unwrap_or(0);
-                    return summary;
+                    return summary_of(&jitter, delays);
                 }
             }
         }
@@ -140,9 +135,16 @@ pub(crate) fn audio_loop(
             delays = (delays.0.saturating_add(d), delays.1 + 1);
         }
     }
-    summary.played = jitter.played;
-    summary.concealed = jitter.concealed;
-    summary.dropped = jitter.dropped;
-    summary.delay_us = delays.0.checked_div(delays.1).unwrap_or(0);
-    summary
+    summary_of(&jitter, delays)
+}
+
+/// What the jitter buffer counted, and the average of the `delays`
+/// (sum, count).
+fn summary_of(jitter: &fernsicht_audio::jitter::Jitter, (sum, n): (u64, u64)) -> AudioSummary {
+    AudioSummary {
+        played: jitter.played,
+        concealed: jitter.concealed,
+        dropped: jitter.dropped,
+        delay_us: sum.checked_div(n).unwrap_or(0),
+    }
 }

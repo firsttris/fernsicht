@@ -21,6 +21,7 @@ fernsicht-capture = { path = "crates/capture" }
 fernsicht-codec = { path = "crates/codec" }
 fernsicht-gpu = { path = "crates/gpu" }
 fernsicht-render = { path = "crates/render" }
+fernsicht-shader = { path = "crates/shader" }
 fernsicht-input = { path = "crates/input" }
 fernsicht-audio = { path = "crates/audio" }
 fernsicht-secure = { path = "crates/secure" }

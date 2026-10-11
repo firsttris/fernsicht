@@ -108,6 +108,11 @@ fn pick(candidates: &[Candidate], prefer: &Prefer) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// A Vulkan error with what was being done.
+pub(crate) fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
+    move |e| format!("{what}: {e}")
+}
+
 /// How long a submission may take before the GPU counts as hung.
 pub const GPU_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 

@@ -237,11 +237,7 @@ pub struct Backend {
 
 /// The machine's hostname.
 pub fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_owned())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "fernsicht".into())
+    fernsicht_core::sysinfo::hostname().unwrap_or_else(|| "fernsicht".into())
 }
 
 /// The client program: `$FERNSICHT_CLIENT`, else next to this program,

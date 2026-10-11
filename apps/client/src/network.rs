@@ -180,10 +180,7 @@ pub(crate) fn network_loop(
 /// The hello for `cfg` (the codecs this machine decodes) and, for a secure
 /// session, the handshake that carries it.
 fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
-    let hw = Hw {
-        render_node: cfg.render_node.clone(),
-        decoder: cfg.decoder,
-    };
+    let hw = Hw::of(cfg);
     let codecs = offered_codecs(cfg.codec, |c| hw.decodes(c));
     log::debug!("offering {codecs:?}");
     let forced = match cfg.codec {

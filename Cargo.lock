@@ -1289,8 +1289,8 @@ dependencies = [
  "ash",
  "env_logger",
  "fernsicht-capture",
+ "fernsicht-shader",
  "log",
- "naga",
 ]
 
 [[package]]
@@ -1362,8 +1362,8 @@ dependencies = [
  "fernsicht-core",
  "fernsicht-gpu",
  "fernsicht-proto",
+ "fernsicht-shader",
  "log",
- "naga",
  "proptest",
  "raw-window-handle",
  "serde",
@@ -1383,6 +1383,13 @@ dependencies = [
  "serde_json",
  "snow",
  "spake2",
+]
+
+[[package]]
+name = "fernsicht-shader"
+version = "0.1.4"
+dependencies = [
+ "naga",
 ]
 
 [[package]]

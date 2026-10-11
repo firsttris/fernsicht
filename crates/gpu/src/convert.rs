@@ -14,14 +14,12 @@ use fernsicht_capture::DmaBuf;
 use fernsicht_capture::dmabuf::BufferIdentity;
 
 use crate::Gpu;
+use crate::device::err;
 use crate::device::submit_and_wait;
 use crate::import;
 
-const WGSL: &str = include_str!("convert.wgsl");
-
-fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
-    move |e| format!("{what}: {e}")
-}
+/// The conversion shader (`convert.wgsl`), compiled by the build script.
+const SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/convert.spv"));
 
 /// Where the planes are in the output buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,15 +58,9 @@ impl Nv12Layout {
     }
 }
 
-/// Compiles the conversion shader to SPIR-V.
-pub fn spirv() -> Result<Vec<u32>, String> {
-    use naga::back::spv;
-    use naga::valid::{Capabilities, ValidationFlags, Validator};
-    let module = naga::front::wgsl::parse_str(WGSL).map_err(|e| e.emit_to_string(WGSL))?;
-    let info = Validator::new(ValidationFlags::all(), Capabilities::IMMEDIATES)
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(WGSL))?;
-    spv::write_vec(&module, &info, &spv::Options::default(), None).map_err(|e| e.to_string())
+/// The conversion shader's SPIR-V words.
+pub fn spirv() -> Vec<u32> {
+    ash::util::read_spv(&mut std::io::Cursor::new(SPIRV)).expect("SPIR-V from the build script")
 }
 
 pub struct Converter {
@@ -105,7 +97,7 @@ impl Converter {
         if !gpu.can_import_dmabuf() {
             return Err(format!("{} cannot import DMA-BUFs", gpu.name()));
         }
-        let words = spirv()?;
+        let words = spirv();
         let d = &gpu.device;
         let mut c = Self {
             gpu: gpu.clone(),
@@ -540,7 +532,7 @@ mod tests {
 
     #[test]
     fn shader_compiles() {
-        spirv().unwrap();
+        assert_eq!(spirv()[0], 0x0723_0203, "SPIR-V magic");
     }
 
     #[test]

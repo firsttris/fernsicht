@@ -184,11 +184,7 @@ enum EncoderArg {
 }
 
 fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_owned())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "host".into())
+    fernsicht_core::sysinfo::hostname().unwrap_or_else(|| "host".into())
 }
 
 /// Root (a service, or sudo for KMS capture) keeps its key in /var/lib;

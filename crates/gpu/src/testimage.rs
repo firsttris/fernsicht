@@ -10,12 +10,9 @@ use fernsicht_capture::dmabuf::fourcc_name;
 use fernsicht_capture::{DmaBuf, DmaBufPlane};
 
 use crate::Gpu;
+use crate::device::err;
 use crate::device::submit_and_wait;
 use crate::import::{self, rgb_format};
-
-fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
-    move |e| format!("{what}: {e}")
-}
 
 /// Single-plane modifiers the GPU can sample and upload to for `format`.
 fn modifiers(gpu: &Gpu, format: vk::Format) -> Vec<u64> {

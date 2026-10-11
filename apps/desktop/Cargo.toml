@@ -31,6 +31,7 @@ env_logger = "0.11"
 # With the TypeScript types of what the app's UI gets (tests/bindings.rs).
 fernsicht-client = { path = "../client", features = ["ts"] }
 fernsicht-host-agent = { path = "../host-agent", features = ["ts"] }
+fernsicht-core = { path = "../../crates/core" }
 fernsicht-secure = { path = "../../crates/secure" }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }

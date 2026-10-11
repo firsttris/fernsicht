@@ -3,6 +3,18 @@
 
 use std::path::Path;
 
+/// This machine's name (the kernel's hostname), if it has one.
+pub fn hostname() -> Option<String> {
+    hostname_from(&std::fs::read_to_string("/proc/sys/kernel/hostname").ok()?)
+}
+
+/// The name in the kernel's `hostname` file.
+pub fn hostname_from(text: &str) -> Option<String> {
+    Some(text.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 /// The OS name from os-release text (`NAME=`, quotes removed).
 pub fn os_name_from(os_release: &str) -> Option<String> {
     os_release.lines().find_map(|l| {
@@ -78,6 +90,12 @@ pub fn gpu_name(node: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hostname_is_the_files_first_word_or_none() {
+        assert_eq!(hostname_from("zentrale\n").as_deref(), Some("zentrale"));
+        assert_eq!(hostname_from("  \n"), None);
+    }
 
     #[test]
     fn os_names() {

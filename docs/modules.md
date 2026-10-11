@@ -42,6 +42,7 @@ flowchart BT
 | `gpu` | The Vulkan device and DMA-BUF import without a copy (for the renderer and the encoder); RGB DMA-BUF → NV12 by a compute shader, exported to CUDA for NVENC; test images exported as DMA-BUFs |
 | `codec` | The `Encoder`/`Decoder` traits, the synthetic codec, VAAPI encode and decode of H.264, HEVC and AV1 through FFmpeg (feature `vaapi`, DMA-BUF import, RGB → NV12 and scaling by `scale_vaapi`), NVENC/NVDEC (feature `nvidia`, screen through Vulkan → CUDA, decoded pictures exported from CUDA to Vulkan), hardware capability queries |
 | `render` | The `Presenter` trait, overlay formatting, the Vulkan renderer (NV12 from the CPU or a DMA-BUF → RGB, letterboxing, the pointer) and the window presenter (feature `window`) |
+| `shader` | WGSL to SPIR-V for the build scripts of `gpu` and `render`: the shaders compile when the crate builds, the programs carry SPIR-V and no shader compiler |
 | `input` | Input events, the duplicate filter, `uinput` devices on the host (mouse, keyboard, Xbox 360 pads), evdev gamepads on the client |
 | `audio` | Capture and playback through PipeWire's PulseAudio interface, Opus (48 kHz stereo, 5 ms frames, low delay), the client's jitter buffer, a test tone; libopus and libpulse are loaded at runtime |
 | `secure` | Device keys (X25519), the list of paired devices, pairing with SPAKE2, Noise IK sessions, the replay window ([security](security.md)) |

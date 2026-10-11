@@ -11,7 +11,9 @@ publish.workspace = true
 ash.workspace = true
 fernsicht-capture.workspace = true
 log.workspace = true
-naga.workspace = true
+
+[build-dependencies]
+fernsicht-shader.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
