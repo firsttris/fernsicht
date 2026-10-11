@@ -749,7 +749,9 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Fix:** video AF41 (WMM video), input, audio, pointer and feedback EF (WMM voice); later ECN as
   the signal for C/D3.
-- **Status:** open
+- **Status:** fixed, ECN left for D3. The host's socket marks EF by default and video datagrams
+  carry AF41 as a control message with the GSO send (`IP_TOS`, or `IPV6_TCLASS` for IPv6); the
+  client's socket marks EF, the WebRTC socket AF41. A loopback test reads the marks back.
 
 ### C12 · The web viewer sends input on a reliable, ordered channel
 

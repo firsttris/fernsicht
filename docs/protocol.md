@@ -54,6 +54,10 @@ by property tests and a fuzz target ([testing](testing.md)).
   one where a route cannot). The send thread sleeps between chunks with a timer slack of 1 µs
   instead of spinning. The client receives a run of datagrams in one call too (UDP GRO), and a
   completed frame goes to the decoder by swapping buffers, not by copying.
+- **Marking (DSCP):** video is AF41, everything small and urgent EF: the host's pointer, sound and
+  answers, the client's input, feedback and pings. Wi-Fi access points put them into the WMM video
+  and voice queues, which get the air first; routers may prioritise them, some ignore or clear the
+  marks. The browser's WebRTC socket carries AF41.
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one.

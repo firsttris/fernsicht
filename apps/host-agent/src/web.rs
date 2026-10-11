@@ -168,6 +168,10 @@ pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSe
     }
     let mut rtc = cfg.build(Instant::now());
     let socket = UdpSocket::bind((local_ip, 0))?;
+    // Mostly video (WMM video on Wi-Fi).
+    if let Err(e) = fernsicht_net::socket::set_dscp(&socket, fernsicht_net::socket::Dscp::Video) {
+        log::debug!("no DSCP marking: {e}");
+    }
     let candidate = Candidate::host(socket.local_addr()?, "udp")
         .map_err(|e| anyhow::anyhow!("candidate: {e}"))?;
     rtc.add_local_candidate(candidate);

@@ -581,8 +581,9 @@ impl UdpLink {
     /// allows, else one by one.
     fn send_run(&self, data: &[u8], segment: usize) -> std::io::Result<()> {
         let one_by_one = |d: &[u8]| {
-            d.chunks(segment)
-                .try_for_each(|g| self.socket.send_to(g, self.peer).map(|_| ()))
+            d.chunks(segment).try_for_each(|g| {
+                socket::send_marked(&self.socket, self.peer, g, socket::Dscp::Video).map(|_| ())
+            })
         };
         let per_call = (socket::MAX_SEGMENTS_BYTES / segment.max(1)).clamp(1, socket::MAX_SEGMENTS);
         for run in data.chunks(segment * per_call) {
@@ -591,7 +592,10 @@ impl UdpLink {
                 continue;
             }
             let bufs = [std::io::IoSlice::new(run)];
-            if let Err(e) = socket::send_segments(&self.socket, self.peer, &bufs, segment as u16) {
+            let video = Some(socket::Dscp::Video);
+            if let Err(e) =
+                socket::send_segments(&self.socket, self.peer, &bufs, segment as u16, video)
+            {
                 // One by one tells whether the network or GSO fails.
                 one_by_one(run)?;
                 log::info!(
@@ -897,6 +901,11 @@ impl HostAgent {
     pub fn bind(cfg: HostConfig) -> anyhow::Result<Self> {
         let socket = socket::bind_udp(&cfg.bind).with_context(|| format!("bind {}", cfg.bind))?;
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        // Small and urgent by default (pointer, sound, answers); video
+        // marks its own datagrams.
+        if let Err(e) = socket::set_dscp(&socket, socket::Dscp::Interactive) {
+            log::debug!("no DSCP marking: {e}");
+        }
         // Clocks a crashed earlier run left raised go back first.
         if let Some(record) = &cfg.power_record {
             power::recover(record);

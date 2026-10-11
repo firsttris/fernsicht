@@ -22,6 +22,54 @@ pub const MAX_SEGMENTS: usize = 64;
 /// and the chunks the pacer forms grow by sealing.
 pub const MAX_SEGMENTS_BYTES: usize = 60_000;
 
+/// How a datagram is marked for the network (DSCP): Wi-Fi (WMM) queues by
+/// it, routers may prioritise by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dscp {
+    /// AF41: video (WMM video).
+    Video = 34,
+    /// EF: small and urgent, input, sound, pointer, feedback (WMM voice).
+    Interactive = 46,
+}
+
+impl Dscp {
+    /// The IPv4 TOS / IPv6 traffic class byte (ECN bits clear).
+    pub fn tos(self) -> u8 {
+        (self as u8) << 2
+    }
+}
+
+/// Marks everything `socket` sends with `dscp`, unless a send says
+/// otherwise.
+pub fn set_dscp(socket: &UdpSocket, dscp: Dscp) -> io::Result<()> {
+    let tos = libc::c_int::from(dscp.tos());
+    let set = |level, option| {
+        // SAFETY: setsockopt reads an int from a valid pointer.
+        let r = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                level,
+                option,
+                (&tos as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if r == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    };
+    match socket.local_addr()? {
+        SocketAddr::V4(_) => set(libc::IPPROTO_IP, libc::IP_TOS),
+        SocketAddr::V6(_) => {
+            // IPv4 through a v6 socket (mapped addresses) uses the IPv4 one.
+            let _ = set(libc::IPPROTO_IP, libc::IP_TOS);
+            set(libc::IPPROTO_IPV6, libc::IPV6_TCLASS)
+        }
+    }
+}
+
 /// Sends `bufs` to `to` as datagrams of `segment` bytes each (the last may
 /// be shorter) in one system call: the kernel cuts them (UDP GSO, Linux
 /// 4.18). At most [`MAX_SEGMENTS`] datagrams and [`MAX_SEGMENTS_BYTES`];
@@ -32,23 +80,65 @@ pub fn send_segments(
     to: SocketAddr,
     bufs: &[IoSlice<'_>],
     segment: u16,
+    dscp: Option<Dscp>,
+) -> io::Result<usize> {
+    send_msg(socket, to, bufs, Some(segment), dscp)
+}
+
+/// Sends one datagram marked `dscp`, whatever the socket's marking.
+pub fn send_marked(
+    socket: &UdpSocket,
+    to: SocketAddr,
+    buf: &[u8],
+    dscp: Dscp,
+) -> io::Result<usize> {
+    send_msg(socket, to, &[IoSlice::new(buf)], None, Some(dscp))
+}
+
+/// `sendmsg` with a GSO segment size and a marking as control messages.
+fn send_msg(
+    socket: &UdpSocket,
+    to: SocketAddr,
+    bufs: &[IoSlice<'_>],
+    segment: Option<u16>,
+    dscp: Option<Dscp>,
 ) -> io::Result<usize> {
     #[repr(C, align(8))]
-    struct Control([u8; 32]);
-    let mut control = Control([0; 32]);
+    struct Control([u8; 64]);
+    let mut control = Control([0; 64]);
+    // The IPv4 option for IPv4 and mapped addresses, else the IPv6 one.
+    let tos_level = match to {
+        SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_none() => {
+            (libc::IPPROTO_IPV6, libc::IPV6_TCLASS)
+        }
+        _ => (libc::IPPROTO_IP, libc::IP_TOS),
+    };
     // SAFETY: the CMSG helpers on a zeroed, aligned buffer with room for
-    // one header and a u16 (CMSG_SPACE(2) is 24 on 64-bit Linux).
+    // a u16 and an int message (24 + 24 bytes on 64-bit Linux).
     let len = unsafe {
-        let space = libc::CMSG_SPACE(2) as usize;
         let mut msg: libc::msghdr = std::mem::zeroed();
         msg.msg_control = control.0.as_mut_ptr().cast();
-        msg.msg_controllen = space as _;
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
-        (*cmsg).cmsg_level = libc::SOL_UDP;
-        (*cmsg).cmsg_type = libc::UDP_SEGMENT;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(2) as _;
-        std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<u16>(), segment);
-        space
+        msg.msg_controllen = control.0.len() as _;
+        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+        let mut used = 0;
+        if let Some(segment) = segment {
+            (*cmsg).cmsg_level = libc::SOL_UDP;
+            (*cmsg).cmsg_type = libc::UDP_SEGMENT;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(2) as _;
+            std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<u16>(), segment);
+            used += libc::CMSG_SPACE(2) as usize;
+            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+        }
+        if let Some(dscp) = dscp {
+            let size = std::mem::size_of::<libc::c_int>() as u32;
+            (*cmsg).cmsg_level = tos_level.0;
+            (*cmsg).cmsg_type = tos_level.1;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(size) as _;
+            let tos = libc::c_int::from(dscp.tos());
+            std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::c_int>(), tos);
+            used += libc::CMSG_SPACE(size) as usize;
+        }
+        used
     };
     let addr = socket2::SockAddr::from(to);
     let msg = socket2::MsgHdr::new()
@@ -240,6 +330,7 @@ mod tests {
             b.local_addr().unwrap(),
             &[IoSlice::new(x), IoSlice::new(y)],
             1200,
+            None,
         )
         .unwrap();
         assert_eq!(sent, data.len());
@@ -259,7 +350,14 @@ mod tests {
             .unwrap();
         let gro = enable_gro(&b);
         let data: Vec<u8> = (0..12_300u32).map(|i| (i / 1200) as u8).collect();
-        send_segments(&a, b.local_addr().unwrap(), &[IoSlice::new(&data)], 1200).unwrap();
+        send_segments(
+            &a,
+            b.local_addr().unwrap(),
+            &[IoSlice::new(&data)],
+            1200,
+            None,
+        )
+        .unwrap();
         let mut buf = vec![0u8; 65_536];
         let mut got = Vec::new();
         let mut calls = 0;
@@ -279,6 +377,70 @@ mod tests {
         a.send_to(b"hi", b.local_addr().unwrap()).unwrap();
         let (n, size) = recv_segments(&b, &mut buf).unwrap();
         assert_eq!((&buf[..n], size), (&b"hi"[..], 2));
+    }
+
+    /// The TOS byte of the next datagram on `b` (IP_RECVTOS on).
+    fn received_tos(b: &UdpSocket) -> u8 {
+        #[repr(C, align(8))]
+        struct Control([u8; 64]);
+        let mut control = Control([0; 64]);
+        let mut data = [0u8; 2048];
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr().cast(),
+            iov_len: data.len(),
+        };
+        // SAFETY: as in recv_segments.
+        unsafe {
+            let mut msg: libc::msghdr = std::mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.0.as_mut_ptr().cast();
+            msg.msg_controllen = control.0.len() as _;
+            assert!(libc::recvmsg(b.as_raw_fd(), &mut msg, 0) > 0);
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            assert!(!cmsg.is_null(), "no TOS reported");
+            assert_eq!(
+                ((*cmsg).cmsg_level, (*cmsg).cmsg_type),
+                (libc::IPPROTO_IP, libc::IP_TOS)
+            );
+            *libc::CMSG_DATA(cmsg)
+        }
+    }
+
+    #[test]
+    fn datagrams_carry_their_marking() {
+        let a = bind_udp("127.0.0.1:0").unwrap();
+        let b = bind_udp("127.0.0.1:0").unwrap();
+        b.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let on: libc::c_int = 1;
+        // SAFETY: setsockopt reads an int.
+        let r = unsafe {
+            libc::setsockopt(
+                b.as_raw_fd(),
+                libc::IPPROTO_IP,
+                libc::IP_RECVTOS,
+                (&on as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(r, 0);
+        let to = b.local_addr().unwrap();
+        set_dscp(&a, Dscp::Interactive).unwrap();
+        a.send_to(b"input", to).unwrap();
+        assert_eq!(received_tos(&b), 46 << 2, "the socket's marking (EF)");
+        send_marked(&a, to, b"frame", Dscp::Video).unwrap();
+        assert_eq!(received_tos(&b), 34 << 2, "the send's own (AF41)");
+        send_segments(
+            &a,
+            to,
+            &[IoSlice::new(&[1u8; 2400])],
+            1200,
+            Some(Dscp::Video),
+        )
+        .unwrap();
+        assert_eq!(received_tos(&b), 34 << 2);
+        assert_eq!(received_tos(&b), 34 << 2, "each GSO datagram");
     }
 
     #[test]

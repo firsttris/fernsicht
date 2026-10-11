@@ -768,6 +768,12 @@ pub fn run_with(
     let socket = fernsicht_net::socket::connect_udp(&cfg.host)
         .with_context(|| format!("connect {}", cfg.host))?;
     socket.set_read_timeout(Some(Duration::from_millis(2)))?;
+    // Input, feedback and pings: small and urgent (WMM voice on Wi-Fi).
+    if let Err(e) =
+        fernsicht_net::socket::set_dscp(&socket, fernsicht_net::socket::Dscp::Interactive)
+    {
+        log::debug!("no DSCP marking: {e}");
+    }
     // Bursts of video datagrams come in one receive.
     if !fernsicht_net::socket::enable_gro(&socket) {
         log::debug!("no UDP GRO: one datagram per receive");
