@@ -2,6 +2,7 @@
 name = "fernsicht-gpu"
 description = "Vulkan device and DMA-BUF import, shared by the client renderer and the host encoders"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

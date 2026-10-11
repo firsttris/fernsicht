@@ -71,8 +71,9 @@ jobs:
       version-file: Cargo.toml
       release-artifact: dist
       notes: |
-        **Fernsicht-<Version>-x86_64.AppImage** herunterladen, ausführbar machen und starten:
-        auf dem Rechner, von dem aus du zugreifst, und auf dem Rechner, den du steuern willst
-        (dort unter „Dieser Rechner“ auf „Diesen Rechner freigeben“). Anleitung: docs/install.md
+        Download **Fernsicht-<Version>-x86_64.AppImage**, make it executable and start it:
+        on the computer you connect from, and on the computer you want to control (there,
+        under “Dieser Rechner”, click “Diesen Rechner freigeben” – share this computer).
+        Guide: https://firsttris.github.io/fernsicht/installation.html
     permissions:
       contents: write

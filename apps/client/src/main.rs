@@ -13,8 +13,8 @@ use fernsicht_client::{
 use fernsicht_render::overlay::ms;
 
 /// Fernsicht client: shows the host's screen in a window (build feature
-/// "window"; Esc closes, F11 toggles fullscreen) and prints the latency
-/// overlay.
+/// "window"; Ctrl+Alt+Shift+Q closes, Ctrl+Alt+Shift+F toggles fullscreen,
+/// Esc and F11 with --view-only) and prints the latency overlay.
 #[derive(Parser, Debug)]
 #[command(
     version,
@@ -56,7 +56,7 @@ struct Args {
     /// `file.h265`; AV1 is raw OBUs, `ffplay -f obu file.obu`).
     #[arg(long)]
     record: Option<std::path::PathBuf>,
-    /// H.264 decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
+    /// Hardware decoder: "auto" (VAAPI, else NVDEC), "vaapi" or "nvdec".
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     decoder: DecoderArg,
     /// Video codec: "auto" (the best this machine decodes in hardware and

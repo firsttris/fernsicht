@@ -1,6 +1,7 @@
 {
   "name": "@fernsicht/client-ui",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -14,3 +14,7 @@ fuzz/artifacts/
 fuzz/coverage/
 web/e2e/test-results/
 web/e2e/playwright-report/
+
+# MkDocs (requirements-docs.txt)
+.venv/
+site/

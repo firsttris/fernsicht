@@ -1,0 +1,20 @@
+name: Update screenshots
+
+# Takes the pictures in docs/ (README, documentation, banner, social preview) from the demo data
+# with scripts/screenshots.sh and commits the ones that changed. Run it after a change to the look.
+on:
+  workflow_dispatch:
+
+jobs:
+  screenshots:
+    uses: firsttris/workflows/.github/workflows/screenshots.yml@v1
+    with:
+      install: npm install --global pnpm@10.28.0 && pnpm install --frozen-lockfile
+      lockfile: pnpm-lock.yaml
+      command: pnpm screenshots
+      paths: |
+        docs/screenshot-*.png
+        docs/social-preview.png
+        docs/banner.png
+    permissions:
+      contents: write

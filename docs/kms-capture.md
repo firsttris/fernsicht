@@ -1,27 +1,28 @@
-# KMS-Capture ausprobieren
+# KMS capture
 
-Der Host-Agent kann den Bildschirm direkt über KMS abgreifen
-(`--capture kms`). Er wartet auf den VBlank des Monitors, holt sich den
-Framebuffer, den die Grafikkarte gerade anzeigt, und reicht ihn als DMA-BUF
-an den Encoder weiter. Die GPU rechnet RGB → NV12 (BT.709) und skaliert auf
-die Stream-Auflösung. Dabei wird kein einziges Pixel über die CPU kopiert.
+The host agent can grab the screen directly over KMS (`--capture kms`). It
+waits for the monitor's VBlank, takes the framebuffer that the graphics
+card is currently showing, and passes it to the encoder as a DMA-BUF. The
+GPU converts RGB → NV12 (BT.709) and scales to the stream resolution. Not a
+single pixel is copied through the CPU.
 
-Das geht auf beiden Rechnern:
+This works on both machines:
 
-- **AMD/Intel** (`--encoder vaapi`): Der Video-Prozessor der GPU
-  (`scale_vaapi`) rechnet um.
-- **NVIDIA** (`--encoder nvenc`): Ein Vulkan-Compute-Shader rechnet in
-  GPU-Speicher um, den CUDA importiert. CUDA kopiert das Bild auf der GPU in
-  den NVENC-Eingang. Auf der GTX 1080 dauert das bei 1080p alles zusammen
-  2,5 ms.
+- **AMD/Intel** (`--encoder vaapi`): the GPU's video processor
+  (`scale_vaapi`) does the conversion.
+- **NVIDIA** (`--encoder nvenc`): a Vulkan compute shader does the
+  conversion into GPU memory that CUDA imports. CUDA copies the image on
+  the GPU into the NVENC input. On the GTX 1080 all of this together takes
+  2.5 ms at 1080p.
 
-`--encoder auto` wählt passend zur Grafikkarte.
+`--encoder auto` picks the encoder that matches the graphics card.
 
-Das funktioniert auch im Login-Bildschirm und im Gaming-Modus (gamescope)
-und braucht keinen Bestätigungsdialog. Dafür verlangt der Kernel
-**`CAP_SYS_ADMIN`**: Nur dann gibt er fremde Framebuffer heraus.
+This also works on the login screen and in Gaming Mode (gamescope), and it
+needs no confirmation dialog. In return, the kernel requires
+**`CAP_SYS_ADMIN`**: only then does it hand out other processes'
+framebuffers.
 
-## Bauen (in der Distrobox)
+## Build (in the Distrobox)
 
 ```sh
 distrobox enter fernsicht
@@ -31,26 +32,26 @@ cargo build --release -p fernsicht-host-agent --features vaapi,kms
 cargo build --release -p fernsicht-client --features vaapi,window
 ```
 
-## Starten (direkt auf dem Host)
+## Start (directly on the host)
 
-Bazzite bringt FFmpeg und libva selbst mit, deshalb laufen die fertigen
-Programme ohne Box. Das ist auch der einfachste Weg zu den root-Rechten:
-`sudo` auf dem Host ist echtes root, in der normalen Box nicht.
+Bazzite ships FFmpeg and libva itself, so the built programs run without
+the box. This is also the easiest way to get root rights: `sudo` on the
+host is real root, in the normal box it is not.
 
-### Einmalig: Geräte koppeln
+### Once: pair devices
 
-Verbindungen sind verschlüsselt, und nur gekoppelte Geräte werden
-angenommen. Gekoppelt wird einmal pro Client-Rechner, wie bei Bluetooth:
+Connections are encrypted, and only paired devices are accepted. You pair
+once per client computer, like with Bluetooth:
 
-1. Host mit `--pair` starten. Er zeigt eine 6-stellige PIN, die 5 Minuten
-   gilt:
+1. Start the host with `--pair`. It shows a 6-digit PIN that is valid for
+   5 minutes:
    ```sh
    sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi --pair
    ```
    ```text
    Kopplung offen für 5 Minuten. PIN: 482913
    ```
-2. Auf dem Client-Rechner die PIN eingeben:
+2. Enter the PIN on the client computer:
    ```sh
    fernsicht-client pair 192.168.178.87 482913
    ```
@@ -58,157 +59,160 @@ angenommen. Gekoppelt wird einmal pro Client-Rechner, wie bei Bluetooth:
    Gekoppelt mit zentrale (192.168.178.87:47800, Schlüssel 3f2a-…).
    ```
 
-Läuft der Host schon (etwa als Dienst, siehe [install.md](install.md)),
-öffnet `fernsicht-host-agent pair` in einem zweiten Terminal die Kopplung,
-ohne ihn neu zu starten.
+If the host is already running (for example as a service, see
+[installation.md](installation.md)), `fernsicht-host-agent pair` in a
+second terminal opens pairing without restarting it.
 
-Nach drei falschen PINs schließt der Host die Kopplung. Dann einfach neu
-öffnen (`fernsicht-host-agent pair` oder Neustart mit `--pair`). `fernsicht-client hosts` listet die gekoppelten Hosts,
-`fernsicht-client forget zentrale` vergisst einen.
+After three wrong PINs the host closes pairing. Then just open it again
+(`fernsicht-host-agent pair` or restart with `--pair`).
+`fernsicht-client hosts` lists the paired hosts, and
+`fernsicht-client forget zentrale` forgets one.
 
-Die Schlüssel liegen beim Host in `/var/lib/fernsicht` (als root
-gestartet) bzw. `~/.config/fernsicht/host`, beim Client in
+On the host, the keys are stored in `/var/lib/fernsicht` (when started as
+root) or `~/.config/fernsicht/host`; on the client in
 `~/.config/fernsicht`.
 
-**Terminal 1 – Host-Agent**
+**Terminal 1 – host agent**
 
 ```sh
 cd ~/fernsicht
 sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi
 ```
 
-In der Ausgabe steht, welcher Monitor erfasst wird, z. B.
+The output shows which monitor is captured, for example
 `capturing 2560×1440 over KMS (Selection { plane: 71, crtc: 80, pipe: 1 })`.
-Diese Zeile kommt erst, wenn sich ein Client verbindet.
+This line only appears once a client connects.
 
-Meldet ein Programm nach einem Bazzite-Update
-`libavcodec.so.NN: cannot open shared object file`, hat sich die
-FFmpeg-Hauptversion geändert: Box aktualisieren (`dev/setup.sh`) und neu
-bauen.
+If a program reports
+`libavcodec.so.NN: cannot open shared object file` after a Bazzite update,
+the FFmpeg major version has changed: update the box (`dev/setup.sh`) and
+build again.
 
-**Terminal 2 – Client**
+**Terminal 2 – client**
 
 ```sh
 ~/fernsicht/target/release/fernsicht-client zentrale
 ```
 
-Statt des Namens geht auch die Adresse (`192.168.178.87`, Port 47800 ist
-Standard).
+Instead of the name you can also use the address (`192.168.178.87`; port
+47800 is the default).
 
-Es öffnet sich ein Fenster mit dem Bild, im Titel steht die Latenz. Esc
-schließt es, F11 schaltet auf Vollbild. Auf demselben Rechner zeigt das
-Fenster den Bildschirm, auf dem es selbst liegt: ein Spiegel im Spiegel.
-Das ist erwartet.
+A window opens with the video, and the title shows the latency. Esc closes
+it, F11 switches to full screen. On the same computer, the window shows the
+screen it is on itself: a mirror in a mirror. This is expected.
 
-Ohne Fenster, mit Aufnahme in eine Datei:
+Without a window, recording to a file:
 
 ```sh
 ./target/release/fernsicht-client zentrale --headless --duration 10 --record ~/fernsicht-test.h264
 ffplay -framerate 60 ~/fernsicht-test.h264
 ```
 
-Von einem zweiten Rechner aus geht es genauso (vorher koppeln). Auf dem NVIDIA-Rechner den Client mit NVDEC bauen
-(`--features nvidia,window`); er nimmt automatisch NVDEC, wenn VAAPI nicht
-geht.
+It works the same way from a second computer (pair first). On the NVIDIA
+machine, build the client with NVDEC (`--features nvidia,window`); it uses
+NVDEC automatically when VAAPI does not work.
 
-## Ton
+## Audio
 
-Mit `--capture kms` schickt der Host standardmäßig mit, was der Rechner
-abspielt, und der Client spielt es ab. Abschalten: `--audio off` am Host
-oder `--no-audio` am Client. `--audio tone` schickt einen 440-Hz-Testton.
-Mit sudo gestartet, verbindet sich der Host von selbst mit dem Soundserver
-des Benutzers (über `SUDO_UID`).
+With `--capture kms` the host sends what the computer plays by default,
+and the client plays it back. To turn this off: `--audio off` on the host
+or `--no-audio` on the client. `--audio tone` sends a 440 Hz test tone.
+When started with sudo, the host connects to the user's sound server by
+itself (through `SUDO_UID`).
 
-## Fernsteuern (Maus und Tastatur)
+## Remote control (mouse and keyboard)
 
-Mit `--input` nimmt der Host Maus und Tastatur des Clients an:
+With `--input` the host accepts the client's mouse and keyboard:
 
 ```sh
 sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi --input
 ```
 
-Eingaben nimmt der Host nur von gekoppelten Geräten an, und sie laufen wie
-alles andere verschlüsselt.
+The host accepts input only from paired devices, and input is encrypted
+like everything else.
 
-Im Client-Fenster gehen Maus und alle Tasten an den Host, auch Esc und F11.
-Der Client selbst hört dann auf:
+In the client window, the mouse and all keys go to the host, including Esc
+and F11. The client itself then only listens to:
 
-| Tasten | Wirkung |
+| Keys | Effect |
 |---|---|
-| Strg+Alt+Shift+Q | Client beenden |
-| Strg+Alt+Shift+F | Vollbild an/aus |
+| Ctrl+Alt+Shift+Q | Quit the client |
+| Ctrl+Alt+Shift+F | Toggle full screen |
 
-Mit `--view-only` schickt der Client nichts; dann beenden Esc und F11 wie
-bisher. Verliert das Fenster den Fokus, lässt der Client alle Tasten los,
-damit am Host nichts hängen bleibt.
+With `--view-only` the client sends nothing; then Esc and F11 quit and
+toggle full screen as before. When the window loses focus, the client
+releases all keys so that nothing gets stuck on the host.
 
-Bei mehreren Monitoren liest der Host die Anordnung aus KDEs
-`~/.config/kwinoutputconfig.json`, damit der Zeiger auf dem gestreamten
-Monitor landet. In der Ausgabe steht `pointer input mapped to DP-1: …`.
+With several monitors, the host reads the layout from KDE's
+`~/.config/kwinoutputconfig.json`, so that the pointer lands on the
+streamed monitor. The output shows `pointer input mapped to DP-1: …`.
 
-## Optionen
+## Options
 
-| Option | Bedeutung |
+| Option | Meaning |
 |---|---|
-| `--kms-card /dev/dri/card1` | Grafikkarte wählen (Standard: die erste mit aktivem Monitor) |
-| `--kms-connector DP-1` | Monitor, mit dem eine Sitzung beginnt. Namen: `ls /sys/class/drm` zeigt z. B. `card1-DP-1` → `DP-1`. Während der Sitzung wechselt man mit „Bildschirm wählen“ in der Toolbar oder Strg+Alt+Shift+←/→ im App-Fenster |
-| `--max-width/--max-height` | Obergrenze der Stream-Auflösung; der Encoder skaliert den Monitor darauf |
+| `--kms-card /dev/dri/card1` | Choose the graphics card (default: the first one with an active monitor) |
+| `--kms-connector DP-1` | The monitor a session starts with. Names: `ls /sys/class/drm` shows, for example, `card1-DP-1` → `DP-1`. During the session you switch with “Bildschirm wählen” (choose screen) in the toolbar or Ctrl+Alt+Shift+←/→ in the app window |
+| `--max-width/--max-height` | Upper limit of the stream resolution; the encoder scales the monitor down to it |
 
-## Wenn es nicht klappt
+## Troubleshooting
 
-| Meldung | Ursache und Abhilfe |
+| Message | Cause and fix |
 |---|---|
-| `KMS capture needs CAP_SYS_ADMIN` | Nicht mit `sudo` gestartet, oder in der Distrobox statt auf dem Host. Siehe oben. |
-| `no display to capture` | Kein Monitor aktiv, oder die falsche Karte. Mit `--kms-card` bzw. `--kms-connector` wählen. |
-| `connector DP-2 is not active (active: ["DP-1"])` | Den angezeigten Namen verwenden. |
-| `the driver cannot import this DMA-BUF (…)` | Der Treiber kann das Puffer-Format nicht lesen. Bitte die ganze Zeile schicken. |
-| `display is off (no framebuffer)` | Monitor im Standby. |
-| Session wird abgelehnt (Client wartet auf Antwort) | Die Fehlermeldung steht im Terminal des Host-Agents. |
+| `KMS capture needs CAP_SYS_ADMIN` | Not started with `sudo`, or started in the Distrobox instead of on the host. See above. |
+| `no display to capture` | No monitor active, or the wrong card. Choose with `--kms-card` or `--kms-connector`. |
+| `connector DP-2 is not active (active: ["DP-1"])` | Use the name shown. |
+| `the driver cannot import this DMA-BUF (…)` | The driver cannot read the buffer format. Please send the whole line. |
+| `display is off (no framebuffer)` | The monitor is in standby. |
+| Session is rejected (client waits for a reply) | The error message is in the host agent's terminal. |
 
-## Bekannte Grenzen
+## Known limitations
 
-- **Mauszeiger:** Er liegt auf einer eigenen Hardware-Ebene (Cursor-Plane)
-  und ist deshalb nicht im Bild. Der Host liest ihn dort aus und schickt
-  Position und Bild extra mit, der Client zeichnet ihn darüber. Zeichnet
-  der Compositor den Zeiger selbst ins Bild (Software-Cursor), ist er
-  ohnehin im Video.
-- **Overlays fehlen.** Ebenso nur die Primär-Ebene; gamescope legt die
-  Steam-Overlays teils auf eigene Ebenen.
-- **Root-Prozess.** Der ganze Host-Agent läuft vorerst als root. Das ist nur
-  zum Testen im LAN gedacht. Später übernimmt ein kleiner privilegierter
-  Helfer nur das Capture.
-- **HDR** wird noch nicht getreu übertragen. 10-Bit-Desktops (KDE auf AMD
-  nutzt `AB30`) gehen, werden aber auf 8 Bit H.264 heruntergerechnet.
-- Möglich ist minimales **Tearing**, falls der Compositor in den gerade
-  gelesenen Puffer schreibt (wie bei Sunshine).
+- **Mouse pointer:** It sits on its own hardware plane (cursor plane) and
+  is therefore not in the image. The host reads it from there and sends
+  its position and image separately, and the client draws it on top. If
+  the compositor draws the pointer into the image itself (software
+  cursor), it is in the video anyway.
+- **Overlays are missing.** Likewise, only the primary plane is captured;
+  gamescope puts some of the Steam overlays on their own planes.
+- **Root process.** For now the whole host agent runs as root. This is
+  only meant for testing on the LAN. Later, a small privileged helper will
+  take over only the capture.
+- **HDR** is not transferred faithfully yet. 10-bit desktops (KDE on AMD
+  uses `AB30`) work, but are converted down to 8-bit H.264.
+- Minimal **tearing** is possible if the compositor writes into the buffer
+  that is being read (as with Sunshine).
 
-## Wie es getestet wird
+## How it is tested
 
-- Auswahl von Karte, Monitor und Ebene sowie das VBlank-Raster laufen als
-  Unit-Tests ohne Hardware (`cargo test -p fernsicht-capture --features kms`).
-- Der Weg DMA-BUF → Vulkan → NVENC läuft in CI auf dem NVIDIA-Runner
-  (`crates/codec/tests/nvidia.rs`), mit denselben Prüfungen wie unten. Das
-  Testbild liegt dort im gekachelten NVIDIA-Layout vor, wie es der
-  Compositor anlegt. Die Vulkan-Umrechnung allein prüfen auch die normale CI
-  (Software-Vulkan, mit Validation-Layern) und beide GPU-Runner
-  (`crates/gpu/tests/convert.rs`).
-- Der Weg DMA-BUF → VAAPI läuft in CI auf dem AMD-Runner. Statt eines
-  KMS-Framebuffers dient ein exportiertes VAAPI-Bild als DMA-BUF, der Rest ist
-  identisch. Geprüft werden:
-  - Farbtreue nach BT.709 an sechs Farbfeldern, für alle acht Formate
-    (8 und 10 Bit, RGB- und BGR-Reihenfolge, mit und ohne Alpha);
-  - Skalierung von 1440p auf 1080p;
-  - Wechsel zwischen CPU- und DMA-BUF-Eingang;
-  - Ablehnung kaputter Puffer;
-  - die Encode-Zeit.
-- Das eigentliche KMS-Capture braucht einen Monitor und root und läuft
-  deshalb nicht im Runner, sondern so wie oben beschrieben von Hand.
+- Selecting the card, monitor and plane, and the VBlank timing grid, run
+  as unit tests without hardware
+  (`cargo test -p fernsicht-capture --features kms`).
+- The DMA-BUF → Vulkan → NVENC path runs in CI on the NVIDIA runner
+  ([`crates/codec/tests/nvidia.rs`](https://github.com/firsttris/fernsicht/blob/main/crates/codec/tests/nvidia.rs)),
+  with the same checks as below. There, the test image is in NVIDIA's tiled
+  layout, the way the compositor creates it. The Vulkan conversion on its
+  own is also checked by the normal CI (software Vulkan, with validation
+  layers) and by both GPU runners
+  ([`crates/gpu/tests/convert.rs`](https://github.com/firsttris/fernsicht/blob/main/crates/gpu/tests/convert.rs)).
+- The DMA-BUF → VAAPI path runs in CI on the AMD runner. Instead of a KMS
+  framebuffer, an exported VAAPI image serves as the DMA-BUF; the rest is
+  identical. The tests check:
+  - color accuracy according to BT.709 on six color patches, for all
+    eight formats (8 and 10 bit, RGB and BGR order, with and without
+    alpha);
+  - scaling from 1440p to 1080p;
+  - switching between CPU and DMA-BUF input;
+  - rejection of broken buffers;
+  - the encode time.
+- The actual KMS capture needs a monitor and root, so it does not run on
+  the runner but by hand, as described above.
 
 ## Alternative: rootful Distrobox
 
-Falls die Programme auf dem Host einmal nicht starten (andere
-FFmpeg-Version), geht es auch über eine zweite, rootful Box, in der `sudo`
-echtes root ist: einmal `dev/setup.sh --root`, dann
-`distrobox enter --root fernsicht-root` und dort wie oben mit `sudo`
-starten. Beim ersten Betreten fragt die Box nach einem neuen Passwort nur
-für `sudo` in dieser Box.
+If the programs ever fail to start on the host (different FFmpeg
+version), you can also use a second, rootful box in which `sudo` is real
+root: run `dev/setup.sh --root` once, then
+`distrobox enter --root fernsicht-root`, and start there with `sudo` as
+above. The first time you enter it, the box asks for a new password that
+is only for `sudo` in this box.

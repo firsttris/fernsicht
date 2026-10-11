@@ -1,215 +1,215 @@
-# Fernsicht
+<div align="center">
 
-Self-hosted Remote-Desktop und Game-Streaming für Linux, in Rust. Ziel ist
-die Latenz von Sunshine/Moonlight oder Parsec und der Komfort von
-TeamViewer. Messlatte für Phase 1: glass-to-glass unter 20 ms im LAN bei
-1080p60.
+<img src="docs/banner.png" alt="Fernsicht: low-latency remote desktop and game streaming for Linux" width="900">
 
-## Stand
+**Low-latency remote desktop and game streaming for Linux – self-hosted, written in Rust.**<br>
+The latency of Sunshine/Moonlight or Parsec, the comfort of TeamViewer: pair once with a PIN, then click and play.<br>
+AMD, Intel and NVIDIA · Wayland and X11 · AV1, HEVC and H.264 in hardware · end-to-end encrypted.
 
-Wo es weitergeht (offene Live-Tests, Aufgaben, Regeln):
-[docs/weitermachen.md](docs/weitermachen.md). Wo es noch schneller und
-besser geht (AV1/HEVC, Slices, …): [docs/performance.md](docs/performance.md).
+[![CI](https://github.com/firsttris/fernsicht/actions/workflows/ci.yml/badge.svg)](https://github.com/firsttris/fernsicht/actions/workflows/ci.yml)
+[![GPU](https://github.com/firsttris/fernsicht/actions/workflows/gpu.yml/badge.svg)](https://github.com/firsttris/fernsicht/actions/workflows/gpu.yml)
+[![Release](https://img.shields.io/github/v/release/firsttris/fernsicht?logo=github&label=release)](https://github.com/firsttris/fernsicht/releases/latest)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Vulkan](https://img.shields.io/badge/Vulkan-zero--copy-a41e22?logo=vulkan&logoColor=white)](https://firsttris.github.io/fernsicht/video.html)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-| Phase | Inhalt | Stand |
+[Install](#-install) •
+[Features](#-features) •
+[Screenshots](#-screenshots) •
+[Performance](#-performance) •
+[Compared](#-fernsicht-and-the-alternatives) •
+[FAQ](#-faq) •
+[Documentation](https://firsttris.github.io/fernsicht/) •
+[Development](#️-development)
+
+<img src="docs/screenshot-session.png" alt="A Fernsicht session: the remote desktop with the toolbar and the latency overlay showing glass-to-glass 14 ms, split into capture, encode, network, decode and display" width="900">
+
+</div>
+
+## 💡 Why Fernsicht?
+
+- **Fast like a game streamer.** About 10 ms glass-to-glass in the LAN at 1080p60 (without the
+  monitor), the screen goes from the GPU to the encoder and from the decoder to the window without a
+  single copy through the CPU.
+- **Easy like a remote desktop tool.** One app on both computers: it finds the other one in the
+  network, you pair once with a 6-digit PIN, then a click starts the session. Or open the host's
+  address in any browser, phones included.
+- **Made for Linux.** The host captures the screen over KMS, so it works on KDE, GNOME, Hyprland,
+  gamescope (Steam's gaming mode) and even the login screen, without a portal dialog.
+- **Self-hosted and private.** No account, no cloud service: devices pair directly, every session is
+  end-to-end encrypted (Noise IK, as in WireGuard).
+
+> [!NOTE]
+> Fernsicht is young. The core works and is tested on real hardware every night, but some parts have
+> not been used by many people yet. See the [status](https://firsttris.github.io/fernsicht/status.html)
+> for what is done and what was not tried live.
+
+## 🚀 Install
+
+Download the AppImage from the [latest release](https://github.com/firsttris/fernsicht/releases/latest)
+and start it on **both** computers:
+
+```sh
+chmod +x Fernsicht-*-x86_64.AppImage
+./Fernsicht-*-x86_64.AppImage
+```
+
+On the computer you want to control, open “Dieser Rechner” (this computer) and click
+“Diesen Rechner freigeben” (share this computer): the host runs as a system service from then on.
+On the other computer the host shows up in the list; pair with the PIN and click **Desktop** or
+**Gaming**. The app's interface is in German for now.
+
+Building from source, the host as a service without the app, the browser and everything else:
+the [installation guide](https://firsttris.github.io/fernsicht/installation.html).
+
+### 🐧 Runs on
+
+| | | Notes |
 |---|---|---|
-| 0 – Fundament | Workspace, CI, Latenz-Messung pro Stufe, Uhren-Sync, Overlay, Distrobox | ✅ fertig. Die Sunshine-Referenzmessung steht noch aus ([Vorlage](docs/latency-baseline.md)) |
-| 1 – Hot Path im LAN | Paketformat, FEC, Pacing, UDP, Slots, Threads | ✅ Transport fertig und getestet (inkl. 1 % Verlust ohne verlorenen Frame) |
-| | VAAPI H.264 Encode/Decode | ✅ läuft auf dem AMD-Runner durch die ganze Pipeline: glass-to-glass ohne Bildschirm ≈ 10 ms (1080p60, Debug-Build) |
-| | KMS-Capture → DMA-BUF → VAAPI ohne Kopie | ✅ implementiert; Import und GPU-Farbkonvertierung in CI getestet, KMS selbst von Hand ([Anleitung](docs/kms-capture.md)) |
-| | Client-Fenster (Vulkan, winit) | ✅ VAAPI-Bild ohne Kopie in Vulkan (0,15 ms für Umrechnen + Zeichnen bei 1080p), Mailbox-Present, CPU-Rückfallweg; Render-Tests im CI mit llvmpipe |
-| | NVIDIA: NVENC/NVDEC | ✅ Encoder und Decoder über FFmpeg/CUDA, getestet auf dem NVIDIA-Runner; Bilder gehen vorerst über die CPU (Bildschirmaufnahme auf NVIDIA fehlt noch) |
-| | Mauszeiger | ✅ eigene Pakete (Position pro Frame, Bild bei Änderung, Wiederholung gegen Verlust); der Client zeichnet ihn über das Video. KMS liest die Cursor-Plane, das Testbild hat einen kreisenden Pfeil |
-| | PipeWire-Capture | ⏳ offen |
-| 2 – Steuerung | Maus und Tastatur | ✅ zuverlässig über UDP (Wiederholung bis zur Bestätigung, jedes Ereignis genau einmal, getestet bei 30 % Verlust), Host über `uinput` (`--input`, ohne root), absolute Zeigerposition auf den aufgenommenen Monitor umgerechnet (KDE-Monitoranordnung) |
-| | Ton | ✅ was der Host abspielt (PipeWire), Opus 5 ms, jedes Paket trägt den Vorgänger mit (ein Verlust hinterlässt keine Lücke), Jitter-Puffer 15 ms mit Verlustverschleierung und Uhrdrift-Ausgleich; im Test 15 ms Verzögerung, bei 20 % Verlust 2,5 % überbrückt |
-| | Gamepad, Zeigerfang für Spiele | ✅ Gaming-Modus: Klick fängt den Zeiger (relative Maus), Strg+Alt+Shift+M lässt los. Bis zu 4 Controller (evdev im Client, Gamepad-API im Browser) werden auf dem Host zu virtuellen Xbox-360-Controllern, die Steam und Spiele ohne Einrichtung kennen |
-| 3 – Sicherheit | Kopplung und Verschlüsselung | ✅ einmalig koppeln per 6-stelliger PIN (SPAKE2: kein Offline-Raten, Kopplung schließt nach 3 Fehlversuchen), jede Sitzung mit Noise-IK-Handshake (wie WireGuard), danach alles mit ChaCha20-Poly1305 versiegelt, Wiederholungen werden verworfen; nur gekoppelte Geräte kommen herein |
-| | Bitratenanpassung | ✅ der Host senkt die Bitrate, wenn Frames trotz FEC verloren gehen oder sein Sender nicht nachkommt, und hebt sie nach 5 s sauberem Netz wieder an. Zufällige WLAN-Verluste bleiben Sache der FEC |
-| | Internet (NAT) | ⏳ offen |
-| 4–5 | Host als Dienst | ✅ systemd-Dienst mit Installationsskript, Encoder passend zur Grafikkarte, Koppeln/Status/Entfernen über einen lokalen Steuer-Socket ([Anleitung](docs/install.md)) |
-| | Gerätesuche | ✅ `fernsicht-client discover`: Broadcast über den Stream-Port (keine Firewall-Änderung), Hosts nennen Name, Schlüssel, OS, GPU und ob Kopplung offen ist; neue Adressen gekoppelter Hosts werden übernommen |
-| | Desktop-App | ✅ Tauri um die Client-UI: Rechner im Netz, Koppeln per PIN, Sitzung starten (Bild im nativen Vulkan-Fenster, Latenz-Overlay in der App), „Dieser Rechner" öffnet die Kopplung am eigenen Host ([apps/desktop](apps/desktop)) |
-| | Installation | ✅ `packaging/build.sh` (baut alles in der Distrobox), `install-app.sh` (App und Client mit Startmenü-Eintrag, ohne sudo), `install-host.sh` (Host-Dienst); [Anleitung](docs/install.md) |
-| | Web-Viewer | ✅ im LAN: Der Host liefert die Seite selbst (`http://host:47800`), Zugang mit der Kopplungs-PIN (einmalig), Bild H.264 und Ton Opus über WebRTC (str0m), Mauszeiger, Maus und Tastatur über einen Datenkanal, Zeigerfang im Gaming-Modus, Latenz-Overlay aus `getStats()` ([Anleitung](docs/install.md#im-browser)) |
-| UI | Client-UI und Web-Viewer nach Mockup (React, TanStack, shadcn/ui) | ✅ Oberflächen mit Demo-Daten |
+| ✅ | AMD (RADV, VAAPI) | host and client, AV1/HEVC/H.264 with an RX 6000/7000 and newer |
+| ✅ | NVIDIA (proprietary driver) | host (NVENC, screen via Vulkan → CUDA) and client (NVDEC); GTX 10xx and newer |
+| ✅ | Intel (iHD, VAAPI) | the same path as AMD; not tested on real hardware yet |
+| ✅ | Bazzite, Fedora, other distributions with systemd | developed and tested on Bazzite 44 (KDE Wayland) |
+| 🌐 | Any browser | the web viewer: Chrome, Edge, Firefox, Safari, phones and tablets |
+| ⏳ | Windows and macOS | not planned for now: the host is Linux, clients are the app on Linux or a browser |
 
-Ohne GPU läuft die komplette Pipeline mit einem **Testbild** und einem
-**synthetischen Codec**. Der erzeugt Frames in realistischer Größe für die
-eingestellte Bitrate und prüft sie per Checksumme. So messen CI und
-Rechner ohne GPU Transport, FEC, Pacing und Latenz trotzdem echt. Mit
-`--encoder vaapi` (Feature `vaapi`) wird echtes H.264 gestreamt. Mit
-`--capture kms` (Feature `kms`) kommt das Bild vom Monitor.
+## ✨ Features
 
-## Schnellstart
-
-Am einfachsten: das AppImage aus den
-[Releases](https://github.com/firsttris/fernsicht/releases) laden und
-starten, auf beiden Rechnern ([Anleitung](docs/install.md)). Auf dem
-Rechner, den man steuern will, unter „Dieser Rechner“ auf „Diesen Rechner
-freigeben“ klicken.
-
-Ein Release entsteht über den Workflow **Bump version** in GitHub Actions:
-Er erhöht die Version, setzt das Tag, und **Release** baut dann das AppImage
-und veröffentlicht es. Lokal baut `./packaging/appimage.sh` dasselbe
-AppImage.
-
-Aus dem Quellcode:
-
-```sh
-cargo build --release
-
-# Host, beim ersten Mal mit --pair: zeigt eine PIN zum Koppeln
-./target/release/fernsicht-host-agent --pair
-
-# Client (zweites Terminal oder zweiter Rechner): Hosts im Netz finden …
-./target/release/fernsicht-client discover
-# … einmal koppeln (Name aus discover oder Adresse) …
-./target/release/fernsicht-client pair <host> <PIN>
-# … dann per Name oder Adresse verbinden
-./target/release/fernsicht-client <host-name> --fps 60
-# mit 1 % künstlichem Paketverlust
-./target/release/fernsicht-client <host-name> --loss 0.01 --duration 10
-
-# Installieren (docs/install.md): App für dich, Host-Dienst für den Rechner
-./packaging/build.sh
-./packaging/install-app.sh            # Fernsicht im Startmenü
-sudo ./packaging/install-host.sh      # nur auf Rechnern, die man fernsteuert
-fernsicht-host-agent pair      # PIN für ein neues Gerät
-fernsicht-host-agent status    # Verbindung, gekoppelte Geräte
-
-# Echtes H.264 vom Monitor (AMD/Intel, als root: docs/kms-capture.md)
-cargo build --release -p fernsicht-host-agent --features vaapi,kms
-sudo ./target/release/fernsicht-host-agent --capture kms --encoder vaapi
-cargo build --release -p fernsicht-client --features vaapi,window
-./target/release/fernsicht-client <host-name>   # Fenster, Strg+Alt+Shift+Q beendet
-# ohne Fenster, Video in eine Datei (ffplay -framerate 60 ~/test.h264)
-./target/release/fernsicht-client <host-name> --headless --record ~/test.h264
-
-# NVIDIA (z. B. GTX 1080): Client mit NVDEC, Host mit NVENC (vorerst Testbild)
-cargo build --release -p fernsicht-client --features nvidia,window
-cargo build --release -p fernsicht-host-agent --features nvidia
-./target/release/fernsicht-host-agent --encoder nvenc
-```
-
-Der Client gibt jede Sekunde das Latenz-Overlay aus:
-
-```text
-Glass-to-Glass 2,3 ms  (p95 3,0 ms, max 4,0 ms)
-Capture 0,7 ms · Encode 0,2 ms · Netz 1,0 ms · Decode 0,3 ms · Anzeige 0,0 ms
-Codec Synthetisch · Bildrate 60 fps · Bitrate 24 Mbit/s · Verlust (FEC) 1,0 % → 0 · RTT 0,1 ms
-```
-
-Die App (Rechner im Netz, Koppeln, Sitzungen):
-
-```sh
-pnpm install && pnpm --filter @fernsicht/client-ui build
-cargo build --release -p fernsicht-client --features vaapi,window   # das Stream-Fenster
-cargo build --release --manifest-path apps/desktop/Cargo.toml        # die App
-FERNSICHT_CLIENT=target/release/fernsicht-client apps/desktop/target/release/fernsicht
-```
-
-Die App sucht den Client neben sich, sonst im `PATH`. `FERNSICHT_CLIENT`
-zeigt ihr den Weg, solange nichts installiert ist.
-
-Oberflächen im Browser (mit Demo-Daten):
-
-```sh
-pnpm install
-pnpm dev:client   # Client-UI auf http://localhost:1420
-pnpm dev:viewer   # Web-Viewer auf http://localhost:5174 (Demo; echt: vom Host, siehe docs/install.md)
-```
-
-## Aufbau
-
-```text
-crates/  core · proto · net · capture · codec · render · input · audio
-apps/    host-agent · client · client-ui
-web/     ui · viewer
-dev/     Distrobox-Container (Fedora) für Bazzite
-docs/    Messprotokolle
-```
-
-| Crate | Inhalt |
+| | |
 |---|---|
-| `core` | Slot mit Kapazität 1 (latest frame wins, Puffer-Recycling), monotone Uhr, Latenz-Statistik pro Stufe, Hot-Threads mit erhöhter Priorität |
-| `proto` | UDP-Paketformat v1: Video-Shards mit Stufen-Zeitstempeln, Feedback, Clock-Ping/-Pong, Hello/Ack, Bye. Der Parser panict nie und allokiert nicht |
-| `net` | Reed-Solomon-FEC (`reed-solomon-simd`) in Gruppen; Recovery-Shards pro Gruppe binomial aus der gemessenen Verlustrate (Gruppenausfall ≤ 10⁻⁵, mindestens 10 %), Reassembly mit Keyframe-Anforderung und harten Größengrenzen, Pacer, NTP-artiger Uhren-Sync, UDP-Sockets mit 4 MiB Puffer, Verlust-Simulation |
-| `capture` | `FrameSource`-Trait, Testbild (NV12, bewegter Balken), DMA-BUF-Beschreibung, KMS-Capture im VBlank-Takt (Feature `kms`, pures Rust) |
-| `codec` | `Encoder`/`Decoder`-Traits, synthetischer Codec, VAAPI H.264, HEVC und AV1 über FFmpeg (Feature `vaapi`): DMA-BUF-Import ohne Kopie, RGB→NV12 und Skalierung per `scale_vaapi`; NVENC/NVDEC (Feature `nvidia`), Bildschirm über Vulkan → CUDA ohne CPU-Kopie |
-| `gpu` | Vulkan-Gerät und DMA-BUF-Import ohne Kopie (für Renderer und Encoder), RGB-DMA-BUF → NV12 per Compute-Shader für NVENC |
-| `render` | `Presenter`-Trait, Overlay-Formatierung |
-| `input`, `audio` | Event-Typen, Traits, Duplikat-Filter (Phase 2) |
+| 🖥️ **Remote desktop** | Mouse and keyboard reliably over UDP, every event exactly once; the pointer drawn by the client so it never lags; several monitors with switching in the session; system keys (Meta, Alt+Tab, Ctrl+Alt+Del) in fullscreen or from a menu |
+| 🎮 **Game streaming** | Gaming mode with a captured pointer (relative mouse), up to four controllers that appear on the host as Xbox 360 pads Steam knows, 60 to 144 fps |
+| ⚡ **Low latency** | KMS capture at vblank, zero-copy into VAAPI or NVENC, low-latency encoder settings, Reed-Solomon FEC instead of retransmits, paced UDP, decoded pictures straight into Vulkan, a per-stage latency overlay |
+| 🎞️ **AV1, HEVC, H.264** | Each session takes the best codec both sides do in hardware; switchable in the settings |
+| 🔊 **Sound** | What the host plays, Opus with 5 ms frames, a 15 ms jitter buffer that hides loss |
+| 🔐 **Pairing and encryption** | Pair once with a PIN (SPAKE2, no offline guessing), Noise IK per session, ChaCha20-Poly1305 for every packet, only paired devices get in |
+| 🌐 **Web viewer** | The host serves it itself: any browser in the LAN, PIN once, WebRTC with AV1 or H.264; on phones with gestures, touchpad mode, pinch zoom and the on-screen keyboard |
+| 📶 **Bad networks** | Forward error correction sized from the measured loss, bitrate adaptation on congestion; 1 % loss costs no frame |
+| 🧰 **Host as a service** | systemd unit, encoder picked for the GPU, GPU clocks raised during sessions, pairing and status from the app or the command line |
 
-### Threading
+## 📸 Screenshots
 
-```text
-Host:   [capture] --slot(1)--> [encode] --fifo(2)--> [packetize + FEC + pacing + send]
-        [control]  Hello/Ack, Clock-Pong, Feedback → FEC-Bemessung, Keyframe
-Client: [network] --fifo(4)--> [decode] --latest wins--> [present]
-```
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshot-devices.png" alt="Fernsicht app: devices in the network with their OS, GPU and codec, online status, and Desktop and Gaming buttons"><br><sub><b>Devices</b> – found in the LAN, paired with a PIN · <a href="https://firsttris.github.io/fernsicht/app.html">docs →</a></sub></td>
+    <td width="50%"><img src="docs/screenshot-settings.png" alt="Settings: resolution, frame rate, bitrate and video format (automatic, AV1, HEVC, H.264)"><br><sub><b>Settings</b> – resolution, fps, bitrate, codec · <a href="https://firsttris.github.io/fernsicht/app.html#settings">docs →</a></sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshot-connect.png" alt="Connect dialog: a device ID typed in"><br><sub><b>Connect</b> – by name, address or ID · <a href="https://firsttris.github.io/fernsicht/app.html">docs →</a></sub></td>
+    <td><img src="docs/screenshot-viewer-connect.png" alt="Web viewer in a browser: connecting with the pairing PIN"><br><sub><b>Web viewer</b> – no install, PIN once · <a href="https://firsttris.github.io/fernsicht/web-viewer.html">docs →</a></sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshot-viewer-phone-landscape.png" alt="Web viewer on a phone in landscape: the remote desktop with the toolbar and the latency overlay"><br><sub><b>On a phone</b> – gestures, zoom, on-screen keyboard · <a href="https://firsttris.github.io/fernsicht/web-viewer.html#phones-and-tablets">docs →</a></sub></td>
+    <td><img src="docs/screenshot-viewer-phone.png" alt="Web viewer on a phone in portrait with the latency overlay: codec AV1, 121 fps, 40 Mbit/s"><br><sub><b>Portrait</b> – the toolbar wraps, the picture fits · <a href="https://firsttris.github.io/fernsicht/web-viewer.html">docs →</a></sub></td>
+  </tr>
+</table>
 
-Jede Stufe läuft auf einem eigenen OS-Thread. Nach dem Aufwärmen wird
-nicht mehr allokiert: Frame-Puffer laufen über kleine Freilisten im Kreis.
-„Latest frame wins“ gilt nur für *rohe* bzw. *dekodierte* Frames.
-Komprimierte Frames hängen voneinander ab und gehen deshalb durch eine
-kurze FIFO. Läuft die über, zeigt eine Lücke in der Frame-ID das an, und
-ein Keyframe wird angefordert.
+## 📈 Performance
 
-### Latenz-Messung
+Measured end to end on the two test machines, without the monitor's own delay
+(details and what can still get faster: [performance](https://firsttris.github.io/fernsicht/performance.html)):
 
-Der Host schreibt Capture-Zeitpunkt sowie die Abstände bis „Capture fertig“
-und „Encode fertig“ in jeden Paket-Header. Der Client misst Ankunft,
-Decode und Anzeige selbst und rechnet alles über den geschätzten
-Uhren-Offset auf eine Zeitachse um. Für den Offset zählt die Probe mit der
-kleinsten RTT aus den letzten 16. Die Stufen heißen wie im UI: Capture,
-Encode, Netz, Decode, Anzeige.
+| Path | Glass-to-glass |
+|---|---|
+| Loopback, AMD RX 7800 XT, H.264 1080p60 | ≈ 9.4 ms |
+| GTX 1080, NVENC → NVDEC, HEVC 1080p60 | ≈ 4.1 ms |
+| AMD host → NVIDIA client over Wi-Fi, 1080p | 11.5 ms |
+| AMD host → NVIDIA client over Wi-Fi, 1440p | 16.3 ms |
 
-## Entwicklung und Tests
+At the same bitrate HEVC gives a clearly sharper picture than H.264 (GTX 1080, 4 Mbit/s 1080p:
+32.4 dB instead of 29.1 dB PSNR with a third of the bytes). Every step of the path is shown live in
+the overlay: capture, encode, network, decode, display.
+
+## 🆚 Fernsicht and the alternatives
+
+| | Fernsicht | Sunshine + Moonlight | Parsec | RustDesk |
+|---|---|---|---|---|
+| Linux host | ✅ KMS, also login screen and gamescope | ✅ | ❌ | ✅ |
+| Latency focus | ✅ zero-copy, FEC, per-stage overlay | ✅ | ✅ | ➖ |
+| Remote desktop comfort (find, pair, click) | ✅ | ➖ pairing per client, made for games | ✅ | ✅ |
+| Browser client | ✅ built into the host | ❌ | ❌ | ➖ web client |
+| Account or cloud | none | none | required | optional relay server |
+| Over the internet | via VPN for now ([how](https://firsttris.github.io/fernsicht/remote-access.html)) | port forwarding | ✅ | ✅ |
+| Windows/macOS | ❌ | ✅ | ✅ | ✅ |
+
+A latency comparison with Sunshine/Moonlight on the same machines is planned
+([method](https://firsttris.github.io/fernsicht/latency-baseline.html)).
+
+## ❓ FAQ
+
+<details>
+<summary><b>Does it work on Wayland?</b></summary>
+
+Yes. The host does not depend on the compositor: it reads the screen over KMS (kernel mode setting),
+the same way on KDE Plasma, GNOME, Hyprland, Sway, gamescope and X11. That needs root
+(`CAP_SYS_ADMIN`), which the system service has. The client window runs on Wayland and X11.
+</details>
+
+<details>
+<summary><b>Does it work with NVIDIA?</b></summary>
+
+Yes, with the proprietary driver: NVENC on the host (the screen goes from KMS through Vulkan into
+CUDA, without a CPU copy) and NVDEC in the client. Tested on a GTX 1080.
+</details>
+
+<details>
+<summary><b>Can I use it over the internet?</b></summary>
+
+Today through a VPN such as Tailscale or WireGuard (or Cloudflare WARP): then it works as in the LAN.
+Built-in NAT traversal is on the [roadmap](https://firsttris.github.io/fernsicht/next-steps.html).
+See [remote access](https://firsttris.github.io/fernsicht/remote-access.html).
+</details>
+
+<details>
+<summary><b>Is it a Sunshine or Moonlight replacement for gaming?</b></summary>
+
+For Linux to Linux and browsers, yes in intent: gaming mode, controllers, 120 Hz and more, AV1/HEVC.
+It does not speak the Moonlight protocol, so Moonlight clients cannot connect.
+</details>
+
+<details>
+<summary><b>Is it secure?</b></summary>
+
+Only paired devices can connect. Pairing uses a 6-digit PIN with SPAKE2 (a recorded pairing cannot be
+used to guess the PIN), each session starts with a Noise IK handshake, and every packet is encrypted
+and authenticated. The web viewer is meant for the LAN: its page and PIN travel over plain HTTP. See
+[security](https://firsttris.github.io/fernsicht/security.html).
+</details>
+
+<details>
+<summary><b>Which codec does it use?</b></summary>
+
+The best both sides support in hardware: AV1, then HEVC, then H.264. A GTX 1080 decodes no AV1, so
+it gets HEVC; a browser offering AV1 gets AV1 from an AMD RX 6000/7000. You can also pick one in the
+settings.
+</details>
+
+## 📚 Documentation
+
+Everything else – installation, the app, the web viewer, the host, how it works inside, the protocol,
+security, performance and the roadmap – is in the **[documentation](https://firsttris.github.io/fernsicht/)**.
+
+## 🛠️ Development
 
 ```sh
-# Rust: Lint, Unit-, Property-, Integrations- und E2E-Tests
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-
-# Web: Format, Typen, Unit-/Komponententests mit Coverage, Browser-E2E + axe
-pnpm install
-pnpm format:check && pnpm -r typecheck
-pnpm test:coverage
-pnpm test:e2e
+cargo build --release                       # host and client (test pattern, synthetic codec)
+cargo test --workspace                      # unit, property, integration, end-to-end
+pnpm install && pnpm test && pnpm test:e2e  # app UI and web viewer
 ```
 
-Die Testebenen (Unit, Property, Integration, Protokoll-Konformität, E2E
-über ein gestörtes Netz, Binaries, Soak, Fuzzing, Benchmarks, Browser-E2E,
-Accessibility) und ihre CI-Jobs beschreibt [docs/testing.md](docs/testing.md).
-CI läuft bei jedem Push. Nachts kommen 15 Minuten Fuzzing pro Target und
-der Soak-Test dazu.
+On Bazzite, `dev/setup.sh` builds the development container with FFmpeg, Vulkan and the GPU drivers.
+Build features, the test layers, the GPU runners and the release flow are in the
+[development guide](https://firsttris.github.io/fernsicht/development.html).
 
-Auf Bazzite: `dev/setup.sh` (bzw. `dev/setup.sh --nvidia`) baut den
-Dev-Container und legt die Distrobox an. `dev/gpu-check.sh` zeigt, was die
-GPU kann, und testet Hardware-Encode und -Decode. Wie du einen Rechner als
-selbst gehosteten GitHub-Runner für die GPU-Tests einrichtest, steht in
-[docs/gpu-runner.md](docs/gpu-runner.md).
+---
 
-Bei Drops auf Keyframes (`RcvbufErrors` in `/proc/net/snmp`) die
-UDP-Puffer anheben:
+<div align="center">
 
-```sh
-sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
-```
+⭐ Like Fernsicht? A [star on GitHub](https://github.com/firsttris/fernsicht) helps others find it.<br>
+🐛 [Report a bug](https://github.com/firsttris/fernsicht/issues/new) · 💡 [Request a feature](https://github.com/firsttris/fernsicht/issues/new)
 
-## Nächste Schritte (Phase 1)
+<sub>License: <a href="LICENSE">AGPL-3.0</a> · © Tristan Teufel and contributors<br>
+Changed versions you pass on or run for others must offer their source code under the AGPL; a commercial license without these obligations is available via <a href="https://teufel-it.de">teufel-it.de</a>.<br>
+Fernsicht is not affiliated with Valve, NVIDIA, AMD, Intel, Parsec, Moonlight, Sunshine, RustDesk or TeamViewer.</sub>
 
-1. Sunshine-Referenz messen und in `docs/latency-baseline.md` eintragen.
-2. NVIDIA ohne Kopie: NVDEC-Bilder direkt in Vulkan. (Die Bildschirmaufnahme
-   für NVENC läuft schon ohne Kopie, über Vulkan → CUDA.)
-3. PipeWire-Portal als zweites
-   Capture-Backend.
-4. Abnahme: 1080p60, glass-to-glass < 20 ms per Handy-Slowmo.
-
-## Offene Entscheidungen
-
-Lizenz, Name/Marke, erster Client (eigener vs. Moonlight-kompatibel),
-Codec-Start (H.264 vs. AV1), Self-hosted only vs. gehosteter
-Rendezvous-Dienst. Details stehen im Implementierungsplan.
+</div>

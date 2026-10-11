@@ -176,7 +176,7 @@ function LocalHostCard({
       ) : (
         <span className="text-xs text-muted-foreground">
           Kein Host aktiv. Damit andere Geräte auf diesen Rechner zugreifen können, den Host
-          einrichten (docs/install.md).
+          einrichten (docs/installation.md).
         </span>
       )}
       {service && <ShareControls service={service} />}

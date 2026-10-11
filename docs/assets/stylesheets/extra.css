@@ -1,0 +1,24 @@
+/* Colors of the app (zinc, like web/ui) */
+:root {
+  --md-primary-fg-color: #18181b;
+  --md-primary-fg-color--light: #3f3f46;
+  --md-primary-fg-color--dark: #09090b;
+  --md-accent-fg-color: #2563eb;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #09090b;
+  --md-default-bg-color: #18181b;
+  --md-accent-fg-color: #60a5fa;
+  --md-typeset-a-color: #93c5fd;
+}
+/* Screenshots: rounded with a shadow, never wider than the text */
+.md-typeset img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
+}
+/* Long reference tables */
+.md-typeset table:not([class]) {
+  font-size: .75rem;
+}

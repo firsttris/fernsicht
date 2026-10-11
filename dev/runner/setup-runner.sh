@@ -58,7 +58,7 @@ if [ "$gpu" = amd ]; then
   done
   [ -n "$render" ] || { echo "Kein /dev/dri/renderD*: AMD-Treiber geladen?" >&2; exit 1; }
   if [ ! -r "$render" ] || [ ! -w "$render" ]; then
-    echo "Kein Zugriff auf $render. Siehe docs/gpu-runner.md → Fehlerbehebung (render-Gruppe)." >&2
+    echo "No access to $render. See docs/gpu-runner.md → Troubleshooting (render group)." >&2
     exit 1
   fi
 else
@@ -91,7 +91,7 @@ podman volume create --ignore "$volume" >/dev/null
 state="$(run_helper --entrypoint sh localhost/fernsicht-runner:latest -c \
   'if [ -f /runner/.runner ]; then echo registered; elif [ -r /runner ] && [ -x /runner ]; then echo new; else echo denied; fi')"
 if [ "$state" = denied ]; then
-  echo "Kein Zugriff auf das Volume ${volume}. Siehe docs/gpu-runner.md → Fehlerbehebung." >&2
+  echo "No access to the volume ${volume}. See docs/gpu-runner.md → Troubleshooting." >&2
   exit 1
 elif [ "$state" = registered ]; then
   echo "==> Runner ist bereits registriert."
@@ -124,7 +124,7 @@ echo "==> GPU-Check im Runner-Container:"
 podman run --rm --device "$device" --group-add=keep-groups --security-opt=label=disable \
   -v "${here}/../gpu-check.sh:/gpu-check.sh:ro" --entrypoint bash \
   localhost/fernsicht-runner:latest /gpu-check.sh --expect "$gpu" || {
-  echo "GPU-Check fehlgeschlagen, siehe docs/gpu-runner.md → Fehlerbehebung." >&2
+  echo "GPU check failed, see docs/gpu-runner.md → Troubleshooting." >&2
   exit 1
 }
 

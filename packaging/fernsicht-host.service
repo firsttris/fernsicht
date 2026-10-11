@@ -1,5 +1,5 @@
 # The Fernsicht host as a system service: streams the screen to paired
-# devices. Installed by packaging/install-host.sh; see docs/install.md.
+# devices. Installed by packaging/install-host.sh; see docs/installation.md.
 #
 # Runs as root for KMS screen capture (CAP_SYS_ADMIN) and /dev/uinput. The
 # desktop's sound and monitor layout are found through the logged-in user.
@@ -7,7 +7,7 @@
 
 [Unit]
 Description=Fernsicht host (screen streaming to paired devices)
-Documentation=https://github.com/firsttris/fernsicht/blob/main/docs/install.md
+Documentation=https://github.com/firsttris/fernsicht/blob/main/docs/installation.md
 Wants=network-online.target
 After=network-online.target
 

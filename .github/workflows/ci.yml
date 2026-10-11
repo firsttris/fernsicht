@@ -4,7 +4,10 @@ on:
   push:
     # Branches only: a release tag runs these checks through release.yml.
     branches: ["**"]
+    # Documentation alone needs no build (docs.yml builds the site)
+    paths-ignore: ["**.md", "docs/**", "LICENSE", "NOTICE", "mkdocs.yml", "requirements-docs.txt"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE", "NOTICE", "mkdocs.yml", "requirements-docs.txt"]
   schedule:
     # Nightly: long fuzzing and the soak test.
     - cron: "17 2 * * *"

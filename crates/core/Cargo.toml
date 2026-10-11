@@ -2,6 +2,7 @@
 name = "fernsicht-core"
 description = "Pipeline primitives: monotonic clock, latest-frame-wins slots, latency stats, hot threads"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

@@ -76,7 +76,7 @@ struct Args {
     #[arg(long)]
     no_web: bool,
     /// Leave the GPU's clocks alone during sessions (by default they are
-    /// raised while someone watches, see docs/install.md; also switchable
+    /// raised while someone watches, see docs/installation.md; also switchable
     /// in the app).
     #[arg(long)]
     no_gpu_boost: bool,

@@ -1,247 +1,249 @@
-# GPU-Rechner einrichten: Distrobox und GitHub-Runner
+# GPU runners
 
-Diese Anleitung richtet einen Bazzite-Rechner so ein, dass
+This guide sets up a Bazzite machine so that
 
-1. du (oder Claude Code) dort in einer **Distrobox** mit Zugriff auf die GPU
-   entwickeln kannst, und
-2. ein **selbst gehosteter GitHub-Runner** die GPU-Tests aus CI auf echter
-   Hardware ausführt, also VAAPI auf der Radeon RX 7800 XT und NVENC/NVDEC
-   auf der GTX 1080.
+1. you (or Claude Code) can develop there in a **Distrobox** with access to
+   the GPU, and
+2. a **self-hosted GitHub runner** runs the GPU tests from CI on real
+   hardware, that is VAAPI on the Radeon RX 7800 XT and NVENC/NVDEC on the
+   GTX 1080.
 
-Beide Rechner werden gleich eingerichtet. Nur der Schalter `amd` bzw.
-`nvidia` unterscheidet sich. Pro Rechner dauert das etwa 15 Minuten.
+Both machines are set up the same way. Only the switch `amd` or `nvidia`
+differs. Each machine takes about 15 minutes.
 
-## Wie es aufgebaut ist
+## How it is structured
 
 ```text
-Bazzite (Host, bleibt unverändert)
-├── Distrobox "fernsicht"            ← zum Entwickeln, teilt dein $HOME
+Bazzite (host, stays unchanged)
+├── Distrobox "fernsicht"            ← for development, shares your $HOME
 │     Image: localhost/fernsicht-dev
-└── Podman-Container "fernsicht-runner-amd|nvidia"  ← für CI, isoliert
-      Image: localhost/fernsicht-runner (= dev-Image + GitHub-Runner)
-      läuft als systemd-User-Dienst (Quadlet), startet mit dem Rechner
+└── Podman container "fernsicht-runner-amd|nvidia"  ← for CI, isolated
+      Image: localhost/fernsicht-runner (= dev image + GitHub runner)
+      runs as a systemd user service (Quadlet), starts with the machine
 ```
 
-Warum zwei Container? Eine Distrobox teilt absichtlich dein ganzes
-Home-Verzeichnis mit dem Host, inklusive `~/.ssh`, Browser-Profil und
-Passwörtern. Das ist zum Entwickeln praktisch. Für einen Runner, der Code
-aus einem **öffentlichen** Repo ausführt, wäre es ein Risiko. Der Runner
-läuft deshalb in einem eigenen Podman-Container. Er sieht nur die GPU und
-seine eigenen Volumes, keine Verzeichnisse vom Host.
+Why two containers? A Distrobox deliberately shares your whole home
+directory with the host, including `~/.ssh`, your browser profile and
+passwords. That is convenient for development. For a runner that executes
+code from a **public** repo, it would be a risk. So the runner runs in its
+own Podman container. It sees only the GPU and its own volumes, no
+directories from the host.
 
-## Voraussetzungen
+## Requirements
 
-| | AMD-Rechner (RX 7800 XT) | NVIDIA-Rechner (GTX 1080) |
+| | AMD machine (RX 7800 XT) | NVIDIA machine (GTX 1080) |
 |---|---|---|
-| Bazzite-Image | normales Bazzite | Bazzite **mit geschlossenem NVIDIA-Treiber** (`bazzite-nvidia`, *nicht* `-open`: die offenen Kernel-Module unterstützen erst RTX 20xx und neuer) |
-| Prüfen | `ls /dev/dri` zeigt `renderD128` | `nvidia-smi` zeigt die GTX 1080 |
-| Zusätzlich | nichts | CDI-Spezifikation, siehe unten |
+| Bazzite image | regular Bazzite | Bazzite **with the closed NVIDIA driver** (`bazzite-nvidia`, *not* `-open`: the open kernel modules only support RTX 20xx and newer) |
+| Check | `ls /dev/dri` shows `renderD128` | `nvidia-smi` shows the GTX 1080 |
+| Additionally | nothing | CDI specification, see below |
 
-**Nur NVIDIA:** Podman reicht die GPU über CDI in Container. Prüfe, ob die
-Spezifikation existiert:
+**NVIDIA only:** Podman passes the GPU into containers via CDI. Check that
+the specification exists:
 
 ```sh
-nvidia-ctk cdi list        # muss "nvidia.com/gpu=all" enthalten
+nvidia-ctk cdi list        # must contain "nvidia.com/gpu=all"
 ```
 
-Falls nicht, einmalig erzeugen. Nach jedem NVIDIA-Treiber-Update wiederholen,
-falls Bazzite es nicht selbst erledigt:
+If it does not, generate it once. Repeat this after every NVIDIA driver
+update, unless Bazzite does it for you:
 
 ```sh
 sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 ```
 
-> Hinweis zur GTX 1080: NVIDIA hat den 580er-Treiberzweig als letzten mit
-> Unterstützung für Pascal-Karten angekündigt. Für die Entwicklung reicht
-> das. Die Karte kann H.264 und HEVC kodieren und dekodieren, aber kein AV1.
+!!! note "GTX 1080"
+    NVIDIA has announced the 580 driver branch as the last one with support
+    for Pascal cards. That is enough for development. The card can encode
+    and decode H.264 and HEVC, but not AV1.
 
-## Schritt 1: Repo klonen
+## Step 1: Clone the repo
 
-Auf dem Host, in einem Terminal (Ptyxis/Konsole):
+On the host, in a terminal (Ptyxis/Konsole):
 
 ```sh
 git clone https://github.com/firsttris/fernsicht.git ~/fernsicht
 cd ~/fernsicht
 ```
 
-## Schritt 2: Distrobox zum Entwickeln
+## Step 2: Distrobox for development
 
 ```sh
-dev/setup.sh            # AMD-Rechner
-dev/setup.sh --nvidia   # NVIDIA-Rechner
+dev/setup.sh            # AMD machine
+dev/setup.sh --nvidia   # NVIDIA machine
 ```
 
-Das baut das Image `localhost/fernsicht-dev` mit Rust, Node, VAAPI, Vulkan
-und FFmpeg mit allen Codecs (aus RPM Fusion, wie Bazzite selbst) und legt
-die Distrobox an. Danach:
+This builds the image `localhost/fernsicht-dev` with Rust, Node, VAAPI,
+Vulkan and FFmpeg with all codecs (from RPM Fusion, like Bazzite itself)
+and creates the Distrobox. Then:
 
 ```sh
-distrobox enter fernsicht          # bzw. fernsicht-nvidia
+distrobox enter fernsicht          # or fernsicht-nvidia
 cd ~/fernsicht
-dev/gpu-check.sh                   # was kann die GPU?
-cargo test --workspace             # die bestehende Testsuite
+dev/gpu-check.sh                   # what can the GPU do?
+cargo test --workspace             # the existing test suite
 ```
 
-`dev/gpu-check.sh` zeigt GPU, Treiber, VAAPI- und Vulkan-Video-Fähigkeiten.
-Dazu kodiert und dekodiert es zwei Sekunden 1080p60 in Hardware: Auf AMD läuft
-das über VAAPI, auf NVIDIA über NVENC/NVDEC. Auf AMD sollten
-`vaapi-h264-encode` und `vaapi-h264-decode` auf **PASS** stehen, auf NVIDIA
-`nvenc-h264-encode` und `nvdec-h264-decode`.
+`dev/gpu-check.sh` shows the GPU, the driver, and the VAAPI and Vulkan Video
+capabilities. It also encodes and decodes two seconds of 1080p60 in
+hardware: on AMD this uses VAAPI, on NVIDIA it uses NVENC/NVDEC. On AMD,
+`vaapi-h264-encode` and `vaapi-h264-decode` should show **PASS**, on NVIDIA
+`nvenc-h264-encode` and `nvdec-h264-decode`.
 
-In der Distrobox kannst du auch Claude Code starten. Es hat dort dieselbe
-GPU zur Verfügung und kann Hardware-Code direkt testen.
+You can also start Claude Code inside the Distrobox. It has the same GPU
+available there and can test hardware code directly.
 
-## Schritt 3: Runner-Token holen
+## Step 3: Get a runner token
 
-1. <https://github.com/firsttris/fernsicht/settings/actions/runners/new> öffnen
+1. Open <https://github.com/firsttris/fernsicht/settings/actions/runners/new>
    (*Settings → Actions → Runners → New self-hosted runner*).
-2. Bei „Configure“ steht ein Befehl mit `--token XXXXX`. Nur dieses Token
-   kopieren. Den Rest der Seite brauchst du nicht, das Skript erledigt
-   Download und Konfiguration.
+2. Under "Configure" there is a command with `--token XXXXX`. Copy only this
+   token. You do not need the rest of the page; the script handles the
+   download and configuration.
 
-Das Token ist eine Stunde gültig und wird nur einmal zum Registrieren
-gebraucht.
+The token is valid for one hour and is needed only once, to register.
 
-## Schritt 4: Runner einrichten
+## Step 4: Set up the runner
 
-**Auf dem Host**, nicht in der Distrobox:
+**On the host**, not in the Distrobox:
 
 ```sh
 cd ~/fernsicht
-dev/runner/setup-runner.sh --gpu amd       # AMD-Rechner
-dev/runner/setup-runner.sh --gpu nvidia    # NVIDIA-Rechner
+dev/runner/setup-runner.sh --gpu amd       # AMD machine
+dev/runner/setup-runner.sh --gpu nvidia    # NVIDIA machine
 ```
 
-Das Skript fragt nach dem Token, aber erst nach dem Bau der Images (beim
-ersten Mal 10–20 Minuten). Weil das Token nur eine Stunde gilt, gibst du es
-am besten vorher verdeckt ein. Dann landet es auch nicht im Shell-Verlauf:
+The script asks for the token, but only after it has built the images
+(10–20 minutes the first time). Because the token is valid for only one
+hour, it is best to enter it beforehand, hidden. That way it also does not
+end up in your shell history:
 
 ```sh
 # bash
 read -rsp "Token: " RUNNER_TOKEN && export RUNNER_TOKEN
-# fish (Standard-Shell auf vielen Bazzite-Installationen)
+# fish (default shell on many Bazzite installations)
 read -gxsP "Token: " RUNNER_TOKEN
 ```
 
-Das Skript macht dann Folgendes:
+The script then does the following:
 
-1. Es prüft den GPU-Zugriff (Render-Node bzw. `nvidia-smi` und CDI).
-2. Es baut `localhost/fernsicht-dev` und darauf `localhost/fernsicht-runner`
-   mit der aktuellen Version des GitHub-Runners.
-3. Es registriert den Runner einmalig mit den Labels
-   `self-hosted, linux, gpu-amd` bzw. `gpu-nvidia`. Die Registrierung liegt
-   im Volume `fernsicht-runner-<gpu>` und übersteht Image-Updates.
-4. Es installiert den systemd-User-Dienst `fernsicht-runner-<gpu>` als
-   Quadlet unter `~/.config/containers/systemd/`, aktiviert „Lingering“
-   (der Dienst läuft auch ohne Anmeldung) und startet ihn.
-5. Es führt `gpu-check.sh` im Runner-Container aus. Wenn das klappt, kommt
-   die GPU auch in den CI-Jobs an.
+1. It checks GPU access (render node, or `nvidia-smi` and CDI).
+2. It builds `localhost/fernsicht-dev` and, on top of it,
+   `localhost/fernsicht-runner` with the current version of the GitHub
+   runner.
+3. It registers the runner once with the labels
+   `self-hosted, linux, gpu-amd` or `gpu-nvidia`. The registration is stored
+   in the volume `fernsicht-runner-<gpu>` and survives image updates.
+4. It installs the systemd user service `fernsicht-runner-<gpu>` as a
+   Quadlet under `~/.config/containers/systemd/`, enables "lingering" (the
+   service also runs when you are not logged in) and starts it.
+5. It runs `gpu-check.sh` in the runner container. If that works, the GPU
+   also reaches the CI jobs.
 
-## Schritt 5: Prüfen
+## Step 5: Verify
 
-- <https://github.com/firsttris/fernsicht/settings/actions/runners> sollte
-  den Runner als **Idle** zeigen.
-- Unter <https://github.com/firsttris/fernsicht/actions/workflows/gpu.yml>
-  auf **Run workflow** klicken. Der Job `GPU · amd` bzw. `GPU · nvidia`
-  läuft auf deinem Rechner. Seine Zusammenfassung zeigt dieselbe Tabelle
-  wie `gpu-check.sh`.
+- <https://github.com/firsttris/fernsicht/settings/actions/runners> should
+  show the runner as **Idle**.
+- Under <https://github.com/firsttris/fernsicht/actions/workflows/gpu.yml>,
+  click **Run workflow**. The job `GPU · amd` or `GPU · nvidia` runs on your
+  machine. Its summary shows the same table as `gpu-check.sh`.
 
-Auf dem Rechner selbst:
+On the machine itself:
 
 ```sh
 systemctl --user status fernsicht-runner-amd
 journalctl --user -u fernsicht-runner-amd -f
 ```
 
-### Welche Rechner der Workflow benutzt
+### Which machines the workflow uses
 
-Ohne weitere Einstellung schickt der Workflow Jobs nur an den AMD-Runner.
-Sobald der NVIDIA-Rechner eingerichtet ist, legst du unter *Settings →
-Secrets and variables → Actions → Variables* die Repository-Variable
-`GPU_RUNNERS` mit dem Wert `["amd","nvidia"]` an. Ab dann laufen beide.
+Without further configuration, the workflow sends jobs only to the AMD
+runner. Once the NVIDIA machine is set up, create the repository variable
+`GPU_RUNNERS` with the value `["amd","nvidia"]` under *Settings → Secrets
+and variables → Actions → Variables*. From then on, both run.
 
-## Wann die GPU-Jobs laufen
+## When the GPU jobs run
 
-Der Workflow `.github/workflows/gpu.yml` läuft
+The workflow
+[`.github/workflows/gpu.yml`](https://github.com/firsttris/fernsicht/blob/main/.github/workflows/gpu.yml)
+runs
 
-- bei Pushes auf `main`, die Code oder `dev/` ändern,
-- jede Nacht (fängt Mesa- und Treiber-Updates von Bazzite ab),
-- auf Knopfdruck (*Run workflow*).
+- on pushes to `main` that change code or `dev/`,
+- every night (this catches Mesa and driver updates from Bazzite),
+- on demand (*Run workflow*).
 
-Er läuft **nie** bei Pull Requests, auch nicht bei solchen aus Forks.
+It **never** runs on pull requests, not even on those from forks.
 
-Ist ein Rechner aus, wartet sein Job in der Warteschlange. GitHub bricht ihn
-nach 24 Stunden ab, du kannst ihn aber auch im Actions-Tab abbrechen. Die
-normale CI läuft davon unabhängig weiter.
+If a machine is off, its job waits in the queue. GitHub cancels it after
+24 hours, but you can also cancel it in the Actions tab. The regular CI
+keeps running independently of this.
 
-## Sicherheit
+## Security
 
-Das Repo ist öffentlich, und ein selbst gehosteter Runner führt Code aus
-dem Repo auf deinem Rechner aus. Die Schutzmaßnahmen:
+The repo is public, and a self-hosted runner executes code from the repo on
+your machine. The safeguards:
 
-- **Wer Code starten kann:** Nur wer auf `main` pushen darf, also du. Pull
-  Requests lösen den Workflow nicht aus, und der Job prüft zusätzlich das
-  Repo und das Ereignis.
-- **Was der Code sieht:** Der Container ist rootless. Root im Container ist
-  dein Benutzer auf dem Host, aber ohne eingebundene Host-Verzeichnisse.
-  Sichtbar sind nur die GPU und die Volumes `fernsicht-runner-*`.
-- **Was du zusätzlich einstellen solltest:** Unter *Settings → Actions →
-  General* bei „Fork pull request workflows from outside collaborators“
-  **„Require approval for all external contributors“** wählen.
-- **Bekannter Kompromiss:** SELinux-Labels sind für den Container
-  abgeschaltet (`label=disable`), sonst blockiert SELinux den GPU-Zugriff.
-  Das ist NVIDIAs dokumentierte Einstellung für CDI-Geräte. Die Isolation
-  über rootless Podman und die fehlenden Host-Mounts bleibt bestehen.
+- **Who can start code:** Only people who may push to `main`, that is, you.
+  Pull requests do not trigger the workflow, and the job additionally checks
+  the repo and the event.
+- **What the code sees:** The container is rootless. Root in the container
+  is your user on the host, but without any mounted host directories. Only
+  the GPU and the volumes `fernsicht-runner-*` are visible.
+- **What you should also configure:** Under *Settings → Actions → General*,
+  for "Fork pull request workflows from outside collaborators", choose
+  **"Require approval for all external contributors"**.
+- **Known trade-off:** SELinux labels are disabled for the container
+  (`label=disable`), because otherwise SELinux blocks GPU access. This is
+  NVIDIA's documented setting for CDI devices. The isolation through
+  rootless Podman and the absence of host mounts remains in place.
 
-## Betrieb
+## Operation
 
-| Aufgabe | Befehl |
+| Task | Command |
 |---|---|
-| Nach Bazzite-Update neu bauen | `dev/runner/setup-runner.sh --gpu amd` (registriert nicht neu) |
-| Pausieren | `systemctl --user stop fernsicht-runner-amd` |
-| Entfernen | `dev/runner/setup-runner.sh --gpu amd --remove`, dann den Runner auf GitHub löschen |
-| Build-Cache leeren | `podman volume rm fernsicht-runner-cache` (Dienst vorher stoppen) |
+| Rebuild after a Bazzite update | `dev/runner/setup-runner.sh --gpu amd` (does not register again) |
+| Pause | `systemctl --user stop fernsicht-runner-amd` |
+| Remove | `dev/runner/setup-runner.sh --gpu amd --remove`, then delete the runner on GitHub |
+| Clear the build cache | `podman volume rm fernsicht-runner-cache` (stop the service first) |
 
-Der Build-Cache (`/cache` im Container: Cargo-Registry und `target/`) macht
-die Läufe nach dem ersten schnell.
+The build cache (`/cache` in the container: Cargo registry and `target/`)
+makes the runs after the first one fast.
 
-## Bekannte Grenzen
+## Known limitations
 
-- **KMS-Capture braucht `CAP_SYS_ADMIN` auf dem Host.** Im rootless Runner
-  gibt es das nicht. Capture-Tests über KMS laufen daher in der Distrobox
-  oder auf dem Host:
+- **KMS capture needs `CAP_SYS_ADMIN` on the host.** The rootless runner
+  does not have it. Capture tests via KMS therefore run in the Distrobox or
+  on the host:
   `sudo setcap cap_sys_admin+p target/release/fernsicht-host-agent`.
-  Encode, Decode und Vulkan funktionieren im Runner.
-- **Echte Glass-to-Glass-Latenz** misst weiterhin ein Mensch mit
-  Handy-Slowmo (siehe [latency-baseline.md](latency-baseline.md)). Der
-  Runner misst die Stufen, nicht den Bildschirm.
+  Encode, decode and Vulkan work in the runner.
+- **Real glass-to-glass latency** is still measured by a person with a
+  phone's slow-motion camera (see [latency-baseline.md](latency-baseline.md)).
+  The runner measures the stages, not the screen.
 
-## Fehlerbehebung
+## Troubleshooting
 
-**„Kein Zugriff auf /dev/dri/renderD128“ (AMD).** Auf Fedora Atomic
-(Bazzite) liegen Systemgruppen in `/usr/lib/group` und lassen sich nicht
-direkt mit `usermod` ändern. So kommst du in die `render`-Gruppe, danach neu
-anmelden:
+**"No access to /dev/dri/renderD128" (AMD).** On Fedora Atomic (Bazzite), system groups live
+in `/usr/lib/group` and cannot be changed directly with `usermod`. This is
+how you get into the `render` group; log in again afterwards:
 
 ```sh
-ls -l /dev/dri/renderD128                       # Gruppe und Rechte ansehen
+ls -l /dev/dri/renderD128                       # show group and permissions
 grep -E '^render:' /usr/lib/group | sudo tee -a /etc/group
 sudo usermod -aG render "$USER"
 ```
 
-**`vaapi-h264-encode` FAIL, aber die GPU ist da.** Dann ist im Image das
-Mesa-VA ohne H.264 aktiv. Prüfen mit
-`rpm -q mesa-va-drivers-freeworld` (muss installiert sein). Das Image neu
-bauen mit `dev/setup.sh` bzw. `setup-runner.sh`.
+**`vaapi-h264-encode` FAIL, but the GPU is there.** Then the image uses the
+Mesa VA driver without H.264. Check with
+`rpm -q mesa-va-drivers-freeworld` (it must be installed). Rebuild the
+image with `dev/setup.sh` or `setup-runner.sh`.
 
-**`nvidia-smi` im Container schlägt fehl.** Meist ist die CDI-Spezifikation
-nach einem Treiber-Update veraltet:
-`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`, dann
+**`nvidia-smi` fails in the container.** Usually the CDI specification is
+out of date after a driver update:
+`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`, then
 `systemctl --user restart fernsicht-runner-nvidia`.
 
-**Runner auf GitHub „Offline“.** Prüfe `systemctl --user status
-fernsicht-runner-<gpu>` und `loginctl show-user "$USER" | grep Linger`
-(muss `Linger=yes` sein).
+**Runner shows "Offline" on GitHub.** Check `systemctl --user status
+fernsicht-runner-<gpu>` and `loginctl show-user "$USER" | grep Linger`
+(must be `Linger=yes`).
 
-**Token abgelaufen.** Neues Token holen (Schritt 3) und das Skript erneut
-ausführen. Ist der Runner noch nicht registriert, fragt es danach.
+**Token expired.** Get a new token (step 3) and run the script again. If
+the runner is not registered yet, it asks for the token.

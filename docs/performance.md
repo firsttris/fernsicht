@@ -1,177 +1,177 @@
-# Performance: wo es noch schneller und besser geht
+# Performance
 
-Stand: 10.10.2026. Was Fernsicht heute macht, was es bringt und wo noch
-Luft ist. Für den Überblick über offene Aufgaben siehe
-[weitermachen.md](weitermachen.md).
+Where Fernsicht can still get faster and better. As of 2026-10-10: what
+Fernsicht does today, what it gains, and where there is still room. For the
+overview of open tasks, see [handover.md](handover.md).
 
-## Wo wir stehen
+## Where we stand
 
-| Strecke | Glass-to-Glass | Größter Posten |
+| Route | Glass-to-glass | Largest contributor |
 |---|---|---|
-| Loopback (ein Rechner) | ≈ 9,4 ms | – |
-| zentrale → bazzite, 1080p, WLAN | 11,5 ms | Netz (WLAN) |
-| zentrale → bazzite, 1440p, WLAN | 16,3 ms | Encode 10 ms (GPU taktet herunter) |
-| GTX 1080, NVENC → NVDEC, ohne Bildschirm | ≈ 5 ms | – |
+| Loopback (one machine) | ≈ 9.4 ms | – |
+| zentrale → bazzite, 1080p, Wi-Fi | 11.5 ms | Network (Wi-Fi) |
+| zentrale → bazzite, 1440p, Wi-Fi | 16.3 ms | Encode 10 ms (GPU clocks down) |
+| GTX 1080, NVENC → NVDEC, without a screen | ≈ 5 ms | – |
 
-Das ist schon auf dem Stand der Technik:
+This is already state of the art:
 
-- **Bildweg ohne Kopie:** KMS → DMA-BUF → Hardware-Encoder auf dem Host,
-  Decoder → Vulkan auf dem Client. Kein Pixel geht über die CPU.
-- **Encoder auf Latenz eingestellt:** keine B-Frames, kein Lookahead, CBR,
-  Keyframes nur auf Anforderung.
-- **Netz:** eigenes UDP-Protokoll mit Fehlerkorrektur (Reed-Solomon-FEC)
-  statt Nachsenden, Pacing und Bitratenanpassung bei Stau.
-- **Verschlüsselung:** Noise/ChaCha20, kostet praktisch keine Zeit.
-- **Rust:** keine Pausen durch einen Garbage Collector, keine Allokationen
-  im heißen Pfad.
+- **Zero-copy image path:** KMS → DMA-BUF → hardware encoder on the host,
+  decoder → Vulkan on the client. No pixel goes through the CPU.
+- **Encoder tuned for latency:** no B-frames, no lookahead, CBR, keyframes
+  only on request.
+- **Network:** a custom UDP protocol with forward error correction
+  (Reed-Solomon FEC) instead of retransmission, pacing, and bitrate
+  adaptation under congestion.
+- **Encryption:** Noise/ChaCha20, costs practically no time.
+- **Rust:** no garbage collector pauses, no allocations in the hot path.
 
-Ob wir schneller sind als Sunshine/Moonlight, ist noch offen: Die
-Vergleichsmessung fehlt ([latency-baseline.md](latency-baseline.md)).
+Whether we are faster than Sunshine/Moonlight is still open: the comparison
+measurement is missing ([latency-baseline.md](latency-baseline.md)).
 
-## Was noch geht
+## What is still possible
 
-| # | Maßnahme | Was es bringt | Aufwand | Stand |
+| # | Measure | What it gains | Effort | Status |
 |---|---|---|---|---|
-| 1 | **Vergleichsmessung mit Sunshine/Moonlight** | Wir wissen, wo wir stehen und was sich lohnt | Klein, braucht den Benutzer am Rechner | Offen |
-| 2 | **GPU während Sitzungen hochtakten** | Encode bei 1440p von 10 ms Richtung 3–4 ms (geschätzt) | Klein | Gebaut, Messung offen |
-| 3 | **AV1 oder HEVC statt H.264** | Gleiche Qualität mit 30–50 % weniger Bitrate: deutlich schärfer, vor allem über WLAN. Latenz gleich | Mittel | **Fertig:** AV1, HEVC, H.264 – jede Verbindung nimmt das Beste, das beide Seiten in Hardware können; der Web-Viewer AV1 oder H.264 |
-| 4 | **Sofort anzeigen statt auf den Bildaufbau warten** (Vulkan „Immediate“ im Gaming-Modus) | Bis zu einem Bildschirmtakt weniger: im Mittel ≈ 3 ms bei 165 Hz, ≈ 8 ms bei 60 Hz. Dafür Tearing | Klein bis mittel | Offen |
-| 5 | **Slices: Bildteile senden, bevor das Bild fertig ist** (wie Parsec) | Mehrere Millisekunden pro Bild, weil Kodieren, Senden und Dekodieren überlappen | Groß | Offen |
-| 6 | **Intra-Refresh statt Keyframes** | Keine großen Datenstöße nach einem Verlust, also weniger Ruckler über WLAN | Mittel | Offen |
-| 7 | **Verzögerungsbasierte Staukontrolle** (wie WebRTC) | Reagiert auf wachsende Laufzeit, bevor Pakete verloren gehen. Besser über WLAN | Mittel | Offen (heute: Verlust-basiert) |
-| 8 | **4:4:4-Farbe für den Desktop** | Gestochen scharfe Schrift (heute wird Farbe in halber Auflösung übertragen) | Mittel | Offen, nur mit NVENC (H.264/HEVC). AMD und Intel kodieren kein 4:4:4 |
-| 9 | **Bitratenanpassung im Web-Viewer** (WebRTC-Bandbreitenschätzung, TWCC) | Der Browser bekommt nicht mehr, als das Netz trägt | Mittel | Offen (heute feste Bitrate) |
-| 10 | **Kabel statt WLAN** | Weniger Latenz und Schwankung. Keine Software-Sache | – | Empfehlung |
+| 1 | **Comparison measurement with Sunshine/Moonlight** | We know where we stand and what is worth doing | Small, needs the user at the machine | Open |
+| 2 | **Clock the GPU up during sessions** | Encode at 1440p from 10 ms towards 3–4 ms (estimated) | Small | Built, measurement open |
+| 3 | **AV1 or HEVC instead of H.264** | Same quality with 30–50 % less bitrate: noticeably sharper, especially over Wi-Fi. Same latency | Medium | **Done:** AV1, HEVC, H.264 – every connection uses the best format both sides can handle in hardware; the web viewer uses AV1 or H.264 |
+| 4 | **Show immediately instead of waiting for the refresh** (Vulkan "Immediate" in gaming mode) | Up to one display refresh less: on average ≈ 3 ms at 165 Hz, ≈ 8 ms at 60 Hz. The cost is tearing | Small to medium | Open |
+| 5 | **Slices: send parts of the image before the image is finished** (like Parsec) | Several milliseconds per frame, because encoding, sending and decoding overlap | Large | Open |
+| 6 | **Intra refresh instead of keyframes** | No large data bursts after a loss, so less stutter over Wi-Fi | Medium | Open |
+| 7 | **Delay-based congestion control** (like WebRTC) | Reacts to growing transit time before packets are lost. Better over Wi-Fi | Medium | Open (today: loss-based) |
+| 8 | **4:4:4 color for the desktop** | Crisp text (today, color is transmitted at half resolution) | Medium | Open, only with NVENC (H.264/HEVC). AMD and Intel do not encode 4:4:4 |
+| 9 | **Bitrate adaptation in the web viewer** (WebRTC bandwidth estimation, TWCC) | The browser gets no more than the network can carry | Medium | Open (today: fixed bitrate) |
+| 10 | **Cable instead of Wi-Fi** | Less latency and variation. Not a software matter | – | Recommendation |
 
-## Zu den einzelnen Punkten
+## The individual items
 
 ### 3 · AV1 / HEVC
 
-AV1 ist der modernste der drei Codecs, HEVC liegt dazwischen. Beide
-brauchen für dieselbe Qualität deutlich weniger Bitrate als H.264. Die
-Latenz bleibt gleich, weil die Hardware-Encoder ähnlich schnell sind.
+AV1 is the most modern of the three codecs; HEVC sits in between. Both need
+noticeably less bitrate than H.264 for the same quality. The latency stays
+the same, because the hardware encoders are similarly fast.
 
-Wer was kann:
+Who can do what:
 
-| Grafikkarte | Kodieren (Host) | Dekodieren (Client) |
+| Graphics card | Encode (host) | Decode (client) |
 |---|---|---|
 | AMD RX 7800 XT (zentrale, VCN 4) | H.264, HEVC, **AV1** | H.264, HEVC, AV1 |
-| NVIDIA GTX 1080 (bazzite, Pascal) | H.264, HEVC | H.264, HEVC (**kein AV1**) |
-| NVIDIA ab RTX 30, AMD ab RX 6000, Intel Arc | – | AV1 |
-| NVIDIA ab RTX 40, AMD ab RX 7000, Intel Arc | AV1 | – |
+| NVIDIA GTX 1080 (bazzite, Pascal) | H.264, HEVC | H.264, HEVC (**no AV1**) |
+| NVIDIA RTX 30 and newer, AMD RX 6000 and newer, Intel Arc | – | AV1 |
+| NVIDIA RTX 40 and newer, AMD RX 7000 and newer, Intel Arc | AV1 | – |
 
-Deshalb müssen Host und Client aushandeln, was beide können:
+That is why host and client must negotiate what both can do:
 
-- Der Client sagt im Verbindungsaufbau, was er dekodiert.
-- Der Host nimmt das Beste, das er kodieren kann.
+- The client says during connection setup what it can decode.
+- The host picks the best format it can encode.
 
-Für zentrale → bazzite heißt das HEVC. AV1 ginge erst mit einer neueren
-Karte im Client. Im Web-Viewer entscheidet der Browser: Chrome dekodiert
-AV1 und meist auch HEVC.
+For zentrale → bazzite, this means HEVC. AV1 would only work with a newer
+card in the client. In the web viewer, the browser decides: Chrome decodes
+AV1 and usually HEVC too.
 
-**Gebaut** (10.10.2026): HEVC, dann AV1.
+**Built** (2026-10-10): HEVC, then AV1.
 
-- Der Client meldet im `Hello`, was er in Hardware dekodiert (VAAPI:
-  `vaQueryConfigProfiles`, NVIDIA: `cuvidGetDecoderCaps`). Der Host nimmt
-  AV1 vor HEVC vor H.264 und fällt zurück, wenn seine GPU ein Format nicht
-  kodiert. Ältere Clients und Hosts sprechen weiter H.264.
-- Die App dekodiert nur in Hardware. Die bazzite (GTX 1080, kein AV1)
-  bekommt deshalb HEVC, auch von der zentrale, die AV1 könnte.
-- Wählbar in der App („Einstellungen → Videoformat“) und mit
-  `fernsicht-client --codec auto|h264|hevc|av1`.
-- Der Web-Viewer liest aus dem Angebot des Browsers, ob er AV1 kann
-  (Chrome, Firefox: ja, auch ohne AV1-Hardware), und bekommt dann AV1,
-  sonst H.264. HEVC bietet der Web-Viewer nicht an.
+- The client reports in its `Hello` what it decodes in hardware (VAAPI:
+  `vaQueryConfigProfiles`, NVIDIA: `cuvidGetDecoderCaps`). The host prefers
+  AV1 over HEVC over H.264 and falls back if its GPU does not encode a
+  format. Older clients and hosts keep speaking H.264.
+- The app decodes only in hardware. The bazzite (GTX 1080, no AV1)
+  therefore gets HEVC, even from the zentrale, which could do AV1.
+- Selectable in the app ("Einstellungen → Videoformat", settings → video
+  format) and with `fernsicht-client --codec auto|h264|hevc|av1`.
+- The web viewer reads from the browser's offer whether it can do AV1
+  (Chrome, Firefox: yes, even without AV1 hardware), and then gets AV1,
+  otherwise H.264. The web viewer does not offer HEVC.
 
-Was sich daraus für die beiden Rechner ergibt:
+What this means for the two machines:
 
-| Verbindung zur zentrale (RX 7800 XT) | Format |
+| Connection to the zentrale (RX 7800 XT) | Format |
 |---|---|
-| Chrome/Firefox auf der bazzite | AV1 |
-| App auf der bazzite | HEVC |
+| Chrome/Firefox on the bazzite | AV1 |
+| App on the bazzite | HEVC |
 | Safari | H.264 |
-| Verbindung zur bazzite (GTX 1080) | HEVC (App), H.264 (Browser) |
+| Connection to the bazzite (GTX 1080) | HEVC (app), H.264 (browser) |
 
-Gemessen auf der GTX 1080 (NVENC → NVDEC, 1080p60):
+Measured on the GTX 1080 (NVENC → NVDEC, 1080p60):
 
 | | H.264 | HEVC |
 |---|---|---|
-| 4 Mbit/s: Ø Bytes pro Frame | 8.273 | 2.681 |
-| 4 Mbit/s: PSNR (Y), schlechtester Frame | 29,1 dB | 32,4 dB |
-| 20 Mbit/s, Loopback: Glass-to-Glass ohne Bildschirm | 5,0 ms | 4,1 ms |
+| 4 Mbit/s: average bytes per frame | 8,273 | 2,681 |
+| 4 Mbit/s: PSNR (Y), worst frame | 29.1 dB | 32.4 dB |
+| 20 Mbit/s, loopback: glass-to-glass without a screen | 5.0 ms | 4.1 ms |
 
-Die Zahlen für VAAPI (zentrale), auch AV1 gegen HEVC und H.264, stehen im
-Job-Summary des AMD-Runners.
+The numbers for VAAPI (zentrale), including AV1 against HEVC and H.264, are
+in the job summary of the AMD runner.
 
-### 4 · Sofort anzeigen
+### 4 · Show immediately
 
-Heute zeigt das Stream-Fenster mit „Mailbox“ an: Das neueste Bild wird
-beim nächsten Bildaufbau des Monitors gezeigt. Im Mittel wartet es einen
-halben Takt.
+Today the stream window presents with "Mailbox": the newest image is shown
+at the monitor's next refresh. On average it waits half a refresh cycle.
 
-„Immediate“ zeigt es sofort, auch mitten im Bildaufbau. Das spart diese
-Wartezeit, verursacht aber Tearing (eine sichtbare Kante, wo altes und
-neues Bild aufeinandertreffen). Für Spiele ist das üblich, für den Desktop
-nicht. Deshalb nur im Gaming-Modus. Mit VRR/FreeSync verschwindet das
-Tearing weitgehend.
+"Immediate" shows it right away, even in the middle of a refresh. This
+saves that wait, but causes tearing (a visible edge where the old and the
+new image meet). That is common for games, but not for the desktop. So it
+is for gaming mode only. With VRR/FreeSync, the tearing largely
+disappears.
 
 ### 5 · Slices
 
-Der Encoder teilt das Bild in Streifen. Jeder fertige Streifen geht sofort
-auf die Leitung, und der Client dekodiert ihn schon, während der Host noch
-am nächsten arbeitet. Das spart einen guten Teil der Encode- und
-Übertragungszeit.
+The encoder splits the image into stripes. Each finished stripe goes onto
+the wire immediately, and the client already decodes it while the host is
+still working on the next one. This saves a good part of the encode and
+transmission time.
 
-Das braucht:
+This needs:
 
-- Slice-Ausgabe im Encoder (NVENC kann sie gut, VAAPI eingeschränkt);
-- eine Änderung im Protokoll (Pakete pro Slice statt pro Bild);
-- einen Decoder, der Teile annimmt.
+- slice output in the encoder (NVENC handles it well, VAAPI only in a
+  limited way);
+- a change in the protocol (packets per slice instead of per image);
+- a decoder that accepts parts.
 
-Das ist der größte Umbau in dieser Liste, aber auch der letzte große
-Hebel.
+This is the largest rework in this list, but also the last big lever.
 
-### 6 · Intra-Refresh
+### 6 · Intra refresh
 
-Heute schickt der Host nach einem Verlust einen Keyframe, ein großes Bild,
-das kurz viel Bandbreite braucht. Beim Intra-Refresh wird stattdessen über
-einige Bilder verteilt Streifen für Streifen erneuert. Die Datenmenge
-bleibt gleichmäßig, und es gibt keinen Ruckler durch einen Stoß.
+Today, after a loss, the host sends a keyframe: a large image that briefly
+needs a lot of bandwidth. With intra refresh, the image is instead renewed
+stripe by stripe, spread over several frames. The amount of data stays
+even, and there is no stutter from a burst.
 
-### 7 · Staukontrolle
+### 7 · Congestion control
 
-Heute senkt der Host die Bitrate, wenn Bilder trotz FEC verloren gehen
-oder sein Sender nicht nachkommt (`crates/net/src/rate.rs`). Eine
-verzögerungsbasierte Regelung achtet zusätzlich darauf, ob die Laufzeit
-der Pakete wächst. Das ist das frühe Zeichen, dass sich irgendwo eine
-Warteschlange füllt. Sie bremst dann, bevor überhaupt etwas verloren geht.
+Today the host lowers the bitrate when frames are lost despite FEC or when
+its sender cannot keep up
+([`crates/net/src/rate.rs`](https://github.com/firsttris/fernsicht/blob/main/crates/net/src/rate.rs)).
+Delay-based control also watches whether the transit time of the packets
+grows. That is the early sign that a queue is filling up somewhere. It then
+slows down before anything is lost at all.
 
-## Was sich nicht beschleunigen lässt
+## What cannot be made faster
 
-- **Der Monitor:** Ein Bild ist erst sichtbar, wenn er es zeichnet. Bei
-  165 Hz sind das bis zu 6 ms, bei 60 Hz bis zu 16,7 ms (Punkt 4 holt
-  davon einen Teil zurück).
-- **Funk:** WLAN hat eigene Latenz und Schwankungen, das kann keine
-  Software ganz ausgleichen.
-- **Kodieren braucht Zeit:** Ein Bild muss zumindest teilweise kodiert
-  sein, bevor es losgeht (Punkt 5 verkürzt das).
+- **The monitor:** An image is visible only once the monitor draws it. At
+  165 Hz that is up to 6 ms, at 60 Hz up to 16.7 ms (item 4 wins back part
+  of this).
+- **Radio:** Wi-Fi has its own latency and variation; no software can fully
+  compensate for that.
+- **Encoding takes time:** An image must be at least partly encoded before
+  sending starts (item 5 shortens this).
 
-## Empfohlene Reihenfolge
+## Recommended order
 
-1. **Vergleichsmessung** (1): Wissen, wo wir stehen.
-2. **GPU-Hochtakten messen** (2): ist gebaut, nur noch messen.
-3. **HEVC/AV1** (3): sichtbar besseres Bild.
-4. **Sofort anzeigen im Gaming-Modus** (4): kleiner Umbau, spürbarer
-   Gewinn.
-5. **Intra-Refresh und Staukontrolle** (6, 7): für WLAN.
-6. **Slices** (5): die letzten Millisekunden.
+1. **Comparison measurement** (1): know where we stand.
+2. **Measure GPU up-clocking** (2): it is built, it only needs measuring.
+3. **HEVC/AV1** (3): a visibly better picture.
+4. **Show immediately in gaming mode** (4): a small change, a noticeable
+   gain.
+5. **Intra refresh and congestion control** (6, 7): for Wi-Fi.
+6. **Slices** (5): the last milliseconds.
 
-## So wird gemessen
+## How to measure
 
-- **Overlay:** Das Overlay in App und Browser zeigt jede Sekunde
-  Glass-to-Glass und die einzelnen Stufen (Capture, Encode, Netz, Decode,
-  Anzeige).
-- **Messen:** immer bei gleicher Auflösung, Bildrate und gleichem Netz,
-  vorher und nachher.
-- **Ohne Bildschirm:** `fernsicht-client <host> --headless --duration 10`
-  gibt dieselben Werte im Terminal aus.
+- **Overlay:** The overlay in the app and the browser shows glass-to-glass
+  and the individual stages ("Capture", "Encode", "Netz" (network),
+  "Decode", "Anzeige" (display)) every second.
+- **Measuring:** always at the same resolution, frame rate and network,
+  before and after.
+- **Without a screen:** `fernsicht-client <host> --headless --duration 10`
+  prints the same values in the terminal.
