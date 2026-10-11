@@ -49,6 +49,8 @@ pub use config::{
 };
 pub use security::{HostSecurity, PAIRING_ATTEMPTS, PAIRING_ATTEMPTS_TOTAL, PAIRING_OPEN_FOR};
 pub use shared::HostStats;
+#[cfg(feature = "ts")]
+pub use web::export_viewer_types;
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;

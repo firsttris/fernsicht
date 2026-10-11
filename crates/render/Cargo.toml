@@ -17,6 +17,8 @@ window = ["vulkan", "dep:ash-window", "dep:raw-window-handle", "dep:winit"]
 vaapi = ["fernsicht-codec/vaapi"]
 # GPU tests that feed the renderer from NVDEC (memory exported by CUDA).
 nvidia = ["fernsicht-codec/nvidia"]
+# TypeScript types of what goes to the app and the web viewer (ts-rs).
+ts = ["dep:ts-rs"]
 
 [dependencies]
 ash = { workspace = true, optional = true }
@@ -30,6 +32,7 @@ log = { workspace = true, optional = true }
 naga = { workspace = true, optional = true }
 raw-window-handle = { workspace = true, optional = true }
 serde.workspace = true
+ts-rs = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 
 [dev-dependencies]

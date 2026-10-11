@@ -31,6 +31,7 @@ import {
   frameTiming,
   holdSession,
   meanTiming,
+  parseToBrowser,
   summarize,
 } from "../lib/host";
 import { useFullscreen } from "../lib/fullscreen";
@@ -69,17 +70,13 @@ export function LiveSessionPage({
     let host: HostStats | null = null;
     let previous: StatsSample | null = null;
     const onMessage = (e: MessageEvent) => {
-      if (typeof e.data !== "string") return;
-      try {
-        const v = JSON.parse(e.data) as HostStats & { type?: string };
-        if (v.type === "monitors") {
-          setMonitors(v as unknown as HostMonitors);
-        } else if (v.type === "stats") {
-          host = v;
-          if (v.width && v.height) setSize({ width: v.width, height: v.height });
-        }
-      } catch {
-        // Not for us.
+      // Binary messages are the pointer's; anything unknown is not for us.
+      const m = parseToBrowser(e.data);
+      if (m?.type === "monitors") {
+        setMonitors({ current: m.current, list: m.list });
+      } else if (m?.type === "stats") {
+        host = m;
+        if (m.width && m.height) setSize({ width: m.width, height: m.height });
       }
     };
     session.channel.addEventListener("message", onMessage);

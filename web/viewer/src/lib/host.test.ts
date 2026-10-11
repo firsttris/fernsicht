@@ -10,7 +10,9 @@ import {
   fetchHostInfo,
   frameTiming,
   holdSession,
+  type HostStats,
   meanTiming,
+  parseToBrowser,
   summarize,
 } from "./host";
 
@@ -37,7 +39,10 @@ describe("host API", () => {
   });
 
   it("offers to receive picture and sound and sends the PIN", async () => {
-    const api = installFakes(() => ({ status: 200, body: { answer, width: 2560, height: 1440 } }));
+    const api = installFakes(() => ({
+      status: 200,
+      body: { answer, width: 2560, height: 1440, fps: 60 },
+    }));
     const s = await connect("482913", "zentrale");
     const pc = FakePeerConnection.last!;
     expect(pc.transceivers).toEqual([
@@ -105,7 +110,7 @@ describe("host API", () => {
   });
 
   it("closes a session no page holds any more", async () => {
-    installFakes(() => ({ status: 200, body: { answer } }));
+    installFakes(() => ({ status: 200, body: { answer, width: 1920, height: 1080, fps: 60 } }));
     const s = await connect("482913", "zentrale");
     const pc = FakePeerConnection.last!;
     vi.useFakeTimers();
@@ -125,8 +130,14 @@ describe("host API", () => {
   it.each([
     [{ status: 403, body: { error: "wrong-pin" } }, "wrong-pin"],
     [{ status: 403, body: { error: "pairing-closed" } }, "pairing-closed"],
+    [{ status: 403, body: { error: "wrong-host" } }, "wrong-host"],
+    [{ status: 403, body: { error: "something-new" } }, "failed"],
     [{ status: 500, body: {} }, "failed"],
     [{ status: 200, body: { width: 1 } }, "failed"],
+    [
+      { status: 200, body: { answer: { type: "offer", sdp: "v=0" }, width: 1, height: 1, fps: 1 } },
+      "failed",
+    ],
     [{ status: 502, body: "<html>", json: false }, "failed"],
     ["offline" as const, "unreachable"],
   ])("turns %j into %s", async (reply, code) => {
@@ -145,10 +156,47 @@ describe("host API", () => {
       "too-many-attempts",
       "unreachable",
       "failed",
+      "wrong-host",
+      "forbidden",
+      "bad-request",
+      "not-found",
     ] as const) {
       expect(connectErrorText(code).length).toBeGreaterThan(5);
     }
     expect(connectErrorText("wrong-pin")).toBe("Falsche PIN.");
+  });
+});
+
+describe("messages from the host", () => {
+  it("takes stats and monitors that have their fields, nothing else", () => {
+    const stats = {
+      type: "stats",
+      captureUs: 1,
+      encodeUs: 2,
+      fps: 60,
+      bitrateBps: 3,
+      width: 1920,
+      height: 1080,
+      codec: "AV1",
+    };
+    expect(parseToBrowser(JSON.stringify(stats))).toEqual(stats);
+    const monitors = {
+      type: "monitors",
+      current: 1,
+      list: [{ name: "DP-1", width: 1, height: 2 }],
+    };
+    expect(parseToBrowser(JSON.stringify(monitors))).toEqual(monitors);
+    for (const bad of [
+      JSON.stringify({ ...stats, fps: "60" }),
+      JSON.stringify({ ...stats, codec: undefined }),
+      JSON.stringify({ ...monitors, list: [{ name: 1, width: 1, height: 2 }] }),
+      JSON.stringify({ type: "other" }),
+      "not json",
+      "null",
+      new ArrayBuffer(4),
+    ]) {
+      expect(parseToBrowser(bad)).toBeNull();
+    }
   });
 });
 
@@ -175,7 +223,8 @@ describe("overlay from WebRTC statistics", () => {
       ["pair", { type: "candidate-pair", nominated: true, currentRoundTripTime: 0.002 }],
       ["other-pair", { type: "candidate-pair", state: "waiting", currentRoundTripTime: 1 }],
     ]);
-  const host = {
+  const host: HostStats = {
+    type: "stats",
     captureUs: 300,
     encodeUs: 4000,
     fps: 59,

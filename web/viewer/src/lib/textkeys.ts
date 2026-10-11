@@ -3,6 +3,10 @@
  * host. Those keyboards report characters, not keys, so the host's keyboard
  * layout decides which key (and Shift or AltGr) makes a character.
  */
+import type { FromBrowser } from "./bindings/FromBrowser";
+
+/** A key pressed or let go on the host. */
+export type KeyMessage = Extract<FromBrowser, { t: "k" }>;
 
 export type HostLayout = "de" | "us";
 
@@ -72,8 +76,8 @@ function stroke(ch: string, layout: HostLayout): Stroke | undefined {
 
 /** The key events that type `text` on a host with `layout`; characters the
  * layout has no key for are left out. */
-export function typeText(text: string, layout: HostLayout): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
+export function typeText(text: string, layout: HostLayout): KeyMessage[] {
+  const out: KeyMessage[] = [];
   const key = (c: number, p: boolean) => out.push({ t: "k", c, p });
   for (const ch of text) {
     const s = stroke(ch, layout);
@@ -89,7 +93,7 @@ export function typeText(text: string, layout: HostLayout): Record<string, unkno
 }
 
 /** Presses and releases one key. */
-export function tapKey(code: number): Record<string, unknown>[] {
+export function tapKey(code: number): KeyMessage[] {
   return [
     { t: "k", c: code, p: true },
     { t: "k", c: code, p: false },

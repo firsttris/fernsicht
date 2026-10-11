@@ -16,7 +16,10 @@ beforeEach(() => {
   installFakes((path) => {
     if (path === "/api/info") return { status: 200, body: { name: "zentrale", pairing: true } };
     return pinOk
-      ? { status: 200, body: { answer: { type: "answer", sdp: "v=0" }, width: 1920, height: 1080 } }
+      ? {
+          status: 200,
+          body: { answer: { type: "answer", sdp: "v=0" }, width: 1920, height: 1080, fps: 60 },
+        }
       : { status: 403, body: { error: "wrong-pin" } };
   });
 });

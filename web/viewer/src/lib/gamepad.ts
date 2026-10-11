@@ -3,6 +3,7 @@
  * gamepad messages: buttons by position (BTN_SOUTH = bottom), sticks
  * -32768..32767, triggers 0..255, d-pad -1..1. Only changes are sent.
  */
+import type { FromBrowser } from "./bindings/FromBrowser";
 
 /** Standard-layout button index → Linux button code. */
 const BUTTONS: Record<number, number> = {
@@ -41,8 +42,7 @@ export interface PadSnapshot {
   axes: readonly number[];
 }
 
-export type PadMessage =
-  { t: "pb"; n: number; c: number; p: boolean } | { t: "pa"; n: number; a: number; v: number };
+export type PadMessage = Extract<FromBrowser, { t: "pb" | "pa" }>;
 
 // `|| 0`: a stick at rest is 0, never -0 (which would look like a change).
 const stick = (v: number) => Math.max(-32768, Math.min(32767, Math.round(v * 32767.5 - 0.5))) || 0;

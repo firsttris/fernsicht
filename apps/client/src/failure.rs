@@ -10,6 +10,7 @@ use crate::hosts::reject_text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum FailureCode {
     /// Pairing: the PIN does not match.
     WrongPin,
@@ -35,6 +36,7 @@ pub enum FailureCode {
 
 /// A failure: its code and the whole message (with where it happened).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Failure {
     pub code: FailureCode,
     pub message: String,

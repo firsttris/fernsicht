@@ -33,9 +33,15 @@ pub(crate) enum Command {
 /// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "t")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) enum FromBrowser {
     #[serde(rename = "m")]
-    At { x: u16, y: u16, s: Option<u32> },
+    At {
+        x: u16,
+        y: u16,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        s: Option<u32>,
+    },
     #[serde(rename = "r")]
     Moved { dx: i32, dy: i32 },
     #[serde(rename = "b")]

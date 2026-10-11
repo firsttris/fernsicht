@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 /// A device as the UI's `Device` type has it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct Device {
     /// The host key's fingerprint.
     pub id: String,
@@ -44,6 +45,7 @@ pub struct Device {
 /// How a session should look, from the settings page.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+#[derive(ts_rs::TS)]
 pub struct StreamSettings {
     /// Stream size; 0 = the host's screen.
     pub width: u16,
@@ -61,6 +63,7 @@ pub struct StreamSettings {
 /// The settings page's video codec choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(ts_rs::TS)]
 pub enum CodecSetting {
     #[default]
     Auto,
@@ -118,6 +121,8 @@ pub fn keys_command(codes: &[u16]) -> anyhow::Result<String> {
 /// The session as the UI polls it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
+#[ts(optional_fields = nullable)]
 pub struct SessionState {
     /// The client still runs.
     pub active: bool,
@@ -133,6 +138,7 @@ pub struct SessionState {
 /// (the control socket's answer).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct ThisMachine {
     pub name: String,
     pub host: Option<control::Status>,

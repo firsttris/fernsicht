@@ -102,10 +102,12 @@ fn make_hw_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError
 /// stdout): the overlay's numbers and the host's monitors once it listed
 /// them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AppStats {
     #[serde(flatten)]
     pub overlay: overlay::Stats,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub monitors: Option<MonitorList>,
 }
 

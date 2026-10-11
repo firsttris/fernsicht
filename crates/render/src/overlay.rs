@@ -91,6 +91,7 @@ pub fn lines(stats: &LatencyStats, info: &StreamInfo) -> Vec<String> {
 /// the client's output once a second.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Stats {
     pub glass_to_glass_us: Spread,
     /// Average per stage.
@@ -108,6 +109,7 @@ pub struct Stats {
 
 /// Average, 95th percentile and maximum, µs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Spread {
     pub avg: u32,
     pub p95: u32,
@@ -116,6 +118,7 @@ pub struct Spread {
 
 /// One duration per pipeline stage, µs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Stages {
     pub capture: u32,
     pub encode: u32,

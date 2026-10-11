@@ -15,60 +15,42 @@ import {
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { queryOptions } from "@tanstack/react-query";
 
+import type { CodecSetting } from "./bindings/CodecSetting";
+import type { Device as AppDevice } from "./bindings/Device";
+import type { Failure } from "./bindings/Failure";
+import type { FailureCode } from "./bindings/FailureCode";
+import type { PairingOpened } from "./bindings/PairingOpened";
+import type { SessionState } from "./bindings/SessionState";
+import type { Status } from "./bindings/Status";
+import type { StreamSettings as AppStreamSettings } from "./bindings/StreamSettings";
+import type { ThisMachine as AppMachine } from "./bindings/ThisMachine";
+
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Whether the UI runs inside the desktop app. */
 export const inApp = () => isTauri();
 
+// What the app's commands answer and take, generated from the Rust types
+// (apps/desktop/tests/bindings.rs).
+export type { Failure } from "./bindings/Failure";
+export type { FailureCode } from "./bindings/FailureCode";
+export type { HostService } from "./bindings/HostService";
+export type { SessionState } from "./bindings/SessionState";
 /** The host running on this computer, as its control socket reports it. */
-export interface HostStatus {
-  name: string;
-  key: string;
-  paired: { name: string; key: string }[];
-  session: { client: string; address: string } | null;
-  /** Seconds pairing stays open, if it is. */
-  pairing: number | null;
-  /** The GPU is clocked up during sessions. */
-  gpu_boost?: boolean;
-}
+export type HostStatus = Status;
+/** The video codec choice of the settings page. */
+export type VideoCodec = CodecSetting;
 
-/** The host service on this computer (desktop app). */
-export interface HostService {
-  installed: boolean;
-  active: boolean;
-  /** Installed host's version. */
-  version: string | null;
-  /** Version of the host in this AppImage; null outside one. */
-  bundled: string | null;
-  /** This app can set up the host (it runs from the AppImage). */
-  canInstall: boolean;
-}
-
-export interface ThisMachine {
+export interface ThisMachine extends Partial<AppMachine> {
   /** Account id and code (demo; later the rendezvous server). */
   id?: string;
   code?: string;
-  /** Desktop app: the computer's name and its host, if one runs. */
-  name?: string;
-  host?: HostStatus | null;
-  service?: HostService;
-}
-
-/** The session the app runs in the native window. */
-export interface SessionState {
-  active: boolean;
-  deviceId?: string | null;
-  deviceName?: string | null;
-  /** The client's overlay; with the host's monitors once it listed them. */
-  stats?: (SessionStats & { monitors?: HostMonitors }) | null;
-  /** Why it ended, if it failed. */
-  error?: Failure | null;
 }
 
 export const devicesQuery = queryOptions({
   queryKey: ["devices"],
   queryFn: async (): Promise<Device[]> => {
-    if (inApp()) return invoke<Device[]>("devices");
+    if (inApp()) return invoke<AppDevice[]>("devices");
     await delay(150);
     return demoDevices;
   },
@@ -97,35 +79,31 @@ export const deviceQuery = (id: string) =>
 export const thisMachineQuery = queryOptions({
   queryKey: ["this-machine"],
   queryFn: async (): Promise<ThisMachine> =>
-    inApp() ? invoke<ThisMachine>("this_machine") : demoThisMachine,
+    inApp() ? invoke<AppMachine>("this_machine") : demoThisMachine,
   staleTime: () => (inApp() ? 0 : Infinity),
   refetchInterval: () => (inApp() ? 3000 : false),
 });
 
 /** The running session with its overlay, refreshed once per second. */
+/** The session as the UI shows it: the app's `SessionState`, or the demo's
+ * (whose overlay has no glass-to-glass of its own). */
+export type Session = Omit<SessionState, "stats"> & {
+  stats?: (SessionStats & { monitors?: HostMonitors }) | null;
+};
+
 export const sessionQuery = (deviceId: string) =>
   queryOptions({
     queryKey: ["session", deviceId],
-    queryFn: async (): Promise<SessionState> =>
+    queryFn: async (): Promise<Session> =>
       inApp()
         ? invoke<SessionState>("session")
         : { active: true, deviceId, stats: demoStats(Date.now() / 1000) },
     refetchInterval: 1000,
   });
 
-/** How sessions look (settings page); kept in this browser profile. */
-export interface StreamSettings {
-  /** Stream size; 0 × 0 = the host's screen. */
-  width: number;
-  height: number;
-  fps: number;
-  /** 0 = the host's choice for the size. */
-  bitrateMbit: number;
-  /** "auto": the best both sides do in hardware (AV1, HEVC, H.264). */
-  codec: VideoCodec;
-}
-
-export type VideoCodec = "auto" | "h264" | "hevc" | "av1";
+/** How sessions look (settings page); kept in this browser profile. The
+ * mode (gaming or desktop) is chosen when connecting. */
+export type StreamSettings = Omit<AppStreamSettings, "gaming">;
 
 export const DEFAULT_SETTINGS: StreamSettings = {
   width: 0,
@@ -157,9 +135,11 @@ export function saveSettings(s: StreamSettings) {
 
 /** What the app can do (desktop app only). */
 export const actions = {
-  pair: (address: string, pin: string) => invoke<Device>("pair", { address, pin }),
-  connect: (id: string, gaming = false) =>
-    invoke<SessionState>("connect", { id, settings: { ...loadSettings(), gaming } }),
+  pair: (address: string, pin: string) => invoke<AppDevice>("pair", { address, pin }),
+  connect: (id: string, gaming = false) => {
+    const settings: AppStreamSettings = { ...loadSettings(), gaming };
+    return invoke<SessionState>("connect", { id, settings });
+  },
   forget: (id: string) => invoke<void>("forget", { id }),
   disconnect: async () => {
     if (inApp()) await invoke("disconnect");
@@ -178,30 +158,11 @@ export const actions = {
   setMode: async (gaming: boolean) => {
     if (inApp()) await invoke("set_mode", { gaming });
   },
-  openPairing: () => invoke<{ pin: string; expires_in_s: number }>("open_pairing"),
+  openPairing: () => invoke<PairingOpened>("open_pairing"),
   share: () => invoke<void>("share_this_machine"),
   setGpuBoost: (on: boolean) => invoke<void>("set_gpu_boost", { on }),
   stopSharing: () => invoke<void>("stop_sharing"),
 };
-
-/** What went wrong, as the backend says it (`fernsicht_client::Failure`):
- * the code tells which, the message has the details. */
-export type FailureCode =
-  | "wrong-pin"
-  | "too-many-attempts"
-  | "pairing-closed"
-  | "not-paired"
-  | "unavailable"
-  | "no-answer"
-  | "host-silent"
-  | "cancelled"
-  | "pkexec-missing"
-  | "other";
-
-export interface Failure {
-  code: FailureCode;
-  message: string;
-}
 
 /** Each failure in the UI's words; `null`: the message says it best. */
 const FAILURE_TEXT: Record<FailureCode, string | null> = {

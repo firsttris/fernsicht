@@ -13,12 +13,12 @@
  * - spreading or pinching zooms the picture here (the host sees nothing);
  * - a short tap with both is a right click.
  */
+import type { FromBrowser } from "./bindings/FromBrowser";
 
 export type TouchMode = "direct" | "trackpad";
 
 /** What the controller wants done. */
-export type TouchAction =
-  { kind: "send"; msg: Record<string, unknown> } | { kind: "zoom"; zoom: Zoom };
+export type TouchAction = { kind: "send"; msg: FromBrowser } | { kind: "zoom"; zoom: Zoom };
 
 /** The picture's local zoom: scale around the box, then shift (px). */
 export interface Zoom {
@@ -80,7 +80,7 @@ export class TouchController {
     private box: () => { width: number; height: number },
   ) {}
 
-  private send(msg: Record<string, unknown>) {
+  private send(msg: FromBrowser) {
     this.act({ kind: "send", msg });
   }
 

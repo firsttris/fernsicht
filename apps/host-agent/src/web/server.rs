@@ -36,6 +36,7 @@ pub(crate) fn serve(
 
 /// `GET /api/info`: who the host is and whether it shows a PIN.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) struct Info<'a> {
     pub name: &'a str,
     pub pairing: bool,
@@ -50,7 +51,9 @@ pub(crate) struct ConnectRequest {
 
 /// The answer to a connect: our SDP and the stream's size and rate.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) struct Connected {
+    #[cfg_attr(feature = "ts", ts(type = "RTCSessionDescriptionInit"))]
     pub answer: SdpAnswer,
     pub width: u16,
     pub height: u16,
@@ -59,6 +62,7 @@ pub(crate) struct Connected {
 
 /// Any request turned away.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) struct Refused {
     pub error: WebError,
 }

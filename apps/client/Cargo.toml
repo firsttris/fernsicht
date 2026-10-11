@@ -27,11 +27,14 @@ window = [
     "dep:wayland-protocols",
     "dep:x11-dl",
 ]
+# TypeScript types of what goes to the app and the web viewer (ts-rs).
+ts = ["dep:ts-rs", "fernsicht-render/ts"]
 
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ts-rs = { workspace = true, optional = true }
 clap.workspace = true
 crossbeam-channel.workspace = true
 env_logger.workspace = true

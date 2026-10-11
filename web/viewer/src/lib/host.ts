@@ -5,27 +5,55 @@
  */
 import type { SessionStats } from "@fernsicht/ui";
 
-export interface HostInfo {
-  name: string;
-  /** Pairing is open: a PIN is shown at the host. */
-  pairing: boolean;
-}
+import type { Connected } from "./bindings/Connected";
+import type { FromBrowser } from "./bindings/FromBrowser";
+import type { Info } from "./bindings/Info";
+import type { ToBrowser } from "./bindings/ToBrowser";
+import type { WebError } from "./bindings/WebError";
+
+export type { FromBrowser, ToBrowser };
+
+/** Who the host is (`/api/info`). */
+export type HostInfo = Info;
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 /** The host serving this page, or `null` (no host: demo). */
 export async function fetchHostInfo(): Promise<HostInfo | null> {
   try {
     const r = await fetch("/api/info", { headers: { Accept: "application/json" } });
     if (!r.ok || !(r.headers.get("content-type") ?? "").includes("json")) return null;
-    const v = (await r.json()) as Partial<HostInfo>;
-    return typeof v.name === "string" ? { name: v.name, pairing: !!v.pairing } : null;
+    const v: unknown = await r.json();
+    return isObject(v) && typeof v.name === "string"
+      ? { name: v.name, pairing: !!v.pairing }
+      : null;
   } catch {
     return null;
   }
 }
 
-/** Why the host said no (`/api/connect` error codes), or no answer. */
-export type ConnectErrorCode =
-  "wrong-pin" | "pairing-closed" | "too-many-attempts" | "failed" | "unreachable";
+/** Why the host said no (`/api/connect`), or that it did not answer. */
+export type ConnectErrorCode = WebError | "unreachable";
+
+/** Each refusal in words; a `Record` so that a new code the host learns
+ * does not typecheck until it has words here. */
+const CONNECT_ERROR_TEXT: Record<ConnectErrorCode, string> = {
+  "wrong-pin": "Falsche PIN.",
+  "pairing-closed":
+    "Am Host ist gerade keine Kopplung offen. Dort in der Fernsicht-App „Gerät koppeln“ wählen und die neue PIN eingeben.",
+  "too-many-attempts": "Zu viele falsche PINs. Am Host die Kopplung neu öffnen.",
+  unreachable: "Der Host antwortet nicht.",
+  failed: "Die Sitzung konnte nicht starten. Details stehen im Log des Hosts.",
+  "wrong-host":
+    "Der Host antwortet nur unter seiner Adresse oder seinem Namen. Bitte die Seite darüber öffnen.",
+  forbidden: "Diese Anfrage kam nicht von der Seite des Hosts.",
+  "bad-request": "Der Host hat die Anfrage nicht verstanden. Bitte die Seite neu laden.",
+  "not-found": "Der Host kennt diese Adresse nicht. Bitte die Seite neu laden.",
+};
+
+const isConnectErrorCode = (v: unknown): v is ConnectErrorCode =>
+  typeof v === "string" && Object.hasOwn(CONNECT_ERROR_TEXT, v);
 
 export class ConnectError extends Error {
   constructor(readonly code: ConnectErrorCode) {
@@ -34,29 +62,49 @@ export class ConnectError extends Error {
 }
 
 export function connectErrorText(code: ConnectErrorCode): string {
-  switch (code) {
-    case "wrong-pin":
-      return "Falsche PIN.";
-    case "pairing-closed":
-      return "Am Host ist gerade keine Kopplung offen. Dort in der Fernsicht-App „Gerät koppeln“ wählen und die neue PIN eingeben.";
-    case "too-many-attempts":
-      return "Zu viele falsche PINs. Am Host die Kopplung neu öffnen.";
-    case "unreachable":
-      return "Der Host antwortet nicht.";
-    default:
-      return "Die Sitzung konnte nicht starten. Details stehen im Log des Hosts.";
-  }
+  return CONNECT_ERROR_TEXT[code];
+}
+
+/** The host's answer to a connect, if it is one. */
+function connected(v: unknown): Connected | null {
+  if (!isObject(v) || !isObject(v.answer)) return null;
+  const { answer, width, height, fps } = v;
+  const ok = answer.type === "answer" && typeof answer.sdp === "string";
+  return ok && isNumber(width) && isNumber(height) && isNumber(fps)
+    ? { answer: { type: "answer", sdp: answer.sdp as string }, width, height, fps }
+    : null;
 }
 
 /** What the host sends once per second on the data channel. */
-export interface HostStats {
-  captureUs: number;
-  encodeUs: number;
-  fps: number;
-  bitrateBps: number;
-  width: number;
-  height: number;
-  codec: string;
+export type HostStats = Extract<ToBrowser, { type: "stats" }>;
+
+/**
+ * A text message from the host on the data channel, checked against its
+ * type; `null` for anything else.
+ */
+export function parseToBrowser(data: unknown): ToBrowser | null {
+  if (typeof data !== "string") return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!isObject(v)) return null;
+  if (v.type === "stats") {
+    const { captureUs, encodeUs, fps, bitrateBps, width, height, codec } = v;
+    const numbers = [captureUs, encodeUs, fps, bitrateBps, width, height];
+    if (!numbers.every(isNumber) || typeof codec !== "string") return null;
+    return v as HostStats;
+  }
+  if (v.type === "monitors" && isNumber(v.current) && Array.isArray(v.list)) {
+    const ok = v.list.every(
+      (m: unknown) =>
+        isObject(m) && typeof m.name === "string" && isNumber(m.width) && isNumber(m.height),
+    );
+    return ok ? (v as Extract<ToBrowser, { type: "monitors" }>) : null;
+  }
+  return null;
 }
 
 /** A running browser session. */
@@ -68,15 +116,15 @@ export interface LiveSession {
   width: number;
   height: number;
   /**
-   * Sends an input message (see apps/host-agent/src/web.rs) on the
-   * reliable, ordered channel.
+   * Sends an input message (`FromBrowser`, generated from the host's type)
+   * on the reliable, ordered channel.
    */
-  send(msg: Record<string, unknown>): void;
+  send(msg: FromBrowser): void;
   /**
    * Sends a pointer move on the unordered channel without retransmits: a
    * lost one is not waited for, the next replaces it.
    */
-  move(msg: Record<string, unknown>): void;
+  move(msg: Extract<FromBrowser, { t: "m" | "r" }>): void;
   /** Says goodbye and closes the connection (once; later calls do nothing). */
   close(): void;
 }
@@ -153,23 +201,22 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
     } catch {
       throw new ConnectError("unreachable");
     }
-    const body = (await r.json().catch(() => ({}))) as {
-      error?: ConnectErrorCode;
-      answer?: RTCSessionDescriptionInit;
-      width?: number;
-      height?: number;
-    };
-    if (!r.ok || !body.answer) throw new ConnectError(body.error ?? "failed");
-    await pc.setRemoteDescription(body.answer);
+    const body: unknown = await r.json().catch(() => null);
+    const answer = r.ok ? connected(body) : null;
+    if (!answer) {
+      const code = isObject(body) ? body.error : undefined;
+      throw new ConnectError(isConnectErrorCode(code) ? code : "failed");
+    }
+    await pc.setRemoteDescription(answer.answer);
     // Positions carry a number from one counter on both channels: the host
     // drops one older than the last it applied (unordered delivery).
     let seq = 0;
-    const stamp = (msg: Record<string, unknown>) =>
+    const stamp = (msg: FromBrowser): FromBrowser =>
       msg.t === "m" ? { ...msg, s: (seq = (seq + 1) >>> 0) } : msg;
-    const send = (msg: Record<string, unknown>) => {
+    const send = (msg: FromBrowser) => {
       if (channel.readyState === "open") channel.send(JSON.stringify(stamp(msg)));
     };
-    const move = (msg: Record<string, unknown>) => {
+    const move = (msg: Extract<FromBrowser, { t: "m" | "r" }>) => {
       if (moves.readyState === "open") moves.send(JSON.stringify(stamp(msg)));
       else send(msg);
     };
@@ -179,8 +226,8 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
       pc,
       channel,
       stream,
-      width: body.width ?? 0,
-      height: body.height ?? 0,
+      width: answer.width,
+      height: answer.height,
       send,
       move,
       close: () => {

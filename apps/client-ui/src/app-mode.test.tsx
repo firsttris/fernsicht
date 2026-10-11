@@ -100,9 +100,10 @@ const service = (over: Partial<HostService> = {}): HostService => ({
 const host = (over: Partial<HostStatus> = {}): HostStatus => ({
   name: "bazzite",
   key: "aaaa",
-  paired: [{ name: "zentrale", key: "bbbb" }],
+  paired: [{ name: "zentrale", key: "bbbb", paired_at: 0 }],
   session: null,
   pairing: null,
+  gpu_boost: true,
   ...over,
 });
 
@@ -281,12 +282,14 @@ describe("Desktop-App", () => {
       deviceId: "k1",
       deviceName: "zentrale",
       stats: {
+        glassToGlassUs: { avg: 8_000, p95: 9_000, max: 12_000 },
         stagesUs: { capture: 400, encode: 2_000, network: 1_500, decode: 900, present: 3_000 },
         codec: "H.264",
         fps: 60,
         bitrateBps: 35_000_000,
         lossBeforeFec: 0,
         lossAfterFec: 0,
+        rttUs: null,
       },
     };
     const { router, user } = await renderApp("/session/k1");
@@ -334,8 +337,16 @@ describe("Desktop-App", () => {
     backend.thisMachine = {
       name: "zentrale",
       host: host({
-        paired: [...host().paired, { name: "sofa", key: "cccc" }],
-        session: { client: "sofa", address: "192.168.178.20:5000" },
+        paired: [...host().paired, { name: "sofa", key: "cccc", paired_at: 0 }],
+        session: {
+          client: "sofa",
+          address: "192.168.178.20:5000",
+          width: 1920,
+          height: 1080,
+          fps: 60,
+          encrypted: true,
+          since: 0,
+        },
       }),
     };
     expect(

@@ -49,6 +49,7 @@ pub enum Request {
 
 /// The answer to `status`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Status {
     pub name: String,
     /// The host key's fingerprint.
@@ -63,6 +64,7 @@ pub struct Status {
 
 /// A device paired with the host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PairedDevice {
     pub name: String,
     /// Its key's fingerprint.
@@ -73,6 +75,7 @@ pub struct PairedDevice {
 
 /// The answer to `pair`: the PIN the host shows now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PairingOpened {
     pub pin: String,
     pub expires_in_s: u64,
@@ -80,6 +83,7 @@ pub struct PairingOpened {
 
 /// The session as the control socket reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionStatus {
     pub client: String,
     pub address: String,

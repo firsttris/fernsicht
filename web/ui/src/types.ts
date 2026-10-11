@@ -1,6 +1,8 @@
 /**
- * Shapes shared by the client UI, the web viewer and (later) the Rust API.
- * Once the axum API exists these are generated from Rust via ts-rs/specta.
+ * Shapes the client UI and the web viewer show. What the Rust side sends
+ * has generated types (`apps/client-ui/src/lib/bindings`,
+ * `web/viewer/src/lib/bindings`); they must fit these, which the
+ * typecheck tells.
  */
 
 export type SessionMode = "desktop" | "gaming";

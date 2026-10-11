@@ -91,6 +91,7 @@ pub(crate) struct WebAccepted {
 /// as `{"error": "wrong-pin"}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) enum WebError {
     WrongPin,
     PairingClosed,
@@ -124,6 +125,7 @@ impl WebError {
     rename_all = "lowercase",
     rename_all_fields = "camelCase"
 )]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) enum ToBrowser {
     /// The host's share of the overlay, once a second: the frames'
     /// average capture and encode times, what is sent and its size.
@@ -145,6 +147,7 @@ pub(crate) enum ToBrowser {
 
 /// One of the host's monitors, for the browser.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub(crate) struct MonitorEntry {
     pub name: String,
     pub width: u16,
@@ -194,6 +197,18 @@ pub(crate) fn send_loop(
             let _ = out.try_send(WebOut::Text(text(&stats)));
         }
     }
+}
+
+/// Writes the TypeScript types of the web viewer's API and data channel
+/// messages (ts-rs), as `cfg` says where.
+#[cfg(feature = "ts")]
+pub fn export_viewer_types(cfg: &ts_rs::Config) -> Result<(), ts_rs::ExportError> {
+    use ts_rs::TS;
+    server::Info::export_all(cfg)?;
+    server::Connected::export_all(cfg)?;
+    server::Refused::export_all(cfg)?;
+    ToBrowser::export_all(cfg)?;
+    commands::FromBrowser::export_all(cfg)
 }
 
 /// A new channel for a web session's output.

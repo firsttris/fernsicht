@@ -51,6 +51,8 @@ str0m = { version = "0.24", default-features = false, features = ["rust-crypto"]
 spake2 = "0.4"
 socket2 = "0.6"
 thiserror = "2"
+# TypeScript types for the app and the web viewer, from the Rust ones.
+ts-rs = "12.0.1"
 winit = "0.30"
 # The client window asks the compositor to pass system shortcuts on
 # (keyboard-shortcuts-inhibit), on winit's own Wayland connection.

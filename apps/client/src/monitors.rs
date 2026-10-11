@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// The host's monitors, as its last [`fernsicht_proto::Monitors`] said.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MonitorList {
     /// Index of the one shown.
     pub current: u8,
@@ -14,6 +15,7 @@ pub struct MonitorList {
 
 /// One of the host's monitors.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Monitor {
     /// The connector, e.g. `DP-1`.
     pub name: String,

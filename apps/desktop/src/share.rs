@@ -25,6 +25,7 @@ const UNIT: &str = include_str!("../../../packaging/fernsicht-host.service");
 /// The host service on this computer, as the app shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct HostService {
     /// The service is set up.
     pub installed: bool,

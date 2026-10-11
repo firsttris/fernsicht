@@ -97,7 +97,8 @@ flowchart TB
   paired hosts), pairs, and starts `fernsicht-client --app` for a session. It reads the overlay as
   JSON lines from the client's stdout (and, if the session fails, a last line with a failure code
   and the message) and sends commands on its stdin (mute, mode, keys, monitor). The app's commands
-  fail with the same codes; the UI says each in its own words.
+  fail with the same codes; the UI says each in its own words. The TypeScript types of all this,
+  and of the web viewer's API and data channel, are generated from the Rust types (ts-rs).
 - **The host service** has a local control socket (`/run/fernsicht/control.sock`): the app and
   `fernsicht-host-agent pair|status|unpair` use it to open pairing, read the status and change
   settings.
