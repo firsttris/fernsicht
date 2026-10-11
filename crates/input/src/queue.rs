@@ -89,14 +89,10 @@ impl InputQueue {
                 } else {
                     self.pad_axes.insert((pad, axis), value);
                 }
-                // Only the newest value of an axis matters: replace an
-                // unsent one anywhere in the queue (sticks move at 1 kHz).
-                if let Some(e) = self.entries.iter_mut().rev().find(|e| {
-                    !e.sent
-                        && matches!(e.event, InputEvent::PadAxis { pad: p, axis: a, .. }
-                            if p == pad && a == axis)
-                }) {
-                    e.event = event;
+                // Sticks move at 1 kHz: an unsent value of the same axis
+                // is replaced (see `coalesces`).
+                if let Some(i) = self.coalesces(pad, axis, value) {
+                    self.entries[i].event = event;
                     return;
                 }
             }
@@ -127,6 +123,26 @@ impl InputQueue {
             event,
             sent: false,
         });
+    }
+
+    /// The unsent entry of `pad`'s `axis` that a new `value` may replace:
+    /// only analog movement (no d-pad, nothing at rest on either side, so
+    /// a tap 0 → 255 → 0 stays a tap), and only if no button of the same
+    /// pad comes after it (the order of a move and a press stays).
+    fn coalesces(&self, pad: u8, axis: PadAxis, value: i32) -> Option<usize> {
+        if matches!(axis, PadAxis::DpadX | PadAxis::DpadY) || value == 0 {
+            return None;
+        }
+        let i = self.entries.iter().rposition(|e| {
+            matches!(e.event, InputEvent::PadAxis { pad: p, axis: a, .. } if p == pad && a == axis)
+        })?;
+        let e = &self.entries[i];
+        let moving = matches!(e.event, InputEvent::PadAxis { value: v, .. } if v != 0);
+        let reordered = self
+            .entries
+            .range(i + 1..)
+            .any(|later| matches!(later.event, InputEvent::PadButton { pad: p, .. } if p == pad));
+        (!e.sent && moving && !reordered).then_some(i)
     }
 
     /// Releases every held key and button, and centers the gamepads.
@@ -370,6 +386,46 @@ mod tests {
     }
 
     #[test]
+    fn taps_and_the_order_of_a_pad_survive_coalescing() {
+        let mut q = InputQueue::default();
+        let t0 = Instant::now();
+        let axis = |axis, value| InputEvent::PadAxis {
+            pad: 0,
+            axis,
+            value,
+        };
+        let a = |pressed| InputEvent::PadButton {
+            pad: 0,
+            code: 0x130,
+            pressed,
+        };
+        // A d-pad tap before A, and a trigger tap: nothing lost or moved.
+        q.push(axis(PadAxis::DpadX, -1));
+        q.push(a(true));
+        q.push(axis(PadAxis::DpadX, 0));
+        q.push(axis(PadAxis::RightTrigger, 255));
+        q.push(axis(PadAxis::RightTrigger, 0));
+        // A stick move, A released, the stick moves on: still in order.
+        q.push(axis(PadAxis::LeftX, 1000));
+        q.push(a(false));
+        q.push(axis(PadAxis::LeftX, 2000));
+        let events: Vec<InputEvent> = q.due(t0).unwrap().into_iter().map(|(_, e)| e).collect();
+        assert_eq!(
+            events,
+            [
+                axis(PadAxis::DpadX, -1),
+                a(true),
+                axis(PadAxis::DpadX, 0),
+                axis(PadAxis::RightTrigger, 255),
+                axis(PadAxis::RightTrigger, 0),
+                axis(PadAxis::LeftX, 1000),
+                a(false),
+                axis(PadAxis::LeftX, 2000),
+            ]
+        );
+    }
+
+    #[test]
     fn gamepads_send_the_newest_axis_value_and_release() {
         let mut q = InputQueue::default();
         let t0 = Instant::now();
@@ -402,12 +458,17 @@ mod tests {
             .into_iter()
             .map(|(_, e)| e)
             .collect();
-        // Centering replaces the unsent 300: only the newest value counts.
-        assert_eq!(&events[2..], [axis(0), button(false)], "{events:?}");
+        // The unsent 300 stays: a value at rest is never folded into
+        // another (a quick flick still reaches the host).
+        assert_eq!(
+            &events[2..],
+            [axis(300), button(false), axis(0)],
+            "{events:?}"
+        );
         q.push(axis(0));
         assert_eq!(
             q.due(t0 + RESEND_AFTER * 3).unwrap().len(),
-            4,
+            5,
             "at rest already"
         );
     }

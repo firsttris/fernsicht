@@ -320,7 +320,9 @@ the limits FFmpeg puts on the next latency step.
 - **Where:** `crates/input/src/queue.rs:76-97` (the test at `348-370` locks it in).
 - **Problem:** `[DpadX=-1, A↓] + DpadX=0` becomes `[DpadX=0, A↓]`: the d-pad tap vanishes.
 - **Fix:** coalesce only when no button event of the same pad follows; never coalesce d-pads.
-- **Status:** open
+- **Status:** fixed. `InputQueue::coalesces`: only analog movement (no d-pad, no value at rest on
+  either side, so taps of d-pad and digital triggers stay) and only when no button of the same pad
+  follows. Test: `taps_and_the_order_of_a_pad_survive_coalescing`.
 
 ### A25 · Gamepad focus policy is inconsistent
 
