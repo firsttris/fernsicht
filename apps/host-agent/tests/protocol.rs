@@ -201,6 +201,48 @@ fn video_starts_with_a_keyframe_and_carries_session_and_timestamps() {
 }
 
 #[test]
+fn a_monitor_in_standby_pauses_the_stream_and_keeps_the_session() {
+    // At 60 fps, frame slots 20..80 fail like KMS for a monitor in standby:
+    // about a second without a picture.
+    let host = Host::start(HostConfig {
+        capture: CaptureKind::TestPatternWithOutage { off: 20..80 },
+        ..HostConfig::default()
+    });
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 180, 60, 1_000);
+    let ack = peer.ack();
+    // Each frame's first packet: when it came, its id and session.
+    let mut frames: Vec<(Instant, u32, u32)> = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(2500);
+    while Instant::now() < deadline {
+        if let Some(h) = peer.next_video(Duration::from_millis(100))
+            && frames.last().is_none_or(|&(_, id, _)| id != h.frame_id)
+        {
+            frames.push((Instant::now(), h.frame_id, h.session_id));
+        }
+    }
+    let longest_gap = frames
+        .windows(2)
+        .map(|w| w[1].0 - w[0].0)
+        .max()
+        .expect("no video");
+    assert!(
+        longest_gap >= Duration::from_millis(600),
+        "no pause: {longest_gap:?}"
+    );
+    let (_, last_id, _) = *frames.last().unwrap();
+    assert!(
+        last_id > 30,
+        "video did not come back after the outage ({last_id})"
+    );
+    assert!(frames.iter().all(|&(_, _, s)| s == ack.session_id));
+    // Frame ids continue across the pause: the client sees no gap and
+    // needs no keyframe.
+    assert!(frames.windows(2).all(|w| w[1].1 == w[0].1 + 1));
+    host.shutdown();
+}
+
+#[test]
 fn repeated_hello_keeps_the_session() {
     let host = Host::default();
     let mut peer = Peer::new(host.addr);

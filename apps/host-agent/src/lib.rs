@@ -12,6 +12,7 @@
 //! circulate through small free lists, so steady state does not allocate.
 
 pub mod control;
+mod health;
 mod layout;
 pub mod power;
 mod web;
@@ -48,6 +49,7 @@ use fernsicht_proto::{
 use fernsicht_secure::pairing::HostPairing;
 use fernsicht_secure::session::{Responder, Transport};
 use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
+use health::{End, StopOnExit};
 use serde::{Deserialize, Serialize};
 
 /// Raw frame buffers: producer, slot, consumer.
@@ -246,6 +248,10 @@ pub enum CaptureKind {
     /// Moving bar in CPU memory; runs anywhere.
     #[default]
     TestPattern,
+    /// The test pattern with the monitor off for the frame slots `off`, as
+    /// KMS fails for a monitor in standby (tests).
+    #[doc(hidden)]
+    TestPatternWithOutage { off: std::ops::Range<u64> },
     /// The monitor's scanout plane as DMA-BUF (needs the `kms` feature,
     /// CAP_SYS_ADMIN and an encoder that takes DMA-BUFs, i.e. VAAPI; the
     /// synthetic encoder ignores the picture). The encoder scales to the
@@ -736,24 +742,18 @@ impl HostAgent {
         };
 
         while !stop.load(Ordering::Relaxed) {
-            if session
-                .as_ref()
-                .is_some_and(|s| !s.web && s.last_seen.elapsed() > self.cfg.client_timeout)
+            let end = session.as_ref().and_then(|s| {
+                health::session_end(
+                    s.web,
+                    s.shared.running.load(Ordering::Acquire),
+                    s.last_seen.elapsed(),
+                    self.cfg.client_timeout,
+                )
+            });
+            if let Some(why) = end
+                && let Some(s) = session.take()
             {
-                let s = session.take().unwrap();
-                log::info!("session {:08x}: client timed out", s.params.session_id);
-                s.stop();
-                self.set_status(None, "");
-            }
-            // A browser that left ends its session itself.
-            if session
-                .as_ref()
-                .is_some_and(|s| s.web && !s.shared.running.load(Ordering::Acquire))
-            {
-                let s = session.take().unwrap();
-                log::info!("session {:08x}: browser left", s.params.session_id);
-                s.stop();
-                self.set_status(None, "");
+                self.end_session(s, why, &mut out);
             }
             if let Some(w) = &self.web {
                 while let Ok(req) = w.requests.try_recv() {
@@ -914,11 +914,7 @@ impl HostAgent {
             }
         }
         if let Some(s) = session.take() {
-            let n = Bye {
-                session_id: s.params.session_id,
-            }
-            .encode(&mut out);
-            let _ = s.link.send(&out[..n]);
+            say_bye(&s, &mut out);
             s.stop();
         }
         control_stop.store(true, Ordering::Relaxed);
@@ -930,6 +926,17 @@ impl HostAgent {
             let _ = w.thread.join();
         }
         Ok(())
+    }
+
+    /// Ends a session the control loop found over (`why`); a client whose
+    /// stream stopped is told, so it doesn't watch a frozen picture.
+    fn end_session(&self, s: Session, why: End, out: &mut [u8]) {
+        log::info!("session {:08x}: {}", s.params.session_id, why.describe());
+        if why == End::StreamStopped {
+            say_bye(&s, out);
+        }
+        s.stop();
+        self.set_status(None, "");
     }
 
     /// A browser asks for a session with a PIN: on a right PIN it replaces
@@ -1243,7 +1250,9 @@ impl HostAgent {
         let params = self.resolve(params, (source.width(), source.height()));
         let source = match &self.cfg.capture {
             // The test pattern is drawn at whatever size the session uses.
-            CaptureKind::TestPattern => make_source(&self.cfg.capture, &params)?,
+            CaptureKind::TestPattern | CaptureKind::TestPatternWithOutage { .. } => {
+                make_source(&self.cfg.capture, &params)?
+            }
             _ => source,
         };
         let encoder = make_encoder(&self.cfg.encoder, &params)?;
@@ -1323,6 +1332,10 @@ impl HostAgent {
             );
             let monitors = MonitorSender::new(link.clone(), params.session_id);
             spawn_hot("capture", move || {
+                let _guard = StopOnExit {
+                    running: &shared.running,
+                    thread: "capture",
+                };
                 capture_loop(source, &shared, &slot, &free_rx, &free_tx, cursor, monitors);
             })?
         };
@@ -1330,6 +1343,10 @@ impl HostAgent {
             let (shared, in_slot) = (shared.clone(), frame_slot.clone());
             let free_enc_tx = free_enc_tx.clone();
             spawn_hot("encode", move || {
+                let _guard = StopOnExit {
+                    running: &shared.running,
+                    thread: "encode",
+                };
                 encode_loop(
                     encoder,
                     rebuild,
@@ -1363,6 +1380,10 @@ impl HostAgent {
             let (shared, tx) = (shared.clone(), tx.clone());
             let label = codec_label(codec);
             spawn_hot("send", move || {
+                let _guard = StopOnExit {
+                    running: &shared.running,
+                    thread: "send",
+                };
                 web::send_loop(&shared, &send_rx, &free_enc_tx, &tx, params, label);
             })?
         } else {
@@ -1373,6 +1394,10 @@ impl HostAgent {
             };
             let loss = LossSim::new(self.cfg.loss, u64::from(params.session_id) | 1);
             spawn_hot("send", move || {
+                let _guard = StopOnExit {
+                    running: &shared.running,
+                    thread: "send",
+                };
                 if let Err(e) =
                     send_loop(&shared, &send_rx, &free_enc_tx, &link, params, pacer, loss)
                 {
@@ -1423,6 +1448,18 @@ impl HostAgent {
             codec,
         }
     }
+}
+
+/// Tells a native client its session is over (a browser has its own way).
+fn say_bye(s: &Session, out: &mut [u8]) {
+    if s.web {
+        return;
+    }
+    let n = Bye {
+        session_id: s.params.session_id,
+    }
+    .encode(out);
+    let _ = s.link.send(&out[..n]);
 }
 
 fn log_session(s: &Session, who: &str) {
@@ -1504,6 +1541,7 @@ fn capture_loop(
     mut cursor: CursorSender,
     mut monitors: MonitorSender,
 ) {
+    let (mut failures, mut errors) = (0u32, RepeatedError::default());
     while shared.running.load(Ordering::Acquire) {
         let request = shared
             .monitor_request
@@ -1518,8 +1556,19 @@ fn capture_loop(
             continue;
         };
         if let Err(e) = source.next_frame(&mut frame) {
-            log::error!("capture: {e}");
-            break;
+            // Mostly passing (a monitor in standby, a framebuffer swapped
+            // during a mode change): keep the session, try again.
+            if let Some(line) = errors.report(e.to_string(), Instant::now()) {
+                log::warn!("capture: {line}");
+            }
+            let _ = free_tx.send(frame);
+            std::thread::sleep(health::capture_retry_delay(failures));
+            failures = failures.saturating_add(1);
+            continue;
+        }
+        if failures > 0 {
+            log::info!("capture: back after {failures} failed attempts");
+            failures = 0;
         }
         HostStats::bump(&shared.stats.frames_captured);
         // Right away, not after encoding: the pointer is the one thing the
@@ -1852,13 +1901,17 @@ fn default_bitrate_kbps(width: u16, height: u16, fps: u16) -> u32 {
 
 fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn FrameSource>> {
     match kind {
-        CaptureKind::TestPattern => {
+        CaptureKind::TestPattern | CaptureKind::TestPatternWithOutage { .. } => {
             let (w, h) = if p.width == 0 || p.height == 0 {
                 TEST_PATTERN_SIZE
             } else {
                 (u32::from(p.width), u32::from(p.height))
             };
-            Ok(Box::new(TestPattern::new(w, h, u32::from(p.fps))))
+            let pattern = TestPattern::new(w, h, u32::from(p.fps));
+            Ok(Box::new(match kind {
+                CaptureKind::TestPatternWithOutage { off } => pattern.with_outage(off.clone()),
+                _ => pattern,
+            }))
         }
         #[cfg(feature = "kms")]
         CaptureKind::Kms { card, connector } => {
@@ -2132,6 +2185,7 @@ fn send_loop(
     let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)) / 2);
     let mut window_start = Instant::now();
     let (mut frames, mut bytes, mut packets) = (0u32, 0u64, 0u64);
+    let mut errors = RepeatedError::default();
 
     while let Ok(enc) = queue.recv() {
         if !shared.running.load(Ordering::Acquire) {
@@ -2156,8 +2210,14 @@ fn send_loop(
             }
             match link.send(p) {
                 Ok(_) => Ok(()),
-                // A full socket buffer is congestion, not a reason to stop.
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+                // The network gone for a moment is packet loss, not a
+                // reason to stop.
+                Err(e) if health::send_error_is_transient(&e) => {
+                    if let Some(line) = errors.report(e.to_string(), Instant::now()) {
+                        log::warn!("send: {line}");
+                    }
+                    Ok(())
+                }
                 Err(e) => Err(e),
             }
         })?;

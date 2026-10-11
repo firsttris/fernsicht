@@ -32,7 +32,12 @@ the limits FFmpeg puts on the next latency step.
 - **Fix:** treat capture errors as transient (retry, reopen after N failures); ignore transient send
   errors; if a pipeline thread ends anyway, clear `running` and let the main loop end native
   sessions too (with Bye). Client: no video for a while after video was seen → reconnect.
-- **Status:** open
+- **Status:** fixed. `apps/host-agent/src/health.rs`: send errors that are only loss (unreachable,
+  no buffers, firewall) are ridden out and logged once a second; capture errors are retried
+  (5 ms doubling to 100 ms); a guard in the capture, encode and send threads ends the session when
+  one stops (also by a panic), and the control loop then sends Bye. The client-side watchdog was
+  left out on purpose: a monitor in standby legitimately sends no video for a long time. Tests:
+  `health.rs`, `a_monitor_in_standby_pauses_the_stream_and_keeps_the_session` (`protocol.rs`).
 
 ### A2 · Bitrate adaptation ratchets down and never recovers
 

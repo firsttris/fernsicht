@@ -96,3 +96,7 @@ asked directly at their last known address.
    HelloAck are sent plain.
 
 A new client replaces a running session; a session ends with Bye or after 5 s of silence.
+Errors that only cost packets (the network gone for a moment, a full buffer, a monitor in standby)
+don't end a session: the host keeps trying and FEC or a keyframe repairs the picture. If one of the
+host's pipeline threads stops anyway, the host ends the session and sends Bye, so the client never
+shows a frozen picture.

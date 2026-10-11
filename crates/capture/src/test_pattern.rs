@@ -17,6 +17,9 @@ pub struct TestPattern {
     seq: u64,
     bar_width: u32,
     arrow: Arc<CursorImage>,
+    /// Frame slots in which the "monitor" is off and capture fails, as KMS
+    /// does for a monitor in standby (tests).
+    outage: std::ops::Range<u64>,
 }
 
 impl TestPattern {
@@ -31,6 +34,16 @@ impl TestPattern {
             seq: 0,
             bar_width: (width / 32).max(2),
             arrow: Arc::new(CursorImage::arrow()),
+            outage: 0..0,
+        }
+    }
+
+    /// The same pattern, but capture fails in the frame slots `off` (on the
+    /// same frame grid), like a monitor that goes to standby and wakes up.
+    pub fn with_outage(self, off: std::ops::Range<u64>) -> Self {
+        Self {
+            outage: off,
+            ..self
         }
     }
 
@@ -93,20 +106,26 @@ impl FrameSource for TestPattern {
             std::thread::sleep(due - now);
         }
         // Stay on the original grid; if we fell behind, skip ahead instead
-        // of bursting.
+        // of bursting (and the pattern with it: `seq` counts grid slots).
         let mut next = due + self.interval;
+        let mut skipped = 0;
         let now = Instant::now();
         while next <= now {
             next += self.interval;
+            skipped += 1;
         }
         self.next_due = Some(next);
+        if self.outage.contains(&self.seq) {
+            self.seq += 1 + skipped;
+            return Err(CaptureError::Backend("no framebuffer (monitor off)".into()));
+        }
 
         frame.capture_us = now_us();
         self.draw(frame, self.seq);
         frame.seq = self.seq;
         frame.cursor = Some(self.cursor_at(self.seq));
         frame.ready_us = now_us();
-        self.seq += 1;
+        self.seq += 1 + skipped;
         Ok(())
     }
 }
@@ -114,6 +133,16 @@ impl FrameSource for TestPattern {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_outage_fails_its_frames_and_ends() {
+        let mut src = TestPattern::new(64, 32, 100).with_outage(2..4);
+        let mut frame = src.alloc_frame();
+        let results: Vec<bool> = (0..6).map(|_| src.next_frame(&mut frame).is_ok()).collect();
+        assert_eq!(results, [true, true, false, false, true, true]);
+        // The pattern keeps its place: the bar moved on during the outage.
+        assert_eq!(frame.seq, 5);
+    }
 
     #[test]
     fn produces_paced_frames() {

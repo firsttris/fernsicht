@@ -163,7 +163,7 @@ streamed monitor. The output shows `pointer input mapped to DP-1: …`.
 | `no display to capture` | No monitor active, or the wrong card. Choose with `--kms-card` or `--kms-connector`. |
 | `connector DP-2 is not active (active: ["DP-1"])` | Use the name shown. |
 | `the driver cannot import this DMA-BUF (…)` | The driver cannot read the buffer format. Please send the whole line. |
-| `display is off (no framebuffer)` | The monitor is in standby. |
+| `display is off (no framebuffer)` | The monitor is in standby. The session stays; the host tries again every 100 ms, and the picture is back as soon as the monitor wakes (a key press from the client wakes it). |
 | Session is rejected (client waits for a reply) | The error message is in the host agent's terminal. |
 
 ## Known limitations
