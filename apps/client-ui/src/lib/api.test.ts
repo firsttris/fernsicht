@@ -40,6 +40,11 @@ describe("api", () => {
 
   it("puts the backend's errors in the UI's words", () => {
     expect(errorText(new Error("wrong PIN"))).toBe("Falsche PIN.");
+    expect(
+      errorText(
+        "192.0.2.1:47800: too many wrong PINs: pairing mode closed; open it again on the host",
+      ),
+    ).toBe("Zu viele falsche PINs. Kopplung am Host neu öffnen.");
     expect(errorText("192.0.2.1:47800: this device is not paired with the host (…)")).toBe(
       "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln.",
     );

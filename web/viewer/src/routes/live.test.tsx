@@ -283,6 +283,16 @@ describe("Web-Viewer am Host", () => {
     expect(sentKeys().slice(-2)).toEqual(["+28", "-28"]);
   });
 
+  it("mutes the host's sound", async () => {
+    const { user } = await connected();
+    const picture = screen.getByLabelText<HTMLVideoElement>("Bildschirm von zentrale");
+    expect(picture.muted).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Ton ausschalten" }));
+    expect(picture.muted).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Ton einschalten" }));
+    expect(picture.muted).toBe(false);
+  });
+
   it("disconnects with a goodbye", async () => {
     const { pc, router, user } = await connected();
     await user.click(screen.getByRole("button", { name: "Trennen" }));

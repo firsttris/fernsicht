@@ -166,13 +166,13 @@ the limits FFmpeg puts on the next latency step.
 - **Where:** `apps/client-ui/src/lib/api.ts:190-200`, `apps/client/src/lib.rs:278`.
 - **Problem:** `"wrong PIN"` matches first as a substring of "too many wrong PINs".
 - **Fix:** most specific first now; error codes later (E2).
-- **Status:** open
+- **Status:** fixed (order; codes with E2). Test in `api.test.ts`.
 
 ### A11 · The web viewer's mute button does nothing
 
 - **Where:** `web/viewer/src/routes/live.tsx:106-135`, `web/ui/src/components/session-view.tsx:76, 177-188`.
 - **Fix:** pass `onMuteChange` and mute the video element.
-- **Status:** open
+- **Status:** fixed. The page keeps the state and mutes the `<video>`. Test in `live.test.tsx`.
 
 ### A12 · One invalid input event blocks all input of the session
 

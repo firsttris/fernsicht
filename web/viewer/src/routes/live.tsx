@@ -53,6 +53,7 @@ export function LiveSessionPage({
   const [fullscreen, setFullscreen] = useFullscreen();
   const [monitors, setMonitors] = useState<HostMonitors>();
   const [touchMode, setTouchMode] = useState<TouchMode>("direct");
+  const [muted, setMuted] = useState(false);
   const [zoom, setZoom] = useState<Zoom>(NO_ZOOM);
   const keyboard = useRef<HTMLInputElement>(null);
   const touch = useTouchScreen();
@@ -116,6 +117,7 @@ export function LiveSessionPage({
       stats={stats}
       mode={mode}
       onModeChange={onModeChange}
+      onMuteChange={setMuted}
       fullscreen={fullscreen}
       onFullscreenChange={setFullscreen}
       monitors={monitors}
@@ -138,6 +140,7 @@ export function LiveSessionPage({
       <RemoteScreen
         session={session}
         mode={mode}
+        muted={muted}
         touchMode={touchMode}
         zoom={zoom}
         onZoom={setZoom}
@@ -191,12 +194,15 @@ function useConnectionPhase(session: LiveSession): ConnectionPhase {
 export function RemoteScreen({
   session,
   mode,
+  muted = false,
   touchMode = "direct",
   zoom = NO_ZOOM,
   onZoom = () => {},
 }: {
   session: LiveSession;
   mode: SessionMode;
+  /** The host's sound off (the toolbar's sound button). */
+  muted?: boolean;
   touchMode?: TouchMode;
   zoom?: Zoom;
   onZoom?: (z: Zoom) => void;
@@ -418,6 +424,7 @@ export function RemoteScreen({
           ref={video}
           autoPlay
           playsInline
+          muted={muted}
           className="h-full w-full object-contain"
           aria-label={`Bildschirm von ${session.hostName}`}
         />

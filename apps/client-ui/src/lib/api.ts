@@ -187,9 +187,10 @@ export const actions = {
 /** The backend's (English) errors in the UI's words. */
 export function errorText(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
+  // The more specific first: "too many wrong PINs" contains "wrong PIN".
   const known: [string, string][] = [
-    ["wrong PIN", "Falsche PIN."],
     ["too many wrong PINs", "Zu viele falsche PINs. Kopplung am Host neu öffnen."],
+    ["wrong PIN", "Falsche PIN."],
     ["not in pairing mode", "Am Host ist keine Kopplung offen."],
     ["no answer from", "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?"],
     ["not paired with the host", "Der Host kennt dieses Gerät nicht mehr. Bitte neu koppeln."],
