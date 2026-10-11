@@ -4,6 +4,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// A send error that is only packet loss: the network is gone for a
@@ -90,9 +91,86 @@ impl Drop for StopOnExit<'_> {
     }
 }
 
+/// The threads of a session being started. If the start fails half-way,
+/// dropping this stops the ones already running (with `stop`) and joins
+/// them, instead of leaving them to work for nobody.
+pub struct Starting<F: FnMut()> {
+    threads: Vec<JoinHandle<()>>,
+    stop: Option<F>,
+}
+
+impl<F: FnMut()> Starting<F> {
+    pub fn new(stop: F) -> Self {
+        Self {
+            threads: Vec::new(),
+            stop: Some(stop),
+        }
+    }
+
+    pub fn add(&mut self, thread: JoinHandle<()>) {
+        self.threads.push(thread);
+    }
+
+    /// The start went through: the threads belong to the session now.
+    pub fn done(mut self) -> Vec<JoinHandle<()>> {
+        self.stop = None;
+        std::mem::take(&mut self.threads)
+    }
+}
+
+impl<F: FnMut()> Drop for Starting<F> {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.as_mut() {
+            stop();
+            for t in self.threads.drain(..) {
+                let _ = t.join();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn worker(running: &std::sync::Arc<AtomicBool>) -> JoinHandle<()> {
+        let running = running.clone();
+        std::thread::spawn(move || {
+            while running.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    }
+
+    #[test]
+    fn a_failed_start_stops_and_joins_what_it_started() {
+        let running = std::sync::Arc::new(AtomicBool::new(true));
+        let start = || -> Result<Vec<JoinHandle<()>>, &'static str> {
+            let r = running.clone();
+            let mut threads = Starting::new(move || r.store(false, Ordering::Release));
+            threads.add(worker(&running));
+            threads.add(worker(&running));
+            Err("the third thread could not start")?;
+            Ok(threads.done())
+        };
+        assert!(start().is_err());
+        // Joined: both workers saw the stop and ended.
+        assert!(!running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_start_that_went_through_hands_its_threads_on() {
+        let running = std::sync::Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        let mut threads = Starting::new(move || r.store(false, Ordering::Release));
+        threads.add(worker(&running));
+        let handles = threads.done();
+        assert!(running.load(Ordering::Acquire), "not stopped");
+        running.store(false, Ordering::Release);
+        for t in handles {
+            t.join().unwrap();
+        }
+    }
 
     #[test]
     fn network_blips_are_only_loss() {

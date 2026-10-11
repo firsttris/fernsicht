@@ -218,7 +218,9 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** a `?` after the first `spawn_hot` leaves started threads running with
   `running = true`. `overflows_seen` starts at 0 against a counter that spans sessions.
 - **Fix:** a guard that stops and joins on error; take the counter's current value as the baseline.
-- **Status:** open
+- **Status:** fixed. `health::Starting` collects the threads as they start; dropped without
+  `done()` (an early return), it clears `running`, closes the frame slot and joins them. The
+  session's `overflows_seen` starts at the counter's current value. Tests in `health.rs`.
 
 ### A16 · KMS edge cases
 

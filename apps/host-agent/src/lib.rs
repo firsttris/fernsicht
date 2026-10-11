@@ -1364,6 +1364,14 @@ impl HostAgent {
             free_enc_tx.send(EncodedFrame::default()).unwrap();
         }
 
+        // Threads started so far; stopped and joined if a later one fails.
+        let mut threads = {
+            let (shared, slot) = (shared.clone(), frame_slot.clone());
+            health::Starting::new(move || {
+                shared.running.store(false, Ordering::Release);
+                slot.close();
+            })
+        };
         let capture = {
             let (shared, slot) = (shared.clone(), frame_slot.clone());
             let (free_rx, free_tx) = (free_frames_rx, free_frames_tx.clone());
@@ -1381,6 +1389,7 @@ impl HostAgent {
                 capture_loop(source, &shared, &slot, &free_rx, &free_tx, cursor, monitors);
             })?
         };
+        threads.add(capture);
         let encode = {
             let (shared, in_slot) = (shared.clone(), frame_slot.clone());
             let free_enc_tx = free_enc_tx.clone();
@@ -1403,22 +1412,20 @@ impl HostAgent {
                 );
             })?
         };
-        let audio = match make_audio(self.cfg.audio) {
-            Ok(None) => None,
+        threads.add(encode);
+        match make_audio(self.cfg.audio) {
+            Ok(None) => {}
             Ok(Some(source)) => {
                 let (shared, link) = (shared.clone(), link.clone());
                 let session_id = params.session_id;
-                Some(spawn_hot("audio", move || {
+                threads.add(spawn_hot("audio", move || {
                     if let Err(e) = audio_loop(source, &shared, &link, session_id) {
                         log::warn!("audio: {e}");
                     }
-                })?)
+                })?);
             }
-            Err(e) => {
-                log::warn!("no sound: {e}");
-                None
-            }
-        };
+            Err(e) => log::warn!("no sound: {e}"),
+        }
         let send = if let Some((tx, _)) = &web_out {
             let (shared, tx) = (shared.clone(), tx.clone());
             let label = codec_label(codec);
@@ -1448,31 +1455,31 @@ impl HostAgent {
                 }
             })?
         };
+        threads.add(send);
 
         // The browser's input arrives on the WebRTC thread, which injects
         // it there (the host's loop only polls every 100 ms).
-        let webrtc = match (web, web_out) {
+        let web = match (web, web_out) {
             (Some(setup), Some((_, rx))) => {
-                Some(web::spawn(setup, codec, shared.clone(), rx, input.take())?)
+                threads.add(web::spawn(setup, codec, shared.clone(), rx, input.take())?);
+                true
             }
-            _ => None,
+            _ => false,
         };
         let session = Session {
             params,
             codec,
             peer,
-            web: webrtc.is_some(),
+            web,
             link,
             handshake: None,
             last_seen: Instant::now(),
             shared,
             loss,
             rate: RateController::new(params.bitrate_kbps, Instant::now()),
-            overflows_seen: 0,
-            threads: [Some(capture), Some(encode), Some(send), audio, webrtc]
-                .into_iter()
-                .flatten()
-                .collect(),
+            // The counter spans all sessions: this one starts from here.
+            overflows_seen: HostStats::get(&self.stats.send_overflows),
+            threads: threads.done(),
             frame_slot,
             input,
             input_seen: Dedup::default(),
