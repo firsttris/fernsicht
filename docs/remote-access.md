@@ -43,11 +43,9 @@ With Fernsicht:
   tried live yet.
 
 !!! note "Packet size"
-    Fernsicht sends datagrams of up to 1,400 bytes; Tailscale carries 1,280 per packet. Linux then
-    splits a datagram in two. That works, but losing either half loses the whole datagram, which
-    shows on mobile networks. If the overlay shows more loss over Tailscale than without it, a
-    smaller packet size (an option such as `--mtu 1200`, or detecting it) is a small change; see
-    [next steps](next-steps.md).
+    Tailscale carries 1,280 bytes per packet. The host asks the route's MTU towards the client and
+    sends video in datagrams that fit (1,252 bytes over IPv4, 1,232 over IPv6), so none is split in
+    two; the log says so when the session starts.
 
 ## Cloudflare
 

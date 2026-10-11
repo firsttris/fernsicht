@@ -62,7 +62,6 @@ the internet would need:
   rendezvous service as well.
 - **HTTPS for the web viewer** (today the page and the PIN travel over plain HTTP) and **TURN** for
   browsers.
-- **A packet-size option** for tunnels with a smaller MTU, such as Tailscale and WireGuard.
 
 ## 6. Quality
 

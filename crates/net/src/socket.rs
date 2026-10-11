@@ -12,6 +12,7 @@ use std::io::{self, IoSlice};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::AsRawFd;
 
+use fernsicht_proto::MAX_DATAGRAM;
 use socket2::{Domain, Protocol, Socket, Type};
 
 /// Datagrams one [`send_segments`] call may carry (the kernel's
@@ -201,6 +202,43 @@ pub fn recv_segments(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, u
         }
         Ok((n, size))
     }
+}
+
+/// The path MTU towards `peer` as the routing table knows it, e.g. a
+/// WireGuard interface's 1420 or Tailscale's 1280: a socket connected to
+/// it is asked; nothing is sent.
+pub fn path_mtu(peer: SocketAddr) -> Option<usize> {
+    let socket = UdpSocket::bind(local_for(&peer)).ok()?;
+    socket.connect(peer).ok()?;
+    let (level, option) = match peer {
+        SocketAddr::V6(a) if a.ip().to_ipv4_mapped().is_none() => {
+            (libc::IPPROTO_IPV6, libc::IPV6_MTU)
+        }
+        _ => (libc::IPPROTO_IP, libc::IP_MTU),
+    };
+    let mut mtu: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: getsockopt writes an int into a valid pointer.
+    let r = unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            level,
+            option,
+            (&mut mtu as *mut libc::c_int).cast(),
+            &mut len,
+        )
+    };
+    (r == 0 && mtu > 0).then_some(mtu as usize)
+}
+
+/// The UDP payload a path of `mtu` bytes carries without fragments (IPv4
+/// or IPv6 and UDP headers off), at most `MAX_DATAGRAM`; that much when
+/// the MTU is not known.
+pub fn datagram_for(mtu: Option<usize>, v6: bool) -> usize {
+    const SMALLEST: usize = 512;
+    let headers = if v6 { 40 + 8 } else { 20 + 8 };
+    mtu.map_or(MAX_DATAGRAM, |m| m.saturating_sub(headers))
+        .clamp(SMALLEST, MAX_DATAGRAM)
 }
 
 /// Requested send and receive buffer size.
@@ -441,6 +479,23 @@ mod tests {
         .unwrap();
         assert_eq!(received_tos(&b), 34 << 2);
         assert_eq!(received_tos(&b), 34 << 2, "each GSO datagram");
+    }
+
+    #[test]
+    fn datagrams_fit_the_path() {
+        // No MTU known, or a LAN's 1500: the protocol's own limit.
+        assert_eq!(datagram_for(None, false), MAX_DATAGRAM);
+        assert_eq!(datagram_for(Some(1500), false), MAX_DATAGRAM);
+        // WireGuard (1420) and Tailscale (1280), over IPv4 and IPv6.
+        assert_eq!(datagram_for(Some(1420), false), 1392);
+        assert_eq!(datagram_for(Some(1420), true), 1372);
+        assert_eq!(datagram_for(Some(1280), false), 1252);
+        assert_eq!(datagram_for(Some(1280), true), 1232);
+        // Nonsense stays usable.
+        assert_eq!(datagram_for(Some(100), false), 512);
+        // The loopback interface reports its own (large) MTU.
+        let lo = path_mtu("127.0.0.1:9".parse().unwrap()).unwrap();
+        assert!(lo >= 1500, "{lo}");
     }
 
     #[test]

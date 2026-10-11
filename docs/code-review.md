@@ -838,7 +838,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Problem:** 1,400-byte datagrams fragment on WireGuard (1420) and Tailscale (1280).
 - **Fix:** shard size from `IP_MTU` (the reassembler already takes it from each packet).
-- **Status:** open
+- **Status:** fixed. The send loop asks the route's MTU towards the client (`socket::path_mtu`: a
+  socket connected to the peer, `IP_MTU`/`IPV6_MTU`, nothing sent) and sizes its shards for it
+  (`datagram_for`, `fec::shard_size_for`). Pointer pieces, sound and control packets stay below
+  1,232 bytes anyway. Unit tests cover WireGuard and Tailscale over IPv4 and IPv6; a live VPN was
+  not at hand.
 
 ### C20 · Clock sync without skew
 

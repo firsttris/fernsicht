@@ -2629,7 +2629,27 @@ fn send_loop(
     mut pacer: Pacer,
     mut loss: LossSim,
 ) -> anyhow::Result<()> {
-    let mut packetizer = Packetizer::new(FecConfig::default())?;
+    // Datagrams that cross the path whole (a VPN's MTU is lower than a
+    // LAN's); the client takes the shard size from each packet.
+    let shard_size = match link {
+        Link::Udp(l) => {
+            let datagram = socket::datagram_for(socket::path_mtu(l.peer), l.peer.is_ipv6());
+            let shard = fernsicht_net::fec::shard_size_for(datagram);
+            if datagram < MAX_DATAGRAM {
+                log::info!(
+                    "session {:08x}: the path to {} carries {datagram}-byte datagrams; shards of {shard} bytes",
+                    params.session_id,
+                    l.peer
+                );
+            }
+            shard
+        }
+        Link::Web(_) => FecConfig::default().shard_size,
+    };
+    let mut packetizer = Packetizer::new(FecConfig {
+        shard_size,
+        ..FecConfig::default()
+    })?;
     // Chunks of sealed datagrams, handed to the kernel at once.
     let mut scratch = Vec::with_capacity(socket::MAX_SEGMENTS_BYTES + MAX_DATAGRAM);
     // A frame leaves before the next one is encoded.

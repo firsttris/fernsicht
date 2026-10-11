@@ -1,8 +1,18 @@
 //! Frame → FEC-protected datagrams.
 
-use fernsicht_proto::{DEFAULT_SHARD_SIZE, MAX_FRAME_LEN, VideoHeader};
+use fernsicht_proto::{DEFAULT_SHARD_SIZE, MAX_FRAME_LEN, SEALED_OVERHEAD, VideoHeader};
 use reed_solomon_simd::ReedSolomonEncoder;
 use thiserror::Error;
+
+/// The shard size for datagrams of `datagram` bytes: room for the video
+/// header and, in a secure session, the seal. `DEFAULT_SHARD_SIZE` is the
+/// one for the protocol's largest datagram.
+pub fn shard_size_for(datagram: usize) -> usize {
+    datagram
+        .saturating_sub(SEALED_OVERHEAD + VideoHeader::LEN)
+        .max(2)
+        & !1
+}
 
 /// Probability that a group stays unrecoverable that recovery sizing aims
 /// for. With one group per frame (more only past 512 shards) and 60 fps,
@@ -457,6 +467,18 @@ mod tests {
         };
         assert_eq!(&last[..50], &frame[200..]);
         assert!(last[50..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn shards_fit_the_datagram() {
+        assert_eq!(
+            shard_size_for(fernsicht_proto::MAX_DATAGRAM),
+            DEFAULT_SHARD_SIZE
+        );
+        // Tailscale over IPv6: 1232-byte datagrams, sealed.
+        let s = shard_size_for(1232);
+        assert!(s.is_multiple_of(2));
+        assert!(s + VideoHeader::LEN + SEALED_OVERHEAD <= 1232);
     }
 
     #[test]
