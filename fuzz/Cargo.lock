@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-capture"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "fernsicht-core",
  "thiserror",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-codec"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "fernsicht-capture",
  "fernsicht-core",
@@ -55,9 +55,10 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "libc",
+ "libloading",
  "log",
 ]
 
@@ -73,10 +74,11 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-net"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "fernsicht-core",
  "fernsicht-proto",
+ "libc",
  "log",
  "reed-solomon-simd",
  "socket2",
@@ -85,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "fernsicht-proto"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "thiserror",
 ]
@@ -137,6 +139,16 @@ checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
 dependencies = [
  "arbitrary",
  "cc",
+]
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
 ]
 
 [[package]]
