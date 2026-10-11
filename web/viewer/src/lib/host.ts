@@ -69,7 +69,7 @@ export interface LiveSession {
   height: number;
   /** Sends an input message (see apps/host-agent/src/web.rs). */
   send(msg: Record<string, unknown>): void;
-  /** Says goodbye and closes the connection. */
+  /** Says goodbye and closes the connection (once; later calls do nothing). */
   close(): void;
 }
 
@@ -77,6 +77,43 @@ let live: LiveSession | null = null;
 
 /** The session the connect page started, for the session page. */
 export const currentSession = () => live;
+
+/** What the connection's state means for the session. */
+export type ConnectionPhase = "live" | "interrupted" | "ended";
+
+/**
+ * `disconnected` is passing (ICE often recovers from a Wi-Fi blip);
+ * `failed`, `closed` or a closed data channel (the host ended it) are not.
+ */
+export function connectionPhase(
+  pc: RTCPeerConnectionState,
+  channel: RTCDataChannelState,
+): ConnectionPhase {
+  if (pc === "failed" || pc === "closed" || channel === "closing" || channel === "closed") {
+    return "ended";
+  }
+  return pc === "disconnected" ? "interrupted" : "live";
+}
+
+/** How long an interrupted connection may take to come back. */
+export const RECONNECT_GRACE_MS = 10_000;
+
+const pendingClose = new WeakMap<LiveSession, ReturnType<typeof setTimeout>>();
+
+/**
+ * Keeps `session` open while a page shows it; the returned function lets
+ * go, and the session closes unless a page holds it again at once (React's
+ * StrictMode unmounts and mounts again to test effects).
+ */
+export function holdSession(session: LiveSession): () => void {
+  clearTimeout(pendingClose.get(session));
+  return () => {
+    pendingClose.set(
+      session,
+      setTimeout(() => session.close(), 0),
+    );
+  };
+}
 
 /** Starts a session with the host serving this page. */
 export async function connect(pin: string, hostName: string): Promise<LiveSession> {
@@ -117,6 +154,7 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
     const send = (msg: Record<string, unknown>) => {
       if (channel.readyState === "open") channel.send(JSON.stringify(msg));
     };
+    let closed = false;
     const session: LiveSession = {
       hostName,
       pc,
@@ -126,6 +164,8 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
       height: body.height ?? 0,
       send,
       close: () => {
+        if (closed) return;
+        closed = true;
         send({ t: "bye" });
         // Let the goodbye leave before the connection goes.
         setTimeout(() => pc.close(), 100);

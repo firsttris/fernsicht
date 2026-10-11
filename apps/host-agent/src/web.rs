@@ -60,6 +60,10 @@ pub(crate) enum WebOut {
 
 /// Messages queued for the WebRTC thread before the sender waits.
 const OUT_QUEUE: usize = 64;
+/// A browser that has not connected by then never will (its packets are
+/// blocked, or the tab was closed while connecting): the session ends
+/// instead of encoding for nobody.
+pub(crate) const CONNECT_WITHIN: Duration = Duration::from_secs(10);
 
 /// A browser asking for a session, from the HTTP thread to the host's loop.
 pub(crate) struct WebRequest {
@@ -250,8 +254,13 @@ impl RtcSession {
     fn run(&mut self, out: &Receiver<WebOut>) -> anyhow::Result<()> {
         let local = self.socket.local_addr()?;
         let net = receive_thread(self.socket.try_clone()?, self.shared.clone())?;
+        let started = Instant::now();
         let result = (|| {
             while self.shared.running.load(Ordering::Acquire) {
+                if !self.connected && started.elapsed() > CONNECT_WITHIN {
+                    log::info!("web session: the browser never connected");
+                    return Ok(());
+                }
                 let deadline = match self.poll()? {
                     Some(t) => t,
                     None => return Ok(()),

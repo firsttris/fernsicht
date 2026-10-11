@@ -70,7 +70,12 @@ the limits FFmpeg puts on the next latency step.
 - **Fix:** viewer: close on unmount and on the ended path; only `failed`/`closed` are final, show
   "Verbindung unterbrochen…" with a grace timer on `disconnected`. Host: no `Connected` within 10 s
   ends the session; a failed `reply.send` stops it.
-- **Status:** open
+- **Status:** fixed. Viewer: `connectionPhase` (pure) tells `disconnected` (interrupted, shown as
+  “Verbindung unterbrochen …”) from the end; an interruption longer than 10 s ends the session; an
+  ended session is closed, and `holdSession` closes it when the page goes away (deferred, so React's
+  StrictMode trial unmount does not end it); `close` is idempotent. Host: a browser that has not
+  connected within 10 s ends its session; a session whose HTTP answer could not be delivered is
+  stopped. Tests: `host.test.ts`, `live.test.tsx`, `a_browser_that_never_connects_does_not_keep_the_host_busy`.
 
 ### A4 · The GPU stays clocked high after `systemctl stop` or `restart`
 

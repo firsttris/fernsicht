@@ -5,8 +5,10 @@ import {
   ConnectError,
   connect,
   connectErrorText,
+  connectionPhase,
   currentSession,
   fetchHostInfo,
+  holdSession,
   summarize,
 } from "./host";
 
@@ -64,6 +66,39 @@ describe("host API", () => {
     expect(pc.channel.sent.at(-1)).toEqual({ t: "bye" });
     expect(currentSession()).toBeNull();
     vi.advanceTimersByTime(200);
+    expect(pc.closed).toBe(true);
+    // Once: a second close says no second goodbye.
+    const sent = pc.channel.sent.length;
+    s.close();
+    expect(pc.channel.sent).toHaveLength(sent);
+    vi.useRealTimers();
+  });
+
+  it("tells a passing interruption from the end", () => {
+    expect(connectionPhase("connected", "open")).toBe("live");
+    expect(connectionPhase("connecting", "connecting")).toBe("live");
+    expect(connectionPhase("disconnected", "open")).toBe("interrupted");
+    expect(connectionPhase("failed", "open")).toBe("ended");
+    expect(connectionPhase("closed", "open")).toBe("ended");
+    // The host closed the data channel: over, whatever ICE says.
+    expect(connectionPhase("connected", "closed")).toBe("ended");
+    expect(connectionPhase("disconnected", "closing")).toBe("ended");
+  });
+
+  it("closes a session no page holds any more", async () => {
+    installFakes(() => ({ status: 200, body: { answer } }));
+    const s = await connect("482913", "zentrale");
+    const pc = FakePeerConnection.last!;
+    vi.useFakeTimers();
+    // StrictMode: let go and take it again at once → stays open.
+    holdSession(s)();
+    const release = holdSession(s);
+    vi.advanceTimersByTime(500);
+    expect(pc.channel.sent).not.toContainEqual({ t: "bye" });
+    // The page goes away → goodbye and closed.
+    release();
+    vi.advanceTimersByTime(500);
+    expect(pc.channel.sent).toContainEqual({ t: "bye" });
     expect(pc.closed).toBe(true);
     vi.useRealTimers();
   });

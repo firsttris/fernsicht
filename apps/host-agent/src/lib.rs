@@ -982,12 +982,22 @@ impl HostAgent {
         let who = format!("Browser {}", req.browser.ip());
         match self.start_session(params, req.browser, None, Some(setup)) {
             Ok((s, _)) => {
-                log_session(&s, &who);
-                self.set_status(Some(&s), &who);
-                let _ = req.reply.send(Ok(web::WebAccepted {
+                let accepted = web::WebAccepted {
                     answer,
                     params: s.params,
-                }));
+                };
+                // The browser's request timed out meanwhile: it never gets
+                // the answer and never connects.
+                if req.reply.send(Ok(accepted)).is_err() {
+                    log::info!(
+                        "session {:08x}: the browser stopped waiting",
+                        s.params.session_id
+                    );
+                    s.stop();
+                    return;
+                }
+                log_session(&s, &who);
+                self.set_status(Some(&s), &who);
                 *session = Some(s);
             }
             Err(e) => {

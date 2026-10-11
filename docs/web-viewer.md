@@ -25,6 +25,11 @@ network. The host serves the page itself.
   **Gaming** mode a click into the video captures the mouse pointer, and
   Esc releases it. Controllers work through the Gamepad API; some browsers
   only expose them on HTTPS pages.
+- **Interruptions:** if the connection drops for a moment (Wi-Fi), the
+  picture shows “Verbindung unterbrochen …” and continues when it comes
+  back; after 10 s without it, the session ends. Leaving the page (browser
+  back, closing the tab) ends the session on the host at once. A browser
+  that never manages to connect (blocked UDP) is given up after 10 s.
 - **Monitors:** with two or more monitors on the host, “Bildschirm wählen”
   (choose screen) in the toolbar switches the one shown.
 - **System keys:** Ctrl+Alt+Del, the Windows key and similar keys are in

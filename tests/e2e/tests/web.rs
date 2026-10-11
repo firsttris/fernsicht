@@ -232,6 +232,58 @@ fn a_browser_gets_picture_sound_and_pointer_and_types() {
 }
 
 #[test]
+fn a_browser_that_never_connects_does_not_keep_the_host_busy() {
+    let _serial = exclusive();
+    let sec = Arc::new(HostSecurity::new(
+        Identity::generate(),
+        "zentrale",
+        Trusted::default(),
+        None,
+    ));
+    let host = host(&sec, &Recorder::default(), None);
+    let web = host.web_addr().expect("web server");
+    sec.open_pairing("482913");
+
+    // A browser that gets its answer and then goes silent (its UDP is
+    // blocked, or the tab was closed while connecting).
+    let mut rtc = RtcConfig::new().build(Instant::now());
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    rtc.add_local_candidate(Candidate::host(socket.local_addr().unwrap(), "udp").unwrap());
+    let mut change = rtc.sdp_api();
+    change.add_media(MediaKind::Video, Direction::RecvOnly, None, None, None);
+    change.add_channel("fernsicht".into());
+    let (offer, _pending) = change.apply().unwrap();
+    let (status, _) = http(
+        web,
+        "POST",
+        "/api/connect",
+        Some(&json!({"pin": "482913", "offer": offer})),
+    );
+    assert_eq!(status, 200);
+
+    // The session encodes while it waits for the browser …
+    let stats = host.stats();
+    let encoded = || {
+        stats
+            .frames_encoded
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let before = encoded();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(encoded() > before, "the session should be running");
+    // … and gives up after the connect deadline.
+    std::thread::sleep(Duration::from_secs(11));
+    let after = encoded();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        encoded(),
+        after,
+        "still encoding for a browser that never came"
+    );
+    host.stop();
+}
+
+#[test]
 fn the_host_serves_the_viewer_page() {
     let _serial = exclusive();
     let root = std::env::temp_dir().join(format!("fernsicht-viewer-{}", std::process::id()));

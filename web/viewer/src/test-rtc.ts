@@ -62,7 +62,11 @@ export class FakePeerConnection extends EventTarget {
   }
   /** The connection drops. */
   drop() {
-    this.connectionState = "failed";
+    this.setState("failed");
+  }
+  /** The connection's state changes. */
+  setState(state: RTCPeerConnectionState) {
+    this.connectionState = state;
     this.dispatchEvent(new Event("connectionstatechange"));
   }
 }

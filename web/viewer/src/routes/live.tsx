@@ -19,7 +19,16 @@ import {
   type CursorPosition,
   decodeCursorPacket,
 } from "../lib/cursor";
-import { type HostStats, type LiveSession, type StatsSample, summarize } from "../lib/host";
+import {
+  type ConnectionPhase,
+  type HostStats,
+  type LiveSession,
+  RECONNECT_GRACE_MS,
+  type StatsSample,
+  connectionPhase,
+  holdSession,
+  summarize,
+} from "../lib/host";
 import { useFullscreen } from "../lib/fullscreen";
 import { PadTracker } from "../lib/gamepad";
 import { WheelAccumulator, contentRect, linuxButton, toAbsolute } from "../lib/input";
@@ -39,7 +48,7 @@ export function LiveSessionPage({
   onEnd: () => void;
 }) {
   const [stats, setStats] = useState<SessionStats>();
-  const [ended, setEnded] = useState(false);
+  const phase = useConnectionPhase(session);
   const [size, setSize] = useState({ width: session.width, height: session.height });
   const [fullscreen, setFullscreen] = useFullscreen();
   const [monitors, setMonitors] = useState<HostMonitors>();
@@ -78,20 +87,13 @@ export function LiveSessionPage({
         setStats(r.stats);
       });
     }, 1000);
-    const onState = () => {
-      if (["failed", "closed", "disconnected"].includes(session.pc.connectionState)) setEnded(true);
-    };
-    session.pc.addEventListener("connectionstatechange", onState);
-    session.channel.addEventListener("close", onState);
     return () => {
       clearInterval(timer);
       session.channel.removeEventListener("message", onMessage);
-      session.pc.removeEventListener("connectionstatechange", onState);
-      session.channel.removeEventListener("close", onState);
     };
   }, [session]);
 
-  if (ended) {
+  if (phase === "ended") {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-background p-6 text-center">
         <h1 className="m-0 text-xl font-semibold tracking-tight">
@@ -141,8 +143,48 @@ export function LiveSessionPage({
         onZoom={setZoom}
       />
       <TextInput session={session} input={keyboard} />
+      {phase === "interrupted" && (
+        <div
+          role="status"
+          className="pointer-events-none absolute inset-x-0 top-1/3 mx-auto w-fit rounded-md bg-background/90 px-4 py-2 text-sm shadow-lg"
+        >
+          Verbindung unterbrochen …
+        </div>
+      )}
     </SessionView>
   );
+}
+
+/**
+ * The connection's phase. An interruption that lasts longer than the
+ * grace time ends the session; an ended session stays ended and is closed
+ * (also when the page goes away, e.g. browser back).
+ */
+function useConnectionPhase(session: LiveSession): ConnectionPhase {
+  const [phase, setPhase] = useState<ConnectionPhase>("live");
+  useEffect(() => holdSession(session), [session]);
+  useEffect(() => {
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const update = () => {
+      const next = connectionPhase(session.pc.connectionState, session.channel.readyState);
+      clearTimeout(grace);
+      if (next === "interrupted") {
+        grace = setTimeout(() => setPhase("ended"), RECONNECT_GRACE_MS);
+      }
+      setPhase((p) => (p === "ended" ? p : next));
+    };
+    session.pc.addEventListener("connectionstatechange", update);
+    session.channel.addEventListener("close", update);
+    return () => {
+      clearTimeout(grace);
+      session.pc.removeEventListener("connectionstatechange", update);
+      session.channel.removeEventListener("close", update);
+    };
+  }, [session]);
+  useEffect(() => {
+    if (phase === "ended") session.close();
+  }, [phase, session]);
+  return phase;
 }
 
 /** The picture, the pointer, and the input that goes to the host. */

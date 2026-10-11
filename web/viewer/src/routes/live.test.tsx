@@ -283,14 +283,55 @@ describe("Web-Viewer am Host", () => {
     expect(currentSession()).toBeNull();
   });
 
-  it("notices a dropped connection", async () => {
+  it("notices a dropped connection and closes it", async () => {
     const { pc, router, user } = await connected();
     act(() => pc.drop());
     expect(
       await screen.findByRole("heading", { name: "Verbindung mit zentrale beendet" }),
     ).toBeVisible();
+    await waitFor(() => expect(pc.closed).toBe(true));
+    expect(currentSession()).toBeNull();
     await user.click(screen.getByRole("button", { name: "Neu verbinden" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  });
+
+  it("rides out a short interruption", async () => {
+    const { pc } = await connected();
+    act(() => pc.setState("disconnected"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Verbindung unterbrochen");
+    act(() => pc.setState("connected"));
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    expect(screen.getByTestId("remote-screen")).toBeInTheDocument();
+    expect(pc.closed).toBe(false);
+  });
+
+  it("ends an interruption that does not heal", async () => {
+    const { pc } = await connected();
+    vi.useFakeTimers();
+    try {
+      act(() => pc.setState("disconnected"));
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(
+        screen.getByRole("heading", { name: "Verbindung mit zentrale beendet" }),
+      ).toBeVisible();
+      // Ended stays ended, even if ICE comes back now.
+      act(() => pc.setState("connected"));
+      act(() => vi.advanceTimersByTime(200));
+      expect(
+        screen.getByRole("heading", { name: "Verbindung mit zentrale beendet" }),
+      ).toBeVisible();
+      expect(pc.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the session when the page goes away", async () => {
+    const { pc, router } = await connected();
+    act(() => void router.navigate({ to: "/" }));
+    await waitFor(() => expect(pc.closed).toBe(true));
+    expect(pc.channel.sent).toContainEqual({ t: "bye" });
+    expect(currentSession()).toBeNull();
   });
 
   it("goes back to the PIN after a reload", async () => {
