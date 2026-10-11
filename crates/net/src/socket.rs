@@ -9,6 +9,7 @@
 
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::os::fd::AsRawFd;
 
 use socket2::{Domain, Protocol, Socket, Type};
 
@@ -22,21 +23,48 @@ pub fn bind_udp(addr: impl ToSocketAddrs) -> io::Result<UdpSocket> {
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address"))?;
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
-    // Best effort: an unprivileged process gets at most rmem_max/wmem_max.
-    let _ = socket.set_recv_buffer_size(BUFFER_BYTES);
-    let _ = socket.set_send_buffer_size(BUFFER_BYTES);
+    // Past rmem_max/wmem_max where allowed (the host service has
+    // CAP_NET_ADMIN); otherwise best effort, capped by them.
+    if !force_buffer(&socket, libc::SO_RCVBUFFORCE) {
+        let _ = socket.set_recv_buffer_size(BUFFER_BYTES);
+    }
+    if !force_buffer(&socket, libc::SO_SNDBUFFORCE) {
+        let _ = socket.set_send_buffer_size(BUFFER_BYTES);
+    }
     socket.bind(&addr.into())?;
-    // Linux reports twice the usable size (bookkeeping overhead).
-    if let Ok(got) = socket.recv_buffer_size()
-        && got < BUFFER_BYTES
+    if let Ok(reported) = socket.recv_buffer_size()
+        && usable(reported) < BUFFER_BYTES
     {
         log::warn!(
             "UDP receive buffer is {} KiB (wanted {} KiB); raise net.core.rmem_max to avoid drops on keyframes",
-            got / 1024,
+            usable(reported) / 1024,
             BUFFER_BYTES / 1024
         );
     }
     Ok(socket.into())
+}
+
+/// The usable part of a buffer size Linux reports: it doubles what was
+/// asked for (bookkeeping overhead), and reports the doubled value.
+pub fn usable(reported: usize) -> usize {
+    reported / 2
+}
+
+/// Sets a buffer of [`BUFFER_BYTES`] with `SO_RCVBUFFORCE` or
+/// `SO_SNDBUFFORCE`, which ignore the system maximum but need
+/// CAP_NET_ADMIN; false without it.
+fn force_buffer(socket: &Socket, option: libc::c_int) -> bool {
+    let bytes = BUFFER_BYTES as libc::c_int;
+    // SAFETY: a valid socket; the option value is a c_int of that size.
+    unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            option,
+            (&bytes as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) == 0
+    }
 }
 
 /// A socket of `peer`'s family on any local address and port, to talk to
@@ -64,6 +92,14 @@ pub fn connect_udp(host: &str) -> io::Result<UdpSocket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_usable_buffer_is_half_what_linux_reports() {
+        // Asked for 4 MiB and got it: Linux reports 8 MiB.
+        assert_eq!(usable(8 * 1024 * 1024), BUFFER_BYTES);
+        // Capped at an rmem_max of 2 MiB: reported 4 MiB, half usable.
+        assert!(usable(4 * 1024 * 1024) < BUFFER_BYTES);
+    }
 
     #[test]
     fn the_local_side_takes_the_peers_family() {

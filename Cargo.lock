@@ -1341,6 +1341,7 @@ dependencies = [
  "criterion",
  "fernsicht-core",
  "fernsicht-proto",
+ "libc",
  "log",
  "proptest",
  "reed-solomon-simd",

@@ -100,7 +100,8 @@ Capture 0,7 ms · Encode 0,2 ms · Netz 1,0 ms · Decode 0,3 ms · Anzeige 0,0 m
 Codec Synthetisch · Bildrate 60 fps · Bitrate 24 Mbit/s · Verlust (FEC) 1,0 % → 0 · RTT 0,1 ms
 ```
 
-If keyframes drop (`RcvbufErrors` in `/proc/net/snmp`), raise the UDP buffers:
+If keyframes drop (`RcvbufErrors` in `/proc/net/snmp`), raise the UDP buffers' limit (the host
+service as root sets its own past it; the client and a host without root need this):
 
 ```sh
 sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608

@@ -356,7 +356,9 @@ the limits FFmpeg puts on the next latency step.
 
 - **Where:** `crates/net/src/socket.rs:31-39`.
 - **Fix:** compare against twice the requested size; as root use `SO_RCVBUFFORCE`/`SO_SNDBUFFORCE`.
-- **Status:** open
+- **Status:** fixed. `usable` halves what Linux reports before the comparison; with CAP_NET_ADMIN
+  (the host service) the buffers are set with `SO_RCVBUFFORCE`/`SO_SNDBUFFORCE`, past `rmem_max`.
+  Test: `the_usable_buffer_is_half_what_linux_reports`.
 
 ### A29 · Receiver statistics are skewed
 

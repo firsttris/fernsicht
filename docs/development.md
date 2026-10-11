@@ -136,8 +136,9 @@ builds the AppImage and publishes it. Locally `./packaging/appimage.sh` builds t
 
 ## Tips
 
-Drops on keyframes (`RcvbufErrors` in `/proc/net/snmp`) mean the UDP buffers are too small; raise
-them:
+Drops on keyframes (`RcvbufErrors` in `/proc/net/snmp`) mean the UDP buffers are too small. The host
+service sets 4 MiB itself (as root it may exceed the system's limit); for the client, and a host run
+without root, raise the limit:
 
 ```sh
 sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
