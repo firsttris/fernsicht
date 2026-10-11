@@ -8,11 +8,12 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# H.264 over VAAPI via FFmpeg (AMD radeonsi, Intel iHD). Needs the FFmpeg
-# and libva development packages; see dev/Containerfile.
-vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc"]
-# H.264 with NVENC/NVDEC via FFmpeg (CUDA is loaded at runtime, so this
-# builds without the NVIDIA driver). Screen input goes through Vulkan.
+# AV1, HEVC and H.264 over VAAPI via FFmpeg (AMD radeonsi, Intel iHD).
+# Needs the FFmpeg and libva development packages; see dev/Containerfile.
+vaapi = ["dep:ffmpeg-next", "ffmpeg-next/filter", "dep:libc", "dep:log"]
+# AV1, HEVC and H.264 with NVENC/NVDEC via FFmpeg (CUDA is loaded at
+# runtime, so this builds without the NVIDIA driver). Screen input goes
+# through Vulkan.
 nvidia = ["dep:ffmpeg-next", "dep:libc", "dep:libloading", "dep:log", "dep:fernsicht-gpu"]
 
 [dependencies]

@@ -88,4 +88,6 @@ mkdocs build --strict                        # when docs/ or mkdocs.yml changed
 ```
 
 Code behind the `vaapi`, `nvidia`, `kms` and `window` features is only checked where its
-libraries are installed; build it with those features too when touching it.
+libraries are installed (the `fernsicht-nvidia` distrobox, `CARGO_TARGET_DIR=target/box`). Check
+each combination CI builds, not only all at once: `vaapi` alone and `nvidia` alone (optional
+dependencies differ), and `--all-features`.
