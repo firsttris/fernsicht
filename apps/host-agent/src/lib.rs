@@ -36,7 +36,7 @@ use fernsicht_codec::synthetic::SyntheticEncoder;
 #[cfg(feature = "vaapi")]
 use fernsicht_codec::vaapi::{VaapiEncoder, VaapiEncoderConfig};
 use fernsicht_codec::{EncodedFrame, Encoder};
-use fernsicht_core::thread::spawn_hot;
+use fernsicht_core::thread::{make_current_hot, spawn_hot};
 use fernsicht_core::{Slot, clock, now_us};
 use fernsicht_input::uinput::Uinput;
 use fernsicht_input::{Dedup, InputSink, Recorder};
@@ -960,6 +960,8 @@ impl HostAgent {
 
     /// Serves sessions until `stop` is set.
     pub fn run(mut self, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+        // Input from the client is applied on this thread.
+        make_current_hot("control");
         let mut buf = [0u8; 2048];
         let mut opened = [0u8; MAX_DATAGRAM];
         let mut out = [0u8; MAX_DATAGRAM];

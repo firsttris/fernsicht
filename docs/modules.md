@@ -35,7 +35,7 @@ flowchart BT
 
 | Crate | What it does |
 |---|---|
-| `core` | The slot with capacity 1 (latest frame wins, buffer recycling), the monotonic clock, latency statistics per stage, hot threads with raised priority, system info for discovery |
+| `core` | The slot with capacity 1 (latest frame wins, buffer recycling), the monotonic clock, latency statistics per stage, hot threads (real-time where allowed, else raised priority; precise sleeps), system info for discovery |
 | `proto` | The UDP packet format v1: video shards with stage timestamps, feedback, clock ping/pong, hello/ack with the codec set, bye, pointer, input, audio, handshake, sealed packets, pairing, discovery, monitors. The parser never panics and never allocates ([protocol](protocol.md)) |
 | `net` | Reed-Solomon FEC (`reed-solomon-simd`), one group per frame up to 512 shards, balanced and interleaved beyond; recovery shards per group sized binomially from the measured loss (group failure ≤ 10⁻⁵); reassembly with keyframe requests and hard size limits; the pacer; NTP-style clock sync; UDP sockets with 4 MiB buffers; bitrate adaptation; loss simulation |
 | `capture` | The `FrameSource` trait, the test pattern (NV12, a moving bar, a circling pointer), the DMA-BUF description, KMS capture at vblank with the cursor plane and monitor switching (feature `kms`, pure Rust) |

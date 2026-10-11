@@ -24,7 +24,7 @@ use fernsicht_codec::synthetic::SyntheticDecoder;
 use fernsicht_codec::{CodecError, DecodedFrame, Decoder};
 use fernsicht_core::latency::{FrameTimings, LatencyStats, Stage, Summary};
 use fernsicht_core::now_us;
-use fernsicht_core::thread::{HOT_NICE, raise_priority, spawn_hot};
+use fernsicht_core::thread::{make_current_hot, spawn_hot};
 use fernsicht_input::InputQueue;
 pub use fernsicht_input::{InputEvent, buttons};
 use fernsicht_net::keyframe::{self, Asks};
@@ -829,9 +829,8 @@ pub fn run_with(
         })?
     };
 
-    if let Err(e) = raise_priority(HOT_NICE) {
-        log::debug!("network thread: could not raise priority: {e}");
-    }
+    // Receives the picture and sends the input.
+    make_current_hot("network");
     // Sound plays on its own thread, paced by the sound card.
     let (audio_tx, audio_rx) = bounded::<AudioPacket>(64);
     let audio = match cfg.audio.clone() {

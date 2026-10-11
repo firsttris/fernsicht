@@ -343,64 +343,63 @@ impl Gamepads {
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let s = stop.clone();
-        let thread = std::thread::Builder::new()
-            .name("gamepads".into())
-            .spawn(move || {
-                let mut pads: Vec<OpenPad> = Vec::new();
-                let mut scanned: Option<Instant> = None;
-                let mut buf = [0u8; 24 * 64];
-                while !s.load(Ordering::Relaxed) {
-                    if scanned.is_none_or(|t| t.elapsed() >= RESCAN) {
-                        scan(&dir, skip_own, &mut pads);
-                        scanned = Some(Instant::now());
-                    }
-                    if pads.is_empty() {
-                        std::thread::sleep(Duration::from_millis(100));
+        // The pads' input goes out from here: as hot as the network's.
+        let thread = fernsicht_core::thread::spawn_hot("gamepads", move || {
+            let mut pads: Vec<OpenPad> = Vec::new();
+            let mut scanned: Option<Instant> = None;
+            let mut buf = [0u8; 24 * 64];
+            while !s.load(Ordering::Relaxed) {
+                if scanned.is_none_or(|t| t.elapsed() >= RESCAN) {
+                    scan(&dir, skip_own, &mut pads);
+                    scanned = Some(Instant::now());
+                }
+                if pads.is_empty() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                let mut fds: Vec<libc::pollfd> = pads
+                    .iter()
+                    .map(|p| libc::pollfd {
+                        fd: p.file.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    })
+                    .collect();
+                // SAFETY: `fds` is a valid array of pollfd for the call.
+                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 100) };
+                let mut gone = Vec::new();
+                for (i, p) in pads.iter_mut().enumerate() {
+                    if fds[i].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                        gone.push(i);
                         continue;
                     }
-                    let mut fds: Vec<libc::pollfd> = pads
-                        .iter()
-                        .map(|p| libc::pollfd {
-                            fd: p.file.as_raw_fd(),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        })
-                        .collect();
-                    // SAFETY: `fds` is a valid array of pollfd for the call.
-                    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 100) };
-                    let mut gone = Vec::new();
-                    for (i, p) in pads.iter_mut().enumerate() {
-                        if fds[i].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-                            gone.push(i);
-                            continue;
-                        }
-                        if fds[i].revents & libc::POLLIN == 0 {
-                            continue;
-                        }
-                        match p.file.read(&mut buf) {
-                            Ok(n) => {
-                                for e in buf[..n].as_chunks::<24>().0 {
-                                    let kind = u16::from_ne_bytes([e[16], e[17]]);
-                                    let code = u16::from_ne_bytes([e[18], e[19]]);
-                                    let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
-                                    for ev in p.state.translate(&p.map, p.slot, kind, code, value) {
-                                        sink(ev);
-                                    }
+                    if fds[i].revents & libc::POLLIN == 0 {
+                        continue;
+                    }
+                    match p.file.read(&mut buf) {
+                        Ok(n) => {
+                            for e in buf[..n].as_chunks::<24>().0 {
+                                let kind = u16::from_ne_bytes([e[16], e[17]]);
+                                let code = u16::from_ne_bytes([e[18], e[19]]);
+                                let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
+                                for ev in p.state.translate(&p.map, p.slot, kind, code, value) {
+                                    sink(ev);
                                 }
                             }
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                            Err(_) => gone.push(i),
                         }
-                    }
-                    for i in gone.into_iter().rev() {
-                        let mut p = pads.remove(i);
-                        log::info!("gamepad {} unplugged", p.slot + 1);
-                        for ev in p.state.release(p.slot) {
-                            sink(ev);
-                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => gone.push(i),
                     }
                 }
-            })?;
+                for i in gone.into_iter().rev() {
+                    let mut p = pads.remove(i);
+                    log::info!("gamepad {} unplugged", p.slot + 1);
+                    for ev in p.state.release(p.slot) {
+                        sink(ev);
+                    }
+                }
+            }
+        })?;
         Ok(Self {
             stop,
             thread: Some(thread),

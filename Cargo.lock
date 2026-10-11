@@ -1317,6 +1317,7 @@ dependencies = [
 name = "fernsicht-input"
 version = "0.1.4"
 dependencies = [
+ "fernsicht-core",
  "fernsicht-proto",
  "libc",
  "log",

@@ -213,15 +213,14 @@ pub(crate) fn spawn(
     out: Receiver<WebOut>,
     input: Option<Box<dyn InputSink>>,
 ) -> std::io::Result<JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("webrtc".into())
-        .spawn(move || {
-            let mut s = RtcSession::new(setup, codec, shared.clone(), input);
-            if let Err(e) = s.run(&out) {
-                log::warn!("web session: {e:#}");
-            }
-            s.end();
-        })
+    // The browser's picture leaves and its input arrives on this thread.
+    fernsicht_core::thread::spawn_hot("webrtc", move || {
+        let mut s = RtcSession::new(setup, codec, shared.clone(), input);
+        if let Err(e) = s.run(&out) {
+            log::warn!("web session: {e:#}");
+        }
+        s.end();
+    })
 }
 
 struct RtcSession {
@@ -473,29 +472,27 @@ fn receive_thread(
 ) -> std::io::Result<(JoinHandle<()>, Receiver<Datagram>)> {
     let (tx, rx) = bounded::<Datagram>(256);
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-    let t = std::thread::Builder::new()
-        .name("webrtc-recv".into())
-        .spawn(move || {
-            let mut buf = vec![0u8; 2048];
-            while shared.running.load(Ordering::Acquire) {
-                match socket.recv_from(&mut buf) {
-                    Ok((n, from)) => {
-                        if tx.send((Instant::now(), from, buf[..n].to_vec())).is_err() {
-                            return;
-                        }
-                    }
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) => {}
-                    Err(e) => {
-                        log::debug!("web socket: {e}");
-                        std::thread::sleep(Duration::from_millis(10));
+    let t = fernsicht_core::thread::spawn_hot("webrtc-recv", move || {
+        let mut buf = vec![0u8; 2048];
+        while shared.running.load(Ordering::Acquire) {
+            match socket.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    if tx.send((Instant::now(), from, buf[..n].to_vec())).is_err() {
+                        return;
                     }
                 }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(e) => {
+                    log::debug!("web socket: {e}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
-        })?;
+        }
+    })?;
     Ok((t, rx))
 }
 

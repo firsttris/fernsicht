@@ -46,7 +46,10 @@ Client: [network] --fifo(4)--> [decode] --latest wins--> [present]
         [window]   winit event loop: input, monitor and mode switches
 ```
 
-Every stage runs on its own OS thread with raised priority. After warming up nothing is allocated:
+Every stage runs on its own OS thread: real-time (`SCHED_FIFO`, a low level above every normal
+thread) where allowed, as for the host's system service, else with a raised nice value; the threads
+that take input (the host's control loop, the WebRTC thread, the client's network loop and gamepads)
+too. Their sleeps end within a microsecond (timer slack). After warming up nothing is allocated:
 frame buffers circle through small free lists.
 
 "Latest frame wins" applies only to *raw* and *decoded* frames: the slot between capture and encode

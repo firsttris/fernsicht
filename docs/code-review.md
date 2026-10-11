@@ -800,7 +800,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Where:** `crates/core/src/thread.rs:8-24`, `apps/host-agent/src/lib.rs:712`, `apps/host-agent/src/web.rs:203`.
 - **Fix:** SCHED_FIFO (low priority) or RR for capture, send and control as root; timer slack 1 ns;
   raise the WebRTC thread.
-- **Status:** open
+- **Status:** fixed. `make_current_hot` asks for `SCHED_FIFO` at priority 5 (with
+  `SCHED_RESET_ON_FORK`), falls back to nice −10, and reports what it got; a test checks the
+  scheduler agrees. Hot now as well: the host's control loop (input), both WebRTC threads, the
+  client's network loop and its gamepad reader. Timer slack is 1 µs for normal threads (C10);
+  real-time threads have none. The client gets real time only where the user may (an
+  `RLIMIT_RTPRIO`); asking rtkit over D-Bus is left open.
 
 ### C17 · "Glass-to-glass" ends at `vkQueuePresentKHR`
 
