@@ -301,6 +301,11 @@ unsafe extern "C" fn pick_vulkan(
     ffi::AVPixelFormat::AV_PIX_FMT_NONE
 }
 
+/// How long a decoded frame may take before the decoder counts as hung.
+/// Longer than the GPU's usual limit: the first frame of a new session
+/// took just over a second once on the NVIDIA runner (GTX 1080).
+const DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Names each frame pool a decoder uses, across decoders.
 static POOLS: AtomicU64 = AtomicU64::new(1);
 
@@ -460,7 +465,7 @@ impl VulkanDecoder {
                 &vk::SemaphoreWaitInfo::default()
                     .semaphores(&semaphores)
                     .values(&values),
-                fernsicht_gpu::GPU_TIMEOUT.as_nanos() as u64,
+                DECODE_TIMEOUT.as_nanos() as u64,
             )
         }
         .map_err(|e| CodecError::Backend(format!("wait for the decoder: {e}")))
