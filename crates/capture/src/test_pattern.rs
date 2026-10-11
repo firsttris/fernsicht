@@ -20,6 +20,9 @@ pub struct TestPattern {
     /// Frame slots in which the "monitor" is off and capture fails, as KMS
     /// does for a monitor in standby (tests).
     outage: std::ops::Range<u64>,
+    /// Frame slots in which the picture stands still, as a desktop nobody
+    /// touches (tests).
+    still: std::ops::Range<u64>,
     /// The slot of the last frame drawn: the pointer belongs to it.
     shown: Option<u64>,
 }
@@ -37,6 +40,7 @@ impl TestPattern {
             bar_width: (width / 32).max(2),
             arrow: Arc::new(CursorImage::arrow()),
             outage: 0..0,
+            still: 0..0,
             shown: None,
         }
     }
@@ -48,6 +52,12 @@ impl TestPattern {
             outage: off,
             ..self
         }
+    }
+
+    /// The same pattern, but standing still in the frame slots `still`
+    /// (the frames after its first say they did not change).
+    pub fn with_still(self, still: std::ops::Range<u64>) -> Self {
+        Self { still, ..self }
     }
 
     /// Where the pointer is in frame `seq`: on a circle, 120 frames a turn.
@@ -128,7 +138,10 @@ impl FrameSource for TestPattern {
         }
 
         frame.capture_us = now_us();
-        self.draw(frame, self.seq);
+        // A still stretch shows the picture of its first slot throughout.
+        let still = self.still.contains(&self.seq);
+        frame.changed = !(still && self.shown.is_some_and(|s| self.still.contains(&s)));
+        self.draw(frame, if still { self.still.start } else { self.seq });
         frame.seq = self.seq;
         self.shown = Some(self.seq);
         frame.ready_us = now_us();
@@ -195,6 +208,29 @@ mod tests {
             Some(src.cursor_at(f.seq)),
             "the frame's pointer"
         );
+    }
+
+    #[test]
+    fn a_still_stretch_says_it_did_not_change() {
+        let mut src = TestPattern::new(64, 32, 1000).with_still(2..5);
+        let mut f = src.alloc_frame();
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            src.next_frame(&mut f).unwrap();
+            seen.push((f.seq, f.changed, f.data.clone()));
+        }
+        let changed: Vec<bool> = seen.iter().map(|(_, c, _)| *c).collect();
+        // Slots skipped under load shift the pattern; compare by slot.
+        for (seq, c, data) in &seen {
+            let in_still = (3..5).contains(seq);
+            assert_eq!(*c, !in_still, "slot {seq}: {changed:?}");
+            if in_still {
+                let first = seen.iter().find(|(s, _, _)| *s == 2);
+                if let Some((_, _, d)) = first {
+                    assert_eq!(d, data, "slot {seq} shows slot 2's picture");
+                }
+            }
+        }
     }
 
     #[test]

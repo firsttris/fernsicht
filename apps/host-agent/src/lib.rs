@@ -17,6 +17,7 @@ mod http;
 mod layout;
 mod limits;
 pub mod power;
+mod still;
 mod web;
 
 use std::collections::HashMap;
@@ -235,9 +236,13 @@ pub enum CaptureKind {
     #[default]
     TestPattern,
     /// The test pattern with the monitor off for the frame slots `off`, as
-    /// KMS fails for a monitor in standby (tests).
+    /// KMS fails for a monitor in standby, and standing still for the slots
+    /// `still`, as a desktop nobody touches (tests).
     #[doc(hidden)]
-    TestPatternWithOutage { off: std::ops::Range<u64> },
+    TestPatternWith {
+        off: std::ops::Range<u64>,
+        still: std::ops::Range<u64>,
+    },
     /// The monitor's scanout plane as DMA-BUF (needs the `kms` feature,
     /// CAP_SYS_ADMIN and an encoder that takes DMA-BUFs, i.e. VAAPI; the
     /// synthetic encoder ignores the picture). The encoder scales to the
@@ -306,6 +311,8 @@ pub struct SessionParams {
 pub struct HostStats {
     pub sessions: AtomicU64,
     pub frames_captured: AtomicU64,
+    /// Captured frames not encoded: the screen had not changed.
+    pub frames_still: AtomicU64,
     pub frames_encoded: AtomicU64,
     pub keyframes_encoded: AtomicU64,
     /// Encoded frames dropped because the sender was a whole queue behind.
@@ -1586,7 +1593,7 @@ impl HostAgent {
         let params = self.resolve(params, (source.width(), source.height()));
         let source = match &self.cfg.capture {
             // The test pattern is drawn at whatever size the session uses.
-            CaptureKind::TestPattern | CaptureKind::TestPatternWithOutage { .. } => {
+            CaptureKind::TestPattern | CaptureKind::TestPatternWith { .. } => {
                 make_source(&self.cfg.capture, &params)?
             }
             _ => source,
@@ -1828,6 +1835,19 @@ fn log_session(s: &Session, who: &str) {
 }
 
 fn on_feedback(s: &mut Session, fb: &Feedback) {
+    if fb.request_keyframe {
+        // Its frame id is the highest seen, not the last complete: the
+        // round trip alone tells.
+        s.shared.want_keyframe(None, s.client_rtt);
+    }
+    if fb.request_cursor {
+        s.shared.cursor_requested.store(true, Ordering::Relaxed);
+    }
+    // An interval without packets (a still screen, a monitor in standby)
+    // says nothing about the network.
+    if u64::from(fb.packets_received) + u64::from(fb.packets_lost) == 0 {
+        return;
+    }
     let estimate = s.loss.update(fb.loss_ratio());
     s.shared
         .fec_loss
@@ -1848,14 +1868,6 @@ fn on_feedback(s: &mut Session, fb: &Feedback) {
             if overflow { ", sender behind" } else { "" }
         );
         s.shared.target_kbps.store(kbps, Ordering::Relaxed);
-    }
-    if fb.request_keyframe {
-        // Its frame id is the highest seen, not the last complete: the
-        // round trip alone tells.
-        s.shared.want_keyframe(None, s.client_rtt);
-    }
-    if fb.request_cursor {
-        s.shared.cursor_requested.store(true, Ordering::Relaxed);
     }
     log::debug!(
         "feedback: loss {:.2} % recovered {} dropped {} → FEC sized for {:.1} %",
@@ -1893,6 +1905,7 @@ fn capture_loop(
 ) {
     let (mut failures, mut errors) = (0u32, RepeatedError::default());
     let mut rescanned = Instant::now();
+    let (mut last_change, mut last_encoded) = (Instant::now(), Instant::now());
     while shared.running.load(Ordering::Acquire) {
         // Monitors plugged in or out: the client's list and the input
         // mapping follow.
@@ -1932,9 +1945,21 @@ fn capture_loop(
             failures = 0;
         }
         HostStats::bump(&shared.stats.frames_captured);
-        // The frame first: the encoder starts while the pointer is read.
-        if let Some(skipped) = slot.put(frame) {
-            let _ = free_tx.send(skipped);
+        let now = Instant::now();
+        if frame.changed {
+            last_change = now;
+        }
+        let wanted = shared.keyframe_requested.load(Ordering::Relaxed);
+        if still::should_encode(frame.changed, wanted, now - last_change, now - last_encoded) {
+            last_encoded = now;
+            // The frame first: the encoder starts while the pointer is read.
+            if let Some(skipped) = slot.put(frame) {
+                let _ = free_tx.send(skipped);
+            }
+        } else {
+            // Nothing new on the screen: the encoder rests.
+            HostStats::bump(&shared.stats.frames_still);
+            let _ = free_tx.send(frame);
         }
         // Then the pointer, right away, not after encoding: it is the one
         // thing the client can show before the frame it belongs to.
@@ -2273,7 +2298,7 @@ fn default_bitrate_kbps(width: u16, height: u16, fps: u16) -> u32 {
 
 fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn FrameSource>> {
     match kind {
-        CaptureKind::TestPattern | CaptureKind::TestPatternWithOutage { .. } => {
+        CaptureKind::TestPattern | CaptureKind::TestPatternWith { .. } => {
             let (w, h) = if p.width == 0 || p.height == 0 {
                 TEST_PATTERN_SIZE
             } else {
@@ -2281,7 +2306,9 @@ fn make_source(kind: &CaptureKind, p: &SessionParams) -> anyhow::Result<Box<dyn 
             };
             let pattern = TestPattern::new(w, h, u32::from(p.fps));
             Ok(Box::new(match kind {
-                CaptureKind::TestPatternWithOutage { off } => pattern.with_outage(off.clone()),
+                CaptureKind::TestPatternWith { off, still } => {
+                    pattern.with_outage(off.clone()).with_still(still.clone())
+                }
                 _ => pattern,
             }))
         }

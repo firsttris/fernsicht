@@ -788,7 +788,12 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `crates/capture/src/kms.rs:671-685`.
 - **Fix:** skip when framebuffer and buffer are unchanged; a slow refresh frame for quality.
-- **Status:** open
+- **Status:** fixed. Frames say whether they changed: KMS compares the framebuffer id with the
+  last, but trusts that only after a buffer came back after others (a flipping compositor), so a
+  desktop drawing into the shown buffer is never frozen. The capture loop encodes a change at
+  once, keeps encoding for 0.5 s after the last one, then one frame a second; a keyframe request
+  is answered at once. Feedback intervals without packets no longer count as a clean network for
+  the bitrate and FEC. Protocol test: 1–4 frames in two still seconds instead of 120.
 
 ### C16 · Thread priorities are weak and miss the input path
 

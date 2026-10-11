@@ -22,6 +22,13 @@ keyframe; see [protocol](protocol.md#monitors)).
 The session's **frame rate** is what the client asked for, but at most the monitor's refresh rate:
 a client asking for 144 fps from a 60 Hz monitor gets 60, and the encoder sizes each frame for 60.
 
+A **still screen** is not encoded at every refresh. Compositors draw into two or three buffers and
+flip between them; the same framebuffer as before means nothing new. Once a buffer has been seen to
+come back after others (some X11 desktops draw into the shown buffer and never flip: there every
+frame counts), frames keep coming for half a second after the last change, so the picture settles,
+then one a second. A change or a keyframe request goes out at once. The pointer is its own plane
+and keeps moving meanwhile.
+
 A **test pattern** (a moving bar and a circling pointer) replaces the screen where there is no
 display or no root, e.g. in CI.
 

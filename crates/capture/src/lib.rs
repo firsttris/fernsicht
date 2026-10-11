@@ -52,6 +52,9 @@ pub struct Frame {
     pub format: PixelFormat,
     pub data: Vec<u8>,
     pub dmabuf: Option<DmaBuf>,
+    /// The picture differs from the previous frame's (sources that cannot
+    /// tell say `true`).
+    pub changed: bool,
     /// Source sequence number, increments per captured frame.
     pub seq: u64,
     /// Local monotonic clock (µs): when the image was produced (vblank).
@@ -68,6 +71,7 @@ impl Frame {
             format,
             data: vec![0; format.frame_bytes(width, height)],
             dmabuf: None,
+            changed: true,
             seq: 0,
             capture_us: 0,
             ready_us: 0,
@@ -82,6 +86,7 @@ impl Frame {
             format: PixelFormat::Bgrx,
             data: Vec::new(),
             dmabuf: Some(image),
+            changed: true,
             seq: 0,
             capture_us: 0,
             ready_us: 0,

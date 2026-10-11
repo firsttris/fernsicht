@@ -156,6 +156,39 @@ pub struct KmsCapture {
     /// instead of pacing by timer for good.
     vblank_retry_at: Option<Instant>,
     seq: u64,
+    flips: FlipWatch,
+}
+
+/// Tells from the framebuffers the plane shows whether the picture
+/// changed. Compositors draw into two or three buffers in turn and flip:
+/// the same one again means nothing new. Some draw into the shown buffer
+/// itself (X11 without page flips); until a buffer has been seen to come
+/// back after others, every frame counts as changed.
+#[derive(Debug, Default)]
+struct FlipWatch {
+    /// Framebuffer ids seen, the last one last.
+    recent: Vec<u32>,
+    flips: bool,
+}
+
+/// Framebuffers remembered: a compositor uses two or three per output.
+const FLIP_HISTORY: usize = 4;
+
+impl FlipWatch {
+    fn changed(&mut self, fb: u32) -> bool {
+        if self.recent.last() == Some(&fb) {
+            return !self.flips;
+        }
+        if let Some(i) = self.recent.iter().position(|&f| f == fb) {
+            self.flips = true;
+            self.recent.remove(i);
+        }
+        self.recent.push(fb);
+        if self.recent.len() > FLIP_HISTORY {
+            self.recent.remove(0);
+        }
+        true
+    }
 }
 
 /// How long to pace by timer after a failed vblank wait before trying the
@@ -247,10 +280,11 @@ impl KmsCapture {
             vblank_works: true,
             vblank_retry_at: None,
             seq: 0,
+            flips: FlipWatch::default(),
         };
         // Export once: fails early without the capability and tells us the
         // framebuffer size.
-        let first = cap.export()?;
+        let (first, _) = cap.export()?;
         cap.width = first.width;
         cap.height = first.height;
         Ok(cap)
@@ -261,8 +295,8 @@ impl KmsCapture {
         self.sel
     }
 
-    /// Exports the framebuffer the plane shows right now.
-    fn export(&self) -> Result<DmaBuf, CaptureError> {
+    /// Exports the framebuffer the plane shows right now; with its id.
+    fn export(&self) -> Result<(DmaBuf, u32), CaptureError> {
         let plane = self
             .card
             .get_plane(plane::Handle::from(nonzero(self.sel.plane)?))
@@ -307,14 +341,15 @@ impl KmsCapture {
                 });
             }
             let (width, height) = info.size();
-            Ok(DmaBuf {
+            let image = DmaBuf {
                 width,
                 height,
                 fourcc: info.pixel_format() as u32,
                 modifier: info.modifier().map_or(formats::MOD_INVALID, u64::from),
                 objects,
                 planes,
-            })
+            };
+            Ok((image, u32::from(fb)))
         })();
         for h in unique {
             let _ = self.card.close_buffer(h);
@@ -782,7 +817,8 @@ impl FrameSource for KmsCapture {
 
     fn next_frame(&mut self, frame: &mut Frame) -> Result<(), CaptureError> {
         let captured_us = self.wait_for_frame();
-        let image = self.export()?;
+        let (image, fb) = self.export()?;
+        frame.changed = self.flips.changed(fb);
         frame.width = image.width;
         frame.height = image.height;
         frame.format = PixelFormat::Bgrx;
@@ -908,6 +944,31 @@ mod tests {
         let (p, mut c) = setup();
         c[1].connectors.clear();
         assert_eq!(choose(&p, &c, None).unwrap().crtc, 81);
+    }
+
+    #[test]
+    fn a_flipping_compositor_shows_when_nothing_changed() {
+        let mut w = FlipWatch::default();
+        // Until a buffer came back, the same one may have been drawn into.
+        assert!(w.changed(10));
+        assert!(w.changed(10));
+        assert!(w.changed(11));
+        assert!(w.changed(12));
+        // Triple buffering: 10 comes back, so flips are what changes it.
+        assert!(w.changed(10));
+        assert!(!w.changed(10), "the same buffer again: nothing new");
+        assert!(w.changed(11));
+        assert!(!w.changed(11));
+    }
+
+    #[test]
+    fn one_new_buffer_alone_proves_no_flipping() {
+        // A mode change on a front-buffer desktop: a new buffer, then the
+        // new one drawn into for good.
+        let mut w = FlipWatch::default();
+        assert!(w.changed(1));
+        assert!(w.changed(2));
+        assert!(w.changed(2), "still counted as changed");
     }
 
     #[test]

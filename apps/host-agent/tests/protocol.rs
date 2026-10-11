@@ -205,7 +205,10 @@ fn a_monitor_in_standby_pauses_the_stream_and_keeps_the_session() {
     // At 60 fps, frame slots 20..80 fail like KMS for a monitor in standby:
     // about a second without a picture.
     let host = Host::start(HostConfig {
-        capture: CaptureKind::TestPatternWithOutage { off: 20..80 },
+        capture: CaptureKind::TestPatternWith {
+            off: 20..80,
+            still: 0..0,
+        },
         ..HostConfig::default()
     });
     let mut peer = Peer::new(host.addr);
@@ -500,6 +503,58 @@ fn one_keyframe_answers_the_requests_sent_before_it_arrived() {
     // A frame after it completed: the keyframe was lost, another comes.
     ask_keyframe(&peer, ack.session_id, Some(key + 1), rtt_us);
     assert!(next_keyframe(&mut peer, key, Duration::from_secs(2)).is_some());
+    host.shutdown();
+}
+
+#[test]
+fn a_still_screen_rests_the_encoder_and_wakes_at_once() {
+    // At 60 fps the picture stands still from frame slot 30 (0.5 s) on.
+    let host = Host::start(HostConfig {
+        capture: CaptureKind::TestPatternWith {
+            off: 0..0,
+            still: 30..1_000_000,
+        },
+        ..HostConfig::default()
+    });
+    let mut peer = Peer::new(host.addr);
+    peer.hello(320, 180, 60, 1_000);
+    let ack = peer.ack();
+    let start = Instant::now();
+    let mut frames = Vec::new();
+    peer.wait_for(Duration::from_millis(3_500), |p| {
+        if let Packet::Video(h, _) = p
+            && h.group_index == 0
+            && h.shard_index == 0
+        {
+            frames.push((start.elapsed(), h.frame_id));
+        }
+        None::<()>
+    });
+    let moving = frames
+        .iter()
+        .filter(|(t, _)| *t < Duration::from_millis(400))
+        .count();
+    // Settled half a second after the last change: a refresh a second.
+    let still = frames
+        .iter()
+        .filter(|(t, _)| *t >= Duration::from_millis(1_500))
+        .count();
+    assert!(moving >= 15, "{moving} frames while it moved");
+    assert!(
+        (1..=4).contains(&still),
+        "{still} frames in 2 s of a still screen"
+    );
+    // A client waiting for a keyframe gets one at once, still or not.
+    let last = frames.last().map_or(0, |f| f.1);
+    peer.send(|b| {
+        KeyframeRequest {
+            session_id: ack.session_id,
+            last_complete: Some(last + 1),
+            rtt_us: 1_000,
+        }
+        .encode(b)
+    });
+    assert!(next_keyframe(&mut peer, last, Duration::from_millis(300)).is_some());
     host.shutdown();
 }
 
