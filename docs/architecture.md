@@ -49,8 +49,9 @@ Client: [network] --fifo(4)--> [decode] --latest wins--> [present]
 Every stage runs on its own OS thread: real-time (`SCHED_FIFO`, a low level above every normal
 thread) where allowed, as for the host's system service, else with a raised nice value; the threads
 that take input (the host's control loop, the WebRTC thread, the client's network loop and gamepads)
-too. Their sleeps end within a microsecond (timer slack). After warming up nothing is allocated per
-frame, sound packet or input event: frame buffers circle through small free lists.
+too. Their sleeps end within a microsecond (timer slack). After warming up our protocol's path
+allocates nothing per frame, sound packet or input event: frame buffers circle through small free
+lists. (The web viewer's path copies each frame once, for str0m on the WebRTC thread.)
 
 "Latest frame wins" applies only to *raw* and *decoded* frames: the slot between capture and encode
 holds one frame, and a newer capture replaces an unconsumed one, which costs nothing. *Compressed*

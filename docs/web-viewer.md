@@ -39,9 +39,11 @@ network. The host serves the page itself.
 - **Monitors:** with two or more monitors on the host, “Bildschirm wählen”
   (choose screen) in the toolbar switches the one shown.
 - **System keys:** Ctrl+Alt+Del, the Windows key and similar keys are in
-  the “Tasten senden” (send keys) menu. In full screen (button in the
-  toolbar), Chrome and Edge also pass through the Windows key, Alt+Tab and
-  Esc; to leave full screen, hold Esc.
+  the “Tasten senden” (send keys) menu. Chrome and Edge can also pass the
+  Windows key, Alt+Tab and Esc through in full screen (Keyboard Lock), but
+  only on secure pages: over the LAN the page is plain `http://`, so there
+  these keys stay with the browser's computer (HTTPS for the viewer is on
+  the list of [next steps](next-steps.md)).
 - **Toolbar by keyboard:** Ctrl+Alt+T moves the keyboard into the toolbar,
   Esc gives it back to the host; Ctrl+Alt+F shows and hides the toolbar.
 - **What does not work:** Keys that the browser keeps for itself (for

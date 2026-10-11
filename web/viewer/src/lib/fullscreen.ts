@@ -12,8 +12,10 @@ const keyboard = (): KeyboardLock | undefined =>
 /**
  * Fullscreen for the page, with the keyboard locked while in it: Chrome
  * and Edge then pass Meta, Alt+Tab and Esc to the page (holding Esc
- * leaves). Other browsers get plain fullscreen; Ctrl+Alt+Del never
- * reaches a page (the "send keys" menu has it).
+ * leaves). Keyboard Lock exists only in a secure context (HTTPS,
+ * localhost); on the LAN's plain HTTP page and in other browsers this is
+ * plain fullscreen. Ctrl+Alt+Del never reaches a page (the "send keys"
+ * menu has it).
  */
 export function useFullscreen(): [boolean, (on: boolean) => void] {
   const [on, setOn] = useState(() => document.fullscreenElement !== null);

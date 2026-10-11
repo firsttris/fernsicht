@@ -17,8 +17,8 @@ ones first:
 
 - **Online / Offline**, the operating system, the GPU and its best codec, “Kopplung offen” (pairing
   open, a PIN is shown there now) and “In Benutzung” (in use by someone else).
-- Search by name or ID (“ID oder Name suchen …”), filter with “Alle”, “Online”, “Favoriten” (all,
-  online, favourites).
+- Search by name or address (“Name oder Adresse suchen …”), filter with “Alle”, “Online”,
+  “Favoriten” (all, online, favourites).
 - **Desktop** and **Gaming** start a session in that mode.
 - “Gerät vergessen” (forget device) removes a paired host here; it has to be paired again.
 - The list refreshes every 5 seconds. The computer's own host is not listed: it is “Dieser Rechner”
@@ -28,7 +28,9 @@ Discovery is a broadcast on UDP 47800 and only reaches the local network. Hosts 
 also asked directly at their last address, so they show up through a VPN too
 ([remote access](remote-access.md)).
 
-“Verbinden” (connect) opens a dialog for a name, address or device ID:
+In the app a session starts from the device's card. The UI in a plain browser (the demo) shows
+devices of an account instead, which needs the rendezvous server that is not built yet
+([next steps](next-steps.md)); there “Verbinden” (connect) opens a dialog for a device ID:
 
 ![The connect dialog](screenshot-connect.png)
 

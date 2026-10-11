@@ -77,9 +77,10 @@ struct Args {
     /// No window: decode only and print the overlay.
     #[arg(long)]
     headless: bool,
-    /// Run for the desktop app: the overlay as JSON lines on stdout,
-    /// commands on stdin ("gaming", "desktop", "mute", "unmute"), and stop
-    /// when stdin closes (the app quit or ended the session).
+    /// Run for the desktop app: the overlay as JSON lines on stdout (and a
+    /// failure as the last one), commands on stdin ("gaming", "desktop",
+    /// "mute", "unmute", "keys 29,56,111", "monitor 1|next|previous"), and
+    /// stop when stdin closes (the app quit or ended the session).
     #[arg(long, hide = true)]
     app: bool,
     /// Gaming mode: a click into the window captures the pointer, which

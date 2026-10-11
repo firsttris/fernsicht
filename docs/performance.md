@@ -23,7 +23,7 @@ This is already state of the art:
   (Reed-Solomon FEC) instead of retransmission, pacing, and bitrate
   adaptation under congestion.
 - **Encryption:** Noise/ChaCha20, costs practically no time.
-- **Rust:** no garbage collector pauses, no allocations in the hot path.
+- **Rust:** no garbage collector pauses, no allocations per frame or packet on the native path.
 
 Whether we are faster than Sunshine/Moonlight is still open: the comparison
 measurement is missing ([latency-baseline.md](latency-baseline.md)).

@@ -46,8 +46,8 @@ second.
 
 ```text
 fernsicht-client [OPTIONS] <HOST>
-fernsicht-client discover            # look for hosts in the local network
-fernsicht-client pair <HOST> <PIN>   # pair with a host that shows a PIN
+fernsicht-client discover [ADDRESS…] [--wait <s>]   # look for hosts in the local network (and at these addresses), 1.5 s
+fernsicht-client pair <HOST> <PIN> [--name <NAME>]  # pair with a host that shows a PIN; NAME is how it lists this device (default: the hostname)
 fernsicht-client hosts               # list the paired hosts
 fernsicht-client forget <HOST>       # forget a paired host
 ```
