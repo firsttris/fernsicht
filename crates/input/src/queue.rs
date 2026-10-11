@@ -50,6 +50,11 @@ impl Default for InputQueue {
 
 impl InputQueue {
     pub fn push(&mut self, event: InputEvent) {
+        // The host refuses a whole packet with an invalid event, and the
+        // packet is sent again and again: everything after would wait.
+        if event.validate().is_err() {
+            return;
+        }
         match event {
             InputEvent::Key { code, pressed } | InputEvent::Button { code, pressed } => {
                 // A repeat of the current state adds nothing (key repeat is
@@ -235,6 +240,26 @@ mod tests {
         q.ack(2);
         assert!(q.is_empty());
         assert_eq!(q.due(t0 + RESEND_AFTER * 3), None);
+    }
+
+    #[test]
+    fn events_the_host_would_refuse_are_never_queued() {
+        // One refused event fails its whole packet, and the packet is sent
+        // again forever: everything typed after it would wait.
+        let mut q = InputQueue::default();
+        let t0 = Instant::now();
+        q.push(key(0x110, true)); // a mouse button sent as a key
+        q.push(InputEvent::Button {
+            code: 30,
+            pressed: true,
+        });
+        q.push(InputEvent::PadButton {
+            pad: 9,
+            code: 0x130,
+            pressed: true,
+        });
+        q.push(key(30, true));
+        assert_eq!(q.due(t0).unwrap(), vec![(1, key(30, true))]);
     }
 
     #[test]

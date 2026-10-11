@@ -175,6 +175,25 @@ proptest! {
         prop_assert_eq!(InputHeader::events(body).collect::<Vec<_>>(), events);
     }
 
+    /// `validate` says exactly which events the parser takes: a client that
+    /// checks with it never sends a packet the host refuses.
+    #[test]
+    fn validate_agrees_with_the_parser(k in 0u8..7, code: u16, pad in 0u8..8,
+                                       value: i32, pressed: bool) {
+        let e = match k {
+            0 => InputEvent::Button { code, pressed },
+            1 => InputEvent::Key { code, pressed },
+            2 => InputEvent::PadButton { pad, code, pressed },
+            3 => InputEvent::PadAxis { pad, axis: PadAxis::ALL[usize::from(code) % PadAxis::ALL.len()], value },
+            4 => InputEvent::MouseRel { dx: value, dy: -value },
+            5 => InputEvent::Scroll { dx: value, dy: value },
+            _ => InputEvent::MouseAbs { x: code, y: code },
+        };
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let n = InputHeader::encode(1, &[(1, e)], &mut buf);
+        prop_assert_eq!(Packet::decode(&buf[..n]).is_ok(), e.validate().is_ok(), "{:?}", e);
+    }
+
     /// Arbitrary bytes never panic, and whatever parses re-encodes to a
     /// datagram that parses to the same packet (no lossy interpretation).
     #[test]

@@ -483,9 +483,14 @@ pub fn parse_keys_command(line: &str) -> Option<Vec<u16>> {
         .collect::<Option<_>>()?;
     let valid = !codes.is_empty()
         && codes.len() <= MAX_CHORD
-        && codes
-            .iter()
-            .all(|c| (1..=fernsicht_proto::KEY_MAX).contains(c))
+        && codes.iter().all(|&code| {
+            InputEvent::Key {
+                code,
+                pressed: true,
+            }
+            .validate()
+            .is_ok()
+        })
         && codes
             .iter()
             .enumerate()
@@ -1610,6 +1615,9 @@ mod tests {
             "keys 99999",
             "keys 29,29",
             "keys 1,2,3,4,5,6,7",
+            // Mouse buttons are no keys: the host would refuse them.
+            "keys 272",
+            "keys 29,273",
             "keys a",
             "mute",
         ] {

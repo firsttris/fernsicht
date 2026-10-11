@@ -809,37 +809,56 @@ impl InputEvent {
                 y: u16::try_from(b).map_err(|_| DecodeError::Invalid("pointer y"))?,
             },
             2 => InputEvent::MouseRel { dx: a, dy: b },
-            3 if (BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&code) => {
-                InputEvent::Button { code, pressed }
-            }
-            3 => return Err(DecodeError::Invalid("mouse button code")),
+            3 => InputEvent::Button { code, pressed },
             4 => InputEvent::Scroll { dx: a, dy: b },
-            5 if (1..=KEY_MAX).contains(&code)
-                && !(BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&code) =>
-            {
-                InputEvent::Key { code, pressed }
-            }
-            5 => return Err(DecodeError::Invalid("key code")),
+            5 => InputEvent::Key { code, pressed },
             6 | 7 if !(0..i32::from(MAX_PADS)).contains(&a) => {
                 return Err(DecodeError::Invalid("gamepad number"));
             }
-            6 if (BTN_PAD_FIRST..=BTN_PAD_LAST).contains(&code) => InputEvent::PadButton {
+            6 => InputEvent::PadButton {
                 pad: a as u8,
                 code,
                 pressed,
             },
-            6 => return Err(DecodeError::Invalid("gamepad button code")),
-            7 => match PadAxis::from_code(code) {
-                Some(axis) if axis.range().contains(&b) => InputEvent::PadAxis {
-                    pad: a as u8,
-                    axis,
-                    value: b,
-                },
-                _ => return Err(DecodeError::Invalid("gamepad axis")),
+            7 => InputEvent::PadAxis {
+                pad: a as u8,
+                axis: PadAxis::from_code(code).ok_or(DecodeError::Invalid("gamepad axis"))?,
+                value: b,
             },
             _ => return Err(DecodeError::Invalid("unknown input event")),
         };
+        event.validate().map_err(DecodeError::Invalid)?;
         Ok((seq, event))
+    }
+
+    /// Whether the host accepts this event: codes in their ranges (a key is
+    /// no mouse button and the other way round), gamepads and axis values
+    /// in range. The parser applies it, and a client checks before it
+    /// queues an event: one the host refuses would hold up all after it.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let mouse = BTN_MOUSE_FIRST..=BTN_MOUSE_LAST;
+        match *self {
+            InputEvent::Button { code, .. } if !mouse.contains(&code) => Err("mouse button code"),
+            InputEvent::Key { code, .. }
+                if !(1..=KEY_MAX).contains(&code) || mouse.contains(&code) =>
+            {
+                Err("key code")
+            }
+            InputEvent::PadButton { pad, .. } | InputEvent::PadAxis { pad, .. }
+                if pad >= MAX_PADS =>
+            {
+                Err("gamepad number")
+            }
+            InputEvent::PadButton { code, .. }
+                if !(BTN_PAD_FIRST..=BTN_PAD_LAST).contains(&code) =>
+            {
+                Err("gamepad button code")
+            }
+            InputEvent::PadAxis { axis, value, .. } if !axis.range().contains(&value) => {
+                Err("gamepad axis")
+            }
+            _ => Ok(()),
+        }
     }
 }
 

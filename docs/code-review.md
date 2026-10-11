@@ -181,7 +181,9 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** the keys command accepts the mouse button codes 0x110–0x117 as keys; the host rejects
   the whole packet, the client resends it forever and everything behind it waits.
 - **Fix:** validate in `InputQueue::push` with the protocol's rules.
-- **Status:** open
+- **Status:** fixed. `InputEvent::validate` in `proto` holds the rules once; the parser applies it,
+  `InputQueue::push` drops what it refuses, and the keys command checks with it. A property test
+  (`validate_agrees_with_the_parser`) keeps parser and rule the same.
 
 ### A13 · Overlapping FEC groups make the client allocate gigabytes
 
