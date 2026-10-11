@@ -127,6 +127,12 @@ pub trait FrameSource: Send {
         None
     }
 
+    /// The captured monitor's refresh rate (Hz): more frames per second
+    /// than that cannot come. `None` for sources without one.
+    fn refresh_hz(&self) -> Option<u32> {
+        None
+    }
+
     /// Shows another monitor (by connector name, one of
     /// [`ScreenInfo::active`]) from the next frame on.
     fn switch_to(&mut self, connector: &str) -> Result<(), CaptureError> {

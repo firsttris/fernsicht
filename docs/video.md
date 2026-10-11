@@ -18,6 +18,9 @@ With several monitors the host lists them to the client; a switch opens the othe
 card, and the stream takes that monitor's shape (a new encoder at the fitted size, starting with a
 keyframe; see [protocol](protocol.md#monitors)).
 
+The session's **frame rate** is what the client asked for, but at most the monitor's refresh rate:
+a client asking for 144 fps from a 60 Hz monitor gets 60, and the encoder sizes each frame for 60.
+
 A **test pattern** (a moving bar and a circling pointer) replaces the screen where there is no
 display or no root, e.g. in CI.
 

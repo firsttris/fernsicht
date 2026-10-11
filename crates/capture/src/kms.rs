@@ -146,6 +146,8 @@ pub struct KmsCapture {
     width: u32,
     height: u32,
     refresh: Duration,
+    /// The same as a rate, for the session's frame rate.
+    hz: u32,
     interval: Duration,
     next_due: Option<Instant>,
     vblank_works: bool,
@@ -281,6 +283,7 @@ impl KmsCapture {
             width: 0,
             height: 0,
             refresh: Duration::from_micros(1_000_000 / u64::from(hz)),
+            hz,
             interval: Duration::from_micros(clock::frame_interval_us(cfg.fps)),
             next_due: None,
             vblank_works: true,
@@ -640,6 +643,10 @@ impl FrameSource for KmsCapture {
 
     fn format(&self) -> PixelFormat {
         PixelFormat::Bgrx
+    }
+
+    fn refresh_hz(&self) -> Option<u32> {
+        Some(self.hz)
     }
 
     fn screen(&self) -> Option<ScreenInfo> {

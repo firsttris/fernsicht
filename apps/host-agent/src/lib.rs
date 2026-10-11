@@ -1265,6 +1265,11 @@ impl HostAgent {
         // the host's own resolution.
         let source = make_source(&self.cfg.capture, &params)?;
         let bounds = self.bounds(&params);
+        // Before the default bitrate is worked out per frame.
+        let params = SessionParams {
+            fps: frame_rate(params.fps, source.refresh_hz()),
+            ..params
+        };
         let params = self.resolve(params, (source.width(), source.height()));
         let source = match &self.cfg.capture {
             // The test pattern is drawn at whatever size the session uses.
@@ -1910,6 +1915,16 @@ fn fit(native: (u32, u32), max: (u16, u16)) -> (u16, u16) {
     (even(w * s), even(h * s))
 }
 
+/// The session's frame rate: what the client asked for, but no more than
+/// the monitor shows. An encoder told 144 fps on a 60 Hz monitor sizes each
+/// frame for 144 and spends less than half the bitrate.
+fn frame_rate(wanted: u16, refresh_hz: Option<u32>) -> u16 {
+    match refresh_hz {
+        Some(hz) if hz > 0 => wanted.min(hz.min(u32::from(u16::MAX)) as u16),
+        _ => wanted,
+    }
+}
+
 /// About what 20 Mbit/s are for 1080p60, the same bits per pixel for any
 /// size and rate. Desktop text needs that much to stay sharp.
 fn default_bitrate_kbps(width: u16, height: u16, fps: u16) -> u32 {
@@ -2505,6 +2520,16 @@ mod tests {
         );
         // Rebuilt only when the shape changed (each with a keyframe).
         assert_eq!(*rebuilt.lock().unwrap(), [(1920, 804), (1920, 1080)]);
+    }
+
+    #[test]
+    fn the_frame_rate_is_at_most_the_monitors() {
+        assert_eq!(frame_rate(144, Some(60)), 60);
+        assert_eq!(frame_rate(60, Some(165)), 60);
+        assert_eq!(frame_rate(120, Some(120)), 120);
+        // A source without a refresh rate (the test pattern) delivers any.
+        assert_eq!(frame_rate(144, None), 144);
+        assert_eq!(frame_rate(60, Some(0)), 60);
     }
 
     #[test]

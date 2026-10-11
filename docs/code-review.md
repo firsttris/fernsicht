@@ -111,7 +111,11 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** the encoder gets `framerate = fps` and a one-frame buffer of `bitrate/fps`; KMS only
   delivers the refresh rate. 144 fps from a 60 Hz monitor gives each frame 42 % of the bitrate.
 - **Fix:** expose the refresh rate on the source, clamp fps to it, report the result in HelloAck.
-- **Status:** open
+- **Status:** fixed. `FrameSource::refresh_hz` (KMS knows it); `frame_rate` clamps the session's
+  fps before the default bitrate and the encoder are set up, and HelloAck reports it. Still open:
+  rates that are no divisor of the refresh rate (60 fps from 165 Hz) alternate between 2 and 3
+  vblanks; whether to round to a divisor is a judgement call left for measurements (D8). Test:
+  `the_frame_rate_is_at_most_the_monitors`.
 
 ### A7 · A render error after acquiring a swapchain image loses the image
 
