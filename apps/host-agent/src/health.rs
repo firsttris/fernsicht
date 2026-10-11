@@ -48,6 +48,10 @@ pub enum End {
     /// A pipeline thread stopped; the client is told with a Bye instead
     /// of watching a frozen picture.
     StreamStopped,
+    /// The client's device was unpaired.
+    Unpaired,
+    /// Ended on the host (control socket).
+    EndedHere,
 }
 
 /// Whether a session has ended, from what the control loop knows of it.
@@ -71,7 +75,14 @@ impl End {
             End::TimedOut => "client timed out",
             End::BrowserLeft => "browser left",
             End::StreamStopped => "stream stopped",
+            End::Unpaired => "its device was unpaired",
+            End::EndedHere => "ended on the host",
         }
+    }
+
+    /// Whether the client gets a Bye (it is still there to hear it).
+    pub fn tells_the_client(self) -> bool {
+        matches!(self, End::StreamStopped | End::Unpaired | End::EndedHere)
     }
 }
 

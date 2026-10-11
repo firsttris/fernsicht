@@ -1094,6 +1094,68 @@ mod secure {
         host.shutdown();
     }
 
+    /// Whether a sealed Bye of the session arrives.
+    fn says_bye(peer: &mut Peer, t: &Transport, session_id: u32) -> bool {
+        let mut opened = [0u8; MAX_DATAGRAM];
+        let bye = peer.wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Sealed(h, sealed) => {
+                let n = t.open(h.counter, sealed, &mut opened).ok()?;
+                match Packet::decode(&opened[..n]) {
+                    Ok(Packet::Bye(b)) if b.session_id == session_id => Some(()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+        bye.is_some()
+    }
+
+    #[test]
+    fn unpairing_a_device_ends_its_session() {
+        let sec = security();
+        sec.open_pairing("000000");
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        let key = pair(&mut peer, &client, "000000").unwrap();
+        let (t, ack, _) = connect(&mut peer, &client, &key, 1).unwrap();
+        assert!(sec.unpair("bazzite"));
+        assert!(says_bye(&mut peer, &t, ack.session_id));
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_host_can_end_the_running_session() {
+        let sec = security();
+        sec.open_pairing("000000");
+        // Asked while nothing runs: no effect on the next session.
+        sec.end_session();
+        let host = Host::start(HostConfig {
+            security: Some(sec.clone()),
+            ..HostConfig::default()
+        });
+        let mut peer = Peer::new(host.addr);
+        let client = Identity::generate();
+        let key = pair(&mut peer, &client, "000000").unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let (t, ack, _) = connect(&mut peer, &client, &key, 1).unwrap();
+        let mut opened = [0u8; MAX_DATAGRAM];
+        let video = peer.wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Sealed(h, sealed) => {
+                let n = t.open(h.counter, sealed, &mut opened).ok()?;
+                matches!(Packet::decode(&opened[..n]), Ok(Packet::Video(..))).then_some(())
+            }
+            _ => None,
+        });
+        assert!(video.is_some(), "the session runs");
+        sec.end_session();
+        assert!(says_bye(&mut peer, &t, ack.session_id));
+        host.shutdown();
+    }
+
     #[test]
     fn nothing_is_sent_before_the_client_proves_its_keys() {
         // A replayed handshake from a forged address must not make the host

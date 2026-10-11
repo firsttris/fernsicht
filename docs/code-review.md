@@ -478,7 +478,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `apps/host-agent/src/lib.rs:613-630, 1045`, `apps/host-agent/src/control.rs:123-127`.
 - **Fix:** unpair ends the session of that key; a control command to end the current session.
-- **Status:** open
+- **Status:** fixed. Unpairing bumps a counter; the control loop then checks the running session's
+  client key and ends it with Bye. `{"cmd":"disconnect"}` (`fernsicht-host-agent disconnect`) ends the
+  running session, a browser's too; a request while none runs does not hit the next one. Tests:
+  `unpairing_a_device_ends_its_session`, `the_host_can_end_the_running_session`,
+  `disconnect_asks_the_host_to_end_the_session`.
 
 ### B6 · The web server can exhaust memory and threads of the root service
 

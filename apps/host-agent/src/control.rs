@@ -7,7 +7,9 @@
 //! {"cmd":"status"}               → name, key, paired devices, session, pairing
 //! {"cmd":"pair"}                 → {"ok":true,"pin":"123456","expires_in_s":300}
 //! {"cmd":"stop_pairing"}         → {"ok":true}
-//! {"cmd":"unpair","device":"x"}  → {"ok":true} (name or key fingerprint)
+//! {"cmd":"unpair","device":"x"}  → {"ok":true} (name or key fingerprint;
+//!                                  ends that device's session)
+//! {"cmd":"disconnect"}           → {"ok":true} (ends the running session)
 //! {"cmd":"set","gpu_boost":true} → {"ok":true} (kept in the state directory)
 //! ```
 //!
@@ -118,6 +120,10 @@ pub fn handle(
         },
         Some("stop_pairing") => {
             sec.close_pairing();
+            json!({"ok": true})
+        }
+        Some("disconnect") => {
+            sec.end_session();
             json!({"ok": true})
         }
         Some("unpair") => match req.get("device").and_then(Value::as_str) {
@@ -256,6 +262,22 @@ mod tests {
             paired_at: 5,
         });
         HostSecurity::new(Identity::generate(), "zentrale", t, None)
+    }
+
+    #[test]
+    fn disconnect_asks_the_host_to_end_the_session() {
+        let s = sec();
+        let r = handle(
+            r#"{"cmd":"disconnect"}"#,
+            1000,
+            &[1000],
+            &s,
+            &StatusCell::default(),
+            &HostSettings::default(),
+        );
+        assert_eq!(r["ok"], true);
+        assert!(s.take_end_request());
+        assert!(!s.take_end_request(), "once");
     }
 
     #[test]

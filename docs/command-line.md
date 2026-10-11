@@ -11,7 +11,8 @@ talk to a running host (for example the system service).
 fernsicht-host-agent [OPTIONS]
 fernsicht-host-agent pair      # open pairing, show the PIN for the new device
 fernsicht-host-agent status    # the host's key, paired devices, the session
-fernsicht-host-agent unpair X  # forget a paired device (its name or key)
+fernsicht-host-agent unpair X  # forget a paired device (its name or key); its session ends
+fernsicht-host-agent disconnect  # end the running session (a device's or a browser's)
 ```
 
 | Option | Default | |

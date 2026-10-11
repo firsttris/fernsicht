@@ -102,8 +102,10 @@ enum Command {
     Pair,
     /// Show the running host: its key, paired devices, the session.
     Status,
-    /// Forget a paired device (its name or key).
+    /// Forget a paired device (its name or key); its session ends.
     Unpair { device: String },
+    /// End the running session (a device's or a browser's).
+    Disconnect,
 }
 
 /// Commands for a running host.
@@ -160,6 +162,10 @@ fn command(cmd: Command, control: Option<std::path::PathBuf>) -> anyhow::Result<
         Command::Unpair { device } => {
             request(&path, &json!({"cmd": "unpair", "device": device}))?;
             println!("{device} entfernt.");
+        }
+        Command::Disconnect => {
+            request(&path, &json!({"cmd": "disconnect"}))?;
+            println!("Sitzung beendet.");
         }
     }
     Ok(())

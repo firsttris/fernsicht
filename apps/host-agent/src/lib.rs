@@ -354,6 +354,9 @@ impl Shared {
 struct Session {
     params: SessionParams,
     codec: Codec,
+    /// The paired device's key (secure sessions): unpairing it ends the
+    /// session.
+    client: Option<PublicKey>,
     /// The client's address (for a browser: its HTTP address; its packets
     /// never come to our socket).
     peer: SocketAddr,
@@ -509,6 +512,11 @@ pub struct HostSecurity {
     /// older or equal one is a replay. Kept next to the paired list, so a
     /// restart does not forget it.
     handshakes: Mutex<HashMap<PublicKey, u64>>,
+    /// Counts devices that lost access (unpaired): the running session
+    /// checks its client when it changes.
+    revocations: AtomicU64,
+    /// Someone asked to end the running session (control socket).
+    end_requested: AtomicBool,
 }
 
 impl std::fmt::Debug for HostSecurity {
@@ -538,7 +546,22 @@ impl HostSecurity {
             trusted_path,
             pairing: Mutex::new(None),
             handshakes: Mutex::new(handshakes),
+            revocations: AtomicU64::new(0),
+            end_requested: AtomicBool::new(false),
         }
+    }
+
+    /// Ends the running session (whoever it is), from the control socket.
+    pub fn end_session(&self) {
+        self.end_requested.store(true, Ordering::Release);
+    }
+
+    fn take_end_request(&self) -> bool {
+        self.end_requested.swap(false, Ordering::AcqRel)
+    }
+
+    fn revocations(&self) -> u64 {
+        self.revocations.load(Ordering::Acquire)
     }
 
     /// Whether a handshake of `key` sent at `sent_ms` (its clock) is newer
@@ -690,6 +713,8 @@ impl HostSecurity {
         {
             log::error!("saving the paired clients: {e}");
         }
+        // A session of that device ends with it.
+        self.revocations.fetch_add(1, Ordering::AcqRel);
         true
     }
 }
@@ -784,6 +809,7 @@ impl HostAgent {
         let mut announce_budget =
             limits::PerSource::new(ANNOUNCE_PER_SOURCE, ANNOUNCE_TOTAL, Instant::now());
         let control_stop = Arc::new(AtomicBool::new(false));
+        let mut revocations_seen = self.cfg.security.as_ref().map_or(0, |s| s.revocations());
         let control = match (&self.cfg.control, &self.cfg.security) {
             (Some(path), Some(sec)) => {
                 let t = control::serve(
@@ -801,7 +827,29 @@ impl HostAgent {
         };
 
         while !stop.load(Ordering::Relaxed) {
+            let revoked = self.cfg.security.as_ref().and_then(|sec| {
+                let now = sec.revocations();
+                (now != revocations_seen).then(|| {
+                    revocations_seen = now;
+                    sec
+                })
+            });
+            // Taken every time: a request while no session runs must not
+            // end the next one.
+            let ended_here = self
+                .cfg
+                .security
+                .as_ref()
+                .is_some_and(|sec| sec.take_end_request());
             let end = session.as_ref().and_then(|s| {
+                if ended_here {
+                    return Some(End::EndedHere);
+                }
+                if let (Some(sec), Some(key)) = (revoked, s.client)
+                    && sec.is_paired(&key).is_none()
+                {
+                    return Some(End::Unpaired);
+                }
                 health::session_end(
                     s.web,
                     s.shared.running.load(Ordering::Acquire),
@@ -991,7 +1039,7 @@ impl HostAgent {
     /// stream stopped is told, so it doesn't watch a frozen picture.
     fn end_session(&self, s: Session, why: End, out: &mut [u8]) {
         log::info!("session {:08x}: {}", s.params.session_id, why.describe());
-        if why == End::StreamStopped {
+        if why.tells_the_client() {
             say_bye(&s, out);
         }
         s.stop();
@@ -1139,6 +1187,7 @@ impl HostAgent {
                 // Noted only now: had the start failed, a later try with
                 // the same handshake would count as a replay.
                 sec.note_handshake(client.key, sent_ms);
+                s.client = Some(client.key);
                 log_session(&s, &format!("{} ({from})", client.name));
                 self.set_status(Some(&s), &client.name);
                 let n = Handshake {
@@ -1540,6 +1589,7 @@ impl HostAgent {
         let session = Session {
             params,
             codec,
+            client: None,
             peer,
             web,
             link,
