@@ -9,7 +9,7 @@ use fernsicht_client::{Failure, FailureCode, failure_of};
 use fernsicht_desktop::backend::{
     Backend, Device, SessionState, StreamSettings, ThisMachine, default_dir, keys_command,
 };
-use serde_json::Value;
+use fernsicht_host_agent::control::PairingOpened;
 use tauri::State;
 
 type Shared<'a> = State<'a, Arc<Backend>>;
@@ -103,7 +103,7 @@ async fn this_machine(backend: Shared<'_>) -> Answer<ThisMachine> {
 }
 
 #[tauri::command]
-async fn open_pairing(backend: Shared<'_>) -> Answer<Value> {
+async fn open_pairing(backend: Shared<'_>) -> Answer<PairingOpened> {
     blocking(&backend, Backend::open_pairing).await
 }
 

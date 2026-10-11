@@ -110,61 +110,52 @@ enum Command {
 
 /// Commands for a running host.
 fn command(cmd: Command, control: Option<std::path::PathBuf>) -> anyhow::Result<()> {
-    use fernsicht_host_agent::control::request;
-    use serde_json::json;
+    use fernsicht_host_agent::control::{PairingOpened, Request, Status, ask, request};
     let path = control.unwrap_or_else(fernsicht_host_agent::control::running_host_path);
     match cmd {
         Command::Pair => {
-            let r = request(&path, &json!({"cmd": "pair"}))?;
+            let r: PairingOpened = ask(&path, &Request::Pair)?;
             println!(
                 "Kopplung offen für {} Minuten. PIN: {}",
-                r["expires_in_s"].as_u64().unwrap_or(300) / 60,
-                r["pin"].as_str().unwrap_or("?")
+                r.expires_in_s / 60,
+                r.pin
             );
             println!("Auf dem neuen Gerät: fernsicht-client pair <diese Adresse> <PIN>");
         }
         Command::Status => {
-            let r = request(&path, &json!({"cmd": "status"}))?;
-            println!(
-                "Host {} (Schlüssel {})",
-                r["name"].as_str().unwrap_or("?"),
-                r["key"].as_str().unwrap_or("?")
-            );
-            match r["session"].as_object() {
+            let r: Status = ask(&path, &Request::Status)?;
+            println!("Host {} (Schlüssel {})", r.name, r.key);
+            match r.session {
                 Some(s) => println!(
                     "Verbunden: {} ({}), {}×{} bei {} fps{}",
-                    s["client"].as_str().unwrap_or("?"),
-                    s["address"].as_str().unwrap_or("?"),
-                    s["width"],
-                    s["height"],
-                    s["fps"],
-                    if s["encrypted"] == true {
-                        ", verschlüsselt"
-                    } else {
-                        ""
-                    }
+                    s.client,
+                    s.address,
+                    s.width,
+                    s.height,
+                    s.fps,
+                    if s.encrypted { ", verschlüsselt" } else { "" }
                 ),
                 None => println!("Keine Verbindung."),
             }
-            if let Some(secs) = r["pairing"].as_u64() {
+            if let Some(secs) = r.pairing {
                 println!("Kopplung offen, noch {secs} s.");
             }
-            let paired = r["paired"].as_array().cloned().unwrap_or_default();
-            println!("Gekoppelte Geräte: {}", paired.len());
-            for p in paired {
-                println!(
-                    "  {}  {}",
-                    p["name"].as_str().unwrap_or("?"),
-                    p["key"].as_str().unwrap_or("?")
-                );
+            println!("Gekoppelte Geräte: {}", r.paired.len());
+            for p in r.paired {
+                println!("  {}  {}", p.name, p.key);
             }
         }
         Command::Unpair { device } => {
-            request(&path, &json!({"cmd": "unpair", "device": device}))?;
+            request(
+                &path,
+                &Request::Unpair {
+                    device: Some(device.clone()),
+                },
+            )?;
             println!("{device} entfernt.");
         }
         Command::Disconnect => {
-            request(&path, &json!({"cmd": "disconnect"}))?;
+            request(&path, &Request::Disconnect)?;
             println!("Sitzung beendet.");
         }
     }

@@ -19,9 +19,8 @@ use fernsicht_client::discover::{FoundHost, broadcast_targets, discover};
 use fernsicht_client::{
     AppLine, AppStats, DEFAULT_PORT, Failure, FailureCode, Identity, Trusted, pair,
 };
-use fernsicht_host_agent::control;
+use fernsicht_host_agent::control::{self, Request};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
 /// A device as the UI's `Device` type has it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -136,7 +135,7 @@ pub struct SessionState {
 #[serde(rename_all = "camelCase")]
 pub struct ThisMachine {
     pub name: String,
-    pub host: Option<Value>,
+    pub host: Option<control::Status>,
     /// The host service: installed, running, which version, and whether
     /// this app can install it.
     pub service: crate::share::HostService,
@@ -307,8 +306,7 @@ impl Backend {
 
     /// The fingerprint of the host running on this computer, if one runs.
     fn own_host_key(&self) -> Option<String> {
-        let status = control::request(&self.control_path(), &json!({"cmd": "status"})).ok()?;
-        status["key"].as_str().map(str::to_owned)
+        self.host_status().map(|s| s.key)
     }
 
     /// Pairs with the host at `address` (or of that name in the LAN) with
@@ -492,14 +490,19 @@ impl Backend {
     pub fn this_machine(&self) -> ThisMachine {
         ThisMachine {
             name: self.name.clone(),
-            host: control::request(&self.control_path(), &json!({"cmd": "status"})).ok(),
+            host: self.host_status(),
             service: crate::share::status(),
         }
     }
 
+    /// The status of this computer's host, if one runs.
+    fn host_status(&self) -> Option<control::Status> {
+        control::ask(&self.control_path(), &Request::Status).ok()
+    }
+
     /// Opens pairing on this computer's host: the PIN for the new device.
-    pub fn open_pairing(&self) -> anyhow::Result<Value> {
-        control::request(&self.control_path(), &json!({"cmd": "pair"}))
+    pub fn open_pairing(&self) -> anyhow::Result<control::PairingOpened> {
+        control::ask(&self.control_path(), &Request::Pair)
     }
 
     /// Switches the GPU boost of this computer's host (see the host's
@@ -507,7 +510,9 @@ impl Backend {
     pub fn set_gpu_boost(&self, on: bool) -> anyhow::Result<()> {
         control::request(
             &self.control_path(),
-            &json!({"cmd": "set", "gpu_boost": on}),
+            &Request::Set {
+                gpu_boost: Some(on),
+            },
         )
         .map(drop)
     }
@@ -516,7 +521,9 @@ impl Backend {
     pub fn unpair_from_host(&self, device: &str) -> anyhow::Result<()> {
         control::request(
             &self.control_path(),
-            &json!({"cmd": "unpair", "device": device}),
+            &Request::Unpair {
+                device: Some(device.to_owned()),
+            },
         )
         .map(drop)
     }

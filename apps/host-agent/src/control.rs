@@ -24,12 +24,62 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{HostSecurity, HostSettings};
 
+/// A request on the control socket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum Request {
+    Status,
+    Pair,
+    StopPairing,
+    Disconnect,
+    /// By name or key fingerprint.
+    Unpair {
+        device: Option<String>,
+    },
+    Set {
+        gpu_boost: Option<bool>,
+    },
+}
+
+/// The answer to `status`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    pub name: String,
+    /// The host key's fingerprint.
+    pub key: String,
+    pub paired: Vec<PairedDevice>,
+    pub session: Option<SessionStatus>,
+    /// Seconds pairing stays open, if it is.
+    pub pairing: Option<u64>,
+    /// The GPU is clocked up during sessions.
+    pub gpu_boost: bool,
+}
+
+/// A device paired with the host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedDevice {
+    pub name: String,
+    /// Its key's fingerprint.
+    pub key: String,
+    /// Unix time it paired.
+    pub paired_at: u64,
+}
+
+/// The answer to `pair`: the PIN the host shows now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingOpened {
+    pub pin: String,
+    pub expires_in_s: u64,
+}
+
 /// The session as the control socket reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionStatus {
     pub client: String,
     pub address: String,
@@ -81,63 +131,75 @@ pub fn handle(
     settings: &HostSettings,
 ) -> Value {
     if !allowed.contains(&uid) {
-        return json!({"ok": false, "error": "not allowed: only root and the desktop's user"});
+        return failed("not allowed: only root and the desktop's user");
     }
     let Ok(req) = serde_json::from_str::<Value>(request) else {
-        return json!({"ok": false, "error": "not JSON"});
+        return failed("not JSON");
     };
-    match req.get("cmd").and_then(Value::as_str) {
-        Some("status") => {
-            let paired: Vec<Value> = sec
+    let Ok(req) = serde_json::from_value::<Request>(req) else {
+        return failed("unknown command");
+    };
+    match req {
+        Request::Status => ok(Status {
+            name: sec.name().to_owned(),
+            key: sec.public_key().fingerprint(),
+            paired: sec
                 .paired()
                 .iter()
-                .map(|p| json!({"name": p.name, "key": p.key.fingerprint(), "paired_at": p.paired_at}))
-                .collect();
-            let session = session.lock().ok().and_then(|s| s.clone()).map(|s| {
-                json!({
-                    "client": s.client, "address": s.address, "width": s.width,
-                    "height": s.height, "fps": s.fps, "encrypted": s.encrypted, "since": s.since,
+                .map(|p| PairedDevice {
+                    name: p.name.clone(),
+                    key: p.key.fingerprint(),
+                    paired_at: p.paired_at,
                 })
-            });
-            json!({
-                "ok": true,
-                "name": sec.name(),
-                "key": sec.public_key().fingerprint(),
-                "paired": paired,
-                "session": session,
-                "pairing": sec.pairing_remaining().map(|d| d.as_secs()),
-                "gpu_boost": settings.gpu_boost(),
-            })
-        }
-        Some("pair") => {
+                .collect(),
+            session: session.lock().ok().and_then(|s| s.clone()),
+            pairing: sec.pairing_remaining().map(|d| d.as_secs()),
+            gpu_boost: settings.gpu_boost(),
+        }),
+        Request::Pair => {
             let pin = fernsicht_secure::pairing::new_pin();
             sec.open_pairing(&pin);
-            json!({"ok": true, "pin": pin, "expires_in_s": crate::PAIRING_OPEN_FOR.as_secs()})
+            ok(PairingOpened {
+                pin,
+                expires_in_s: crate::PAIRING_OPEN_FOR.as_secs(),
+            })
         }
-        Some("set") => match req.get("gpu_boost").and_then(Value::as_bool) {
-            Some(on) => match settings.set_gpu_boost(on) {
-                Ok(()) => json!({"ok": true}),
-                Err(e) => json!({"ok": false, "error": format!("saving the setting: {e}")}),
-            },
-            None => json!({"ok": false, "error": "which setting?"}),
+        Request::Set {
+            gpu_boost: Some(on),
+        } => match settings.set_gpu_boost(on) {
+            Ok(()) => done(),
+            Err(e) => failed(&format!("saving the setting: {e}")),
         },
-        Some("stop_pairing") => {
+        Request::Set { gpu_boost: None } => failed("which setting?"),
+        Request::StopPairing => {
             sec.close_pairing();
-            json!({"ok": true})
+            done()
         }
-        Some("disconnect") => {
+        Request::Disconnect => {
             sec.end_session();
-            json!({"ok": true})
+            done()
         }
-        Some("unpair") => match req.get("device").and_then(Value::as_str) {
-            Some(d) => match sec.unpair(d) {
-                Ok(()) => json!({"ok": true}),
-                Err(e) => json!({"ok": false, "error": format!("{d}: {e}")}),
-            },
-            None => json!({"ok": false, "error": "which device?"}),
+        Request::Unpair { device: Some(d) } => match sec.unpair(&d) {
+            Ok(()) => done(),
+            Err(e) => failed(&format!("{d}: {e}")),
         },
-        _ => json!({"ok": false, "error": "unknown command"}),
+        Request::Unpair { device: None } => failed("which device?"),
     }
+}
+
+/// `{"ok": true}` with the answer's fields.
+fn ok(answer: impl Serialize) -> Value {
+    let mut v = serde_json::to_value(answer).expect("plain data");
+    v["ok"] = Value::Bool(true);
+    v
+}
+
+fn done() -> Value {
+    json!({"ok": true})
+}
+
+fn failed(error: &str) -> Value {
+    json!({"ok": false, "error": error})
 }
 
 /// The caller's uid (SO_PEERCRED).
@@ -266,14 +328,20 @@ fn read_line_within(mut stream: &UnixStream, within: Duration) -> Option<String>
     String::from_utf8(buf[..end].to_vec()).ok()
 }
 
+/// Asks the host at `path` and reads its answer as `T`.
+pub fn ask<T: DeserializeOwned>(path: &Path, req: &Request) -> anyhow::Result<T> {
+    use anyhow::Context;
+    serde_json::from_value(request(path, req)?).context("odd answer from the host")
+}
+
 /// Sends one request to a host's control socket and returns the answer.
-pub fn request(path: &Path, req: &Value) -> anyhow::Result<Value> {
+pub fn request(path: &Path, req: &impl Serialize) -> anyhow::Result<Value> {
     use anyhow::Context;
     let stream = UnixStream::connect(path)
         .with_context(|| format!("no host at {} (is the host running?)", path.display()))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut w = &stream;
-    writeln!(w, "{req}")?;
+    writeln!(w, "{}", serde_json::to_string(req)?)?;
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
     let v: Value = serde_json::from_str(line.trim()).context("odd answer from the host")?;
@@ -564,13 +632,11 @@ mod tests {
             stop.clone(),
         )
         .unwrap();
-        let st = request(&path, &json!({"cmd": "status"})).unwrap();
-        assert_eq!(st["name"], "zentrale");
-        let pin = request(&path, &json!({"cmd": "pair"})).unwrap()["pin"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        assert_eq!(pin.len(), 6);
+        let st: Status = ask(&path, &Request::Status).unwrap();
+        assert_eq!(st.name, "zentrale");
+        assert_eq!(st.paired[0].name, "bazzite");
+        let opened: PairingOpened = ask(&path, &Request::Pair).unwrap();
+        assert_eq!(opened.pin.len(), 6);
         let e = request(&path, &json!({"cmd": "nope"}))
             .unwrap_err()
             .to_string();
@@ -578,9 +644,7 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         t.join().unwrap();
         assert!(!path.exists(), "socket removed on exit");
-        let e = request(&path, &json!({"cmd": "status"}))
-            .unwrap_err()
-            .to_string();
+        let e = request(&path, &Request::Status).unwrap_err().to_string();
         assert!(e.contains("is the host running"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }

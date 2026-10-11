@@ -104,16 +104,13 @@ fn find_pair_connect_and_forget() {
     // "This machine" runs the host: the app opens pairing there.
     let me = app.this_machine();
     let status = me.host.expect("host status");
-    assert_eq!(status["name"], "zentrale");
+    assert_eq!(status.name, "zentrale");
     // The GPU setting goes to the host and comes back in its status.
     app.set_gpu_boost(false).unwrap();
-    assert_eq!(app.this_machine().host.unwrap()["gpu_boost"], false);
+    assert!(!app.this_machine().host.unwrap().gpu_boost);
     app.set_gpu_boost(true).unwrap();
-    assert_eq!(app.this_machine().host.unwrap()["gpu_boost"], true);
-    let pin = app.open_pairing().unwrap()["pin"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    assert!(app.this_machine().host.unwrap().gpu_boost);
+    let pin = app.open_pairing().unwrap().pin;
     assert!(
         remote
             .devices()
@@ -154,7 +151,7 @@ fn find_pair_connect_and_forget() {
     assert!(remote.session().active, "commands do not end the session");
     let stats = remote.session().stats.unwrap();
     assert!(stats.overlay.glass_to_glass_us.avg > 0, "{stats:?}");
-    assert!(app.this_machine().host.unwrap()["session"].is_object());
+    assert!(app.this_machine().host.unwrap().session.is_some());
     remote.disconnect();
     let s = remote.session();
     assert!(!s.active && s.error.is_none(), "{s:?}");
