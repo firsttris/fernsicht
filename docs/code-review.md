@@ -870,7 +870,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 | D9 | SDL3 for gamepads | Mapping database, rumble, gyro, touchpad |
 | D10 | Native PipeWire audio with adaptive resampling | Smaller buffers, no drift clicks |
 
-Status of all D items: open.
+Status: D5 is done. Both conversions site chroma left (the NVENC converter filters 1/4, 1/2,
+1/4 around the even column; `scale_vaapi` with `out_chroma_location=left`), the encoders signal
+it (FFmpeg's NVENC writes no chroma location, and left is the default), and the renderer samples
+chroma a quarter texel right; GPU tests put a red column at an odd x and check where it lands,
+and the VAAPI test reads the location back from the stream. The other D items are open.
 
 ## E. Clean code and consistency
 

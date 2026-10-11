@@ -69,6 +69,12 @@ frame without queueing (`async_depth = 1` on VAAPI, `delay = 0`, preset p1 and t
 The GPU's clocks are kept up during sessions on AMD/Intel, because a GPU that clocks down between
 frames encodes the next one slower.
 
+**Chroma siting:** both conversions put the colour samples on the even columns, between two rows
+("left", H.264's and HEVC's default; AV1 calls it "vertical"), and the VAAPI encoders write that
+into the stream (NVENC streams leave it at the default, which is the same). Browsers place the
+colour where the stream says, so text keeps its colours at the edges; the client's renderer reads
+it the same way.
+
 ## Codecs
 
 Fernsicht encodes **AV1**, **HEVC** (Main) and **H.264** (High), in hardware only.

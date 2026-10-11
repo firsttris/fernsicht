@@ -28,7 +28,8 @@ fn to_byte(v: f32) -> u32 {
     return u32(clamp(floor(v + 0.5), 0.0, 255.0));
 }
 
-fn rgb_at(x: u32, y: u32) -> vec3<f32> {
+fn rgb_at(x: i32, y: u32) -> vec3<f32> {
+    // Clamped at the edges by the sampler.
     let uv = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(f32(p.width), f32(p.height));
     return textureSampleLevel(src, smp, uv, 0.0).rgb;
 }
@@ -44,18 +45,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var row = 0u; row < 2u; row++) {
         var word = 0u;
         for (var i = 0u; i < 4u; i++) {
-            let c = rgb_at(x0 + i, y0 + row);
+            let c = rgb_at(i32(x0 + i), y0 + row);
             word |= to_byte(16.0 + 219.0 * luma(c)) << (8u * i);
         }
         dst[((y0 + row) * p.pitch + x0) / 4u] = word;
     }
-    // Chroma of each 2x2 pair: the mean of its four pixels.
+    // Chroma sited left (H.264's and HEVC's default, which NVENC streams do
+    // not override; AV1 calls it "vertical"): on the even column, between
+    // the two rows. Filtered 1/4, 1/2, 1/4 across the neighbours.
     for (var pair = 0u; pair < 2u; pair++) {
+        let cx = i32(x0 + pair * 2u);
         var c = vec3<f32>(0.0);
-        for (var j = 0u; j < 4u; j++) {
-            c += rgb_at(x0 + pair * 2u + (j & 1u), y0 + (j >> 1u));
+        for (var row = 0u; row < 2u; row++) {
+            c += 0.25 * rgb_at(cx - 1, y0 + row) + 0.5 * rgb_at(cx, y0 + row)
+                + 0.25 * rgb_at(cx + 1, y0 + row);
         }
-        c *= 0.25;
+        c *= 0.5;
         let y = luma(c);
         let cb = 128.0 + 224.0 * (c.b - y) / (2.0 * (1.0 - KB));
         let cr = 128.0 + 224.0 * (c.r - y) / (2.0 * (1.0 - KR));

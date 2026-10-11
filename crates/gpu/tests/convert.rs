@@ -156,6 +156,31 @@ fn every_desktop_format_converts_to_bt709() {
 }
 
 #[test]
+fn chroma_is_sited_left() {
+    let Some(gpu) = gpu() else { return };
+    let (w, h) = (16usize, 2usize);
+    // Grey with one red column at an odd x (5).
+    let mut img = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let (r, g, b) = if x == 5 { (255, 0, 0) } else { (128, 128, 128) };
+            img[(y * w + x) * 4..][..4].copy_from_slice(&pack(formats::XRGB8888, r, g, b));
+        }
+    }
+    let mut conv = Converter::new(gpu.clone(), w as u32, h as u32).unwrap();
+    let image = upload_as_dmabuf(&gpu, w as u32, h as u32, formats::XRGB8888, &img).unwrap();
+    conv.convert(&image).unwrap();
+    let nv12 = conv.download().unwrap();
+    let cr = |k: usize| i32::from(nv12[w * h + 2 * k + 1]);
+    // Left siting: chroma k sits on column 2k, so column 5 lies between
+    // chroma 2 and 3 and counts the same for both. (Centred siting would
+    // give it all to chroma 2.)
+    assert!(cr(2) > 140, "red shows: Cr {}", cr(2));
+    assert!((cr(2) - cr(3)).abs() <= 2, "Cr {} and {}", cr(2), cr(3));
+    assert!((cr(0) - 128).abs() <= 2 && (cr(5) - 128).abs() <= 2);
+}
+
+#[test]
 fn pictures_are_scaled_to_the_output_size() {
     let Some(gpu) = gpu() else { return };
     let src = upload_as_dmabuf(

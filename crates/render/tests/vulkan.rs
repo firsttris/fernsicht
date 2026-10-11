@@ -127,6 +127,30 @@ fn cpu_nv12_becomes_the_right_rgb() {
 }
 
 #[test]
+fn chroma_is_read_sited_left() {
+    let Some(mut r) = renderer() else { return };
+    // Grey, with red in chroma sample 1 alone, which sits on column 2.
+    let (w, h) = (8usize, 2usize);
+    let mut nv12 = vec![126u8; w * h];
+    nv12.extend([128u8; 8]);
+    let cr_of = |k: usize| w * h + 2 * k + 1;
+    nv12[cr_of(1)] = 240;
+    let pic = Picture::Nv12 {
+        width: w as u32,
+        height: h as u32,
+        data: &nv12,
+    };
+    let rgba = r
+        .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+        .unwrap();
+    let red = |x: usize| i32::from(pixel(&rgba, w, x, 0).0);
+    // Column 2 gets all of it, its neighbours half each.
+    assert!(red(2) > red(1) + 20, "{} vs {}", red(2), red(1));
+    assert!((red(1) - red(3)).abs() <= 3, "{} vs {}", red(1), red(3));
+    assert!(red(1) > red(0) + 20 && (red(0) - red(4)).abs() <= 3);
+}
+
+#[test]
 fn other_aspect_ratios_get_black_bars() {
     let Some(mut r) = renderer() else { return };
     let data = stripes_nv12(640, 360);

@@ -675,7 +675,7 @@ impl GpuConverter {
             )?;
 
             let args = CString::new(format!(
-                "w={out_w}:h={out_h}:format=nv12:out_color_matrix=bt709:out_range=tv"
+                "w={out_w}:h={out_h}:format=nv12:out_color_matrix=bt709:out_range=tv:out_chroma_location=left"
             ))
             .expect("no NUL");
             check(
@@ -1131,6 +1131,12 @@ impl VaapiDecoder {
     pub fn last_frame_is_bt709_limited(&self) -> bool {
         // SAFETY: frame is a valid (possibly empty) AVFrame.
         unsafe { is_bt709_limited(self.frame) }
+    }
+
+    /// Whether the stream says its chroma is sited left.
+    pub fn last_frame_has_left_chroma(&self) -> bool {
+        // SAFETY: frame is a valid (possibly empty) AVFrame.
+        unsafe { (*self.frame).chroma_location == ffi::AVChromaLocation::AVCHROMA_LOC_LEFT }
     }
 
     pub fn last_frame_nv12(&mut self) -> Result<Vec<u8>, CodecError> {

@@ -73,7 +73,8 @@ pub(crate) unsafe fn nv12_from_frame(frame: *const ffi::AVFrame, out: &mut Vec<u
 }
 
 /// Writes BT.709 limited range into the stream (VUI), so decoders convert
-/// back to RGB the way the encoder's input was produced.
+/// back to RGB the way the encoder's input was produced, and the chroma's
+/// siting: left (on the even columns), as both converters produce it.
 ///
 /// # Safety
 /// `ctx` is a valid, not yet opened encoder context.
@@ -84,6 +85,7 @@ pub(crate) unsafe fn signal_bt709_limited(ctx: *mut ffi::AVCodecContext) {
         (*ctx).colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
         (*ctx).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
         (*ctx).color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+        (*ctx).chroma_sample_location = ffi::AVChromaLocation::AVCHROMA_LOC_LEFT;
     }
 }
 

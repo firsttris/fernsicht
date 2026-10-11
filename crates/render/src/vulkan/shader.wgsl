@@ -32,7 +32,10 @@ fn vs(@builtin(vertex_index) i: u32) -> VertexOut {
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4<f32> {
     let y = textureSample(y_plane, samp, in.uv).r;
-    let c = textureSample(uv_plane, samp, in.uv).rg;
+    // Chroma is sited left (on the even columns, as the encoders write
+    // it): a quarter chroma texel right of the luma position.
+    let chroma = vec2<f32>(textureDimensions(uv_plane));
+    let c = textureSample(uv_plane, samp, in.uv + vec2<f32>(0.25 / chroma.x, 0.0)).rg;
     let luma = (y * 255.0 - 16.0) / 219.0;
     let cb = (c.r * 255.0 - 128.0) / 224.0;
     let cr = (c.g * 255.0 - 128.0) / 224.0;

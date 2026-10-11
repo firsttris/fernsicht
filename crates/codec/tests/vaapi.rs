@@ -450,6 +450,10 @@ fn dmabuf_zero_copy_bt709_and_latency() {
         dec.last_frame_is_bt709_limited(),
         "the stream must say BT.709 limited range"
     );
+    assert!(
+        dec.last_frame_has_left_chroma(),
+        "the stream must say where its chroma sits (left)"
+    );
     let nv12 = dec.last_frame_nv12().unwrap();
     assert_patch_colours(&nv12, w, h);
 
