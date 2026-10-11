@@ -985,6 +985,9 @@ pub struct VaapiDecoder {
     /// Names the pool in [`Picture::DmaBuf`] keys (upper 32 bits), unique
     /// across decoders.
     id: u64,
+    /// Exporting surfaces failed once: pictures come through the CPU from
+    /// then on instead of not at all.
+    no_export: bool,
     /// The last downloaded picture (CPU NV12).
     nv12: Vec<u8>,
 }
@@ -1023,6 +1026,7 @@ impl VaapiDecoder {
                 drm: ffi::av_frame_alloc(),
                 exported: Default::default(),
                 pool: ptr::null_mut(),
+                no_export: false,
                 id: NEXT_DECODER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 nv12: Vec::new(),
                 _device: device,
@@ -1151,6 +1155,11 @@ impl Decoder for VaapiDecoder {
                 f.hw_frames_ctx,
             )
         };
+        let prefer = if self.no_export {
+            PictureKind::Nv12
+        } else {
+            prefer
+        };
         match prefer {
             PictureKind::DmaBuf => {
                 // SAFETY: frames is the frame's pool reference (or null);
@@ -1172,8 +1181,16 @@ impl Decoder for VaapiDecoder {
                 }
                 if !self.exported.contains_key(&surface) {
                     // SAFETY: frame holds a VAAPI surface, drm is ours.
-                    let image = unsafe { export_surface(self.frame, self.drm, formats::NV12)? };
-                    self.exported.insert(surface, image);
+                    match unsafe { export_surface(self.frame, self.drm, formats::NV12) } {
+                        Ok(image) => {
+                            self.exported.insert(surface, image);
+                        }
+                        Err(e) => {
+                            log::warn!("exporting decoded pictures failed ({e}); using the CPU");
+                            self.no_export = true;
+                            return self.picture(PictureKind::Nv12);
+                        }
+                    }
                 }
                 let image = &self.exported[&surface];
                 Ok(Some(Picture::DmaBuf {

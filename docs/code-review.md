@@ -266,7 +266,8 @@ the limits FFmpeg puts on the next latency step.
 
 - **Where:** `crates/codec/src/vaapi.rs:1151`, `apps/client/src/lib.rs:1328-1334`.
 - **Fix:** fall back to NV12 in `picture()` or report an error that switches to the CPU path.
-- **Status:** open
+- **Status:** fixed. A failed export makes the decoder hand out NV12 from then on (with a warning);
+  the renderer takes either. Only the GPU can make an export fail, so there is no test for it.
 
 ### A20 · The converter's fence is not reset after a timeout
 
