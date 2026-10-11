@@ -84,4 +84,29 @@ describe("Segmented", () => {
     await userEvent.click(screen.getByRole("radio", { name: "Online" }));
     expect(onChange).toHaveBeenCalledWith("online");
   });
+
+  it("is one tab stop; the arrow keys choose", async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Segmented
+        label="Filter"
+        value="all"
+        onChange={onChange}
+        options={[
+          { value: "all", label: "Alle" },
+          { value: "online", label: "Online" },
+          { value: "fav", label: "Favoriten" },
+        ]}
+      />,
+    );
+    await user.tab();
+    expect(screen.getByRole("radio", { name: "Alle" })).toHaveFocus();
+    expect(screen.getByRole("radio", { name: "Online" })).toHaveAttribute("tabindex", "-1");
+    await user.keyboard("{ArrowRight}");
+    expect(onChange).toHaveBeenLastCalledWith("online");
+    expect(screen.getByRole("radio", { name: "Online" })).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(onChange).toHaveBeenLastCalledWith("fav");
+  });
 });

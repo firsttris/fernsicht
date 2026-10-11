@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { linuxKeyCode } from "./keys";
+import { keysGoToHost, linuxKeyCode } from "./keys";
 
 describe("keys", () => {
   it.each([
@@ -36,5 +36,25 @@ describe("keys", () => {
     for (const code of ["", "Fn", "F25", "F0", "KeyÄ", "Lang1", "toString"]) {
       expect(linuxKeyCode(code)).toBeUndefined();
     }
+  });
+});
+
+describe("where keys go", () => {
+  it("to the host from the picture and the page, not from the session's controls", () => {
+    document.body.innerHTML = `
+      <div data-testid="screen"><video></video></div>
+      <div role="toolbar"><button id="mode">Desktop</button></div>
+      <div role="menu"><button role="menuitem" id="item">Alt+Tab</button></div>
+      <input id="typing" data-keys-to-host />
+      <input id="other" />`;
+    const el = (id: string) => document.getElementById(id);
+    expect(keysGoToHost(null)).toBe(true);
+    expect(keysGoToHost(document.body)).toBe(true);
+    expect(keysGoToHost(document.querySelector("video"))).toBe(true);
+    expect(keysGoToHost(el("typing"))).toBe(true);
+    expect(keysGoToHost(el("mode"))).toBe(false);
+    expect(keysGoToHost(el("item"))).toBe(false);
+    expect(keysGoToHost(el("other"))).toBe(false);
+    document.body.innerHTML = "";
   });
 });

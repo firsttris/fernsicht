@@ -12,7 +12,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cn } from "../lib/utils";
 import type { HostMonitors, SessionInfo, SessionMode, SessionStats } from "../types";
@@ -74,17 +74,33 @@ export function SessionView({
 }: SessionViewProps) {
   const [chromeVisible, setChromeVisible] = useState(true);
   const [muted, setMuted] = useState(false);
+  const toolbar = useRef<HTMLDivElement>(null);
+  const [focusToolbar, setFocusToolbar] = useState(false);
 
+  // Strg+Alt+F shows and hides the toolbar; Strg+Alt+T takes the keyboard
+  // into it (every other key goes to the host).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "f") {
+      if (!e.ctrlKey || !e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "f") {
         e.preventDefault();
         setChromeVisible((v) => !v);
+      } else if (key === "t") {
+        e.preventDefault();
+        setChromeVisible(true);
+        setFocusToolbar(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (!focusToolbar || !chromeVisible) return;
+    toolbar.current?.querySelector<HTMLElement>("button")?.focus();
+    setFocusToolbar(false);
+  }, [focusToolbar, chromeVisible]);
 
   return (
     <div className="relative h-dvh min-h-[480px] overflow-hidden bg-black text-foreground">
@@ -98,9 +114,20 @@ export function SessionView({
               below the toolbar, however often the toolbar wraps (phones). */}
           <div className="pointer-events-none absolute inset-x-4 top-3.5 flex flex-col gap-3">
             <div
+              ref={toolbar}
               role="toolbar"
               aria-label="Session"
+              aria-keyshortcuts="Control+Alt+T"
               className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 self-center rounded-xl border border-border bg-overlay p-1.5 backdrop-blur"
+              // A click here leaves the focus where it was: typing right
+              // after still goes to the host.
+              onMouseDown={(e) => e.preventDefault()}
+              // Esc gives the keyboard back to the host.
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  (document.activeElement as HTMLElement | null)?.blur();
+                }
+              }}
             >
               <div className="mr-1 flex items-center gap-2 border-r border-border pr-2.5 pl-1.5">
                 <span className="size-2 rounded-full bg-success" aria-hidden />
@@ -213,7 +240,10 @@ export function SessionView({
             <Kbd>Strg</Kbd>
             <Kbd>Alt</Kbd>
             <Kbd>F</Kbd>
-            Leiste ein- und ausblenden
+            Leiste ein- und ausblenden ·<Kbd>Strg</Kbd>
+            <Kbd>Alt</Kbd>
+            <Kbd>T</Kbd>
+            Leiste per Tastatur
           </div>
         </>
       )}

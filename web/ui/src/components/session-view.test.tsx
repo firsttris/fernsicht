@@ -46,6 +46,42 @@ describe("SessionView", () => {
     expect(onModeChange).toHaveBeenCalledWith("gaming");
   });
 
+  it("the toolbar can be used with the keyboard", async () => {
+    const onSendKeys = vi.fn();
+    const { user } = setup({ onSendKeys });
+    // Strg+Alt+T takes the keyboard into the toolbar.
+    await user.keyboard("{Control>}{Alt>}t{/Alt}{/Control}");
+    expect(screen.getByRole("button", { name: "Desktop" })).toHaveFocus();
+    // The menu: opened from the keyboard, the focus goes in; arrows move;
+    // Esc goes back to the button.
+    const menuButton = screen.getByRole("button", { name: "Tasten senden" });
+    menuButton.focus();
+    await user.keyboard("{ArrowDown}");
+    const items = screen.getAllByRole("menuitem");
+    expect(items[0]).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(items[1]).toHaveFocus();
+    await user.keyboard("{ArrowUp}{ArrowUp}");
+    expect(items.at(-1)).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+    expect(onSendKeys).toHaveBeenCalledWith([29, 56, 111]);
+    expect(menuButton).toHaveFocus();
+    // Esc in the toolbar gives the keyboard back.
+    await user.keyboard("{Escape}");
+    expect(document.body).toHaveFocus();
+  });
+
+  it("a click on the toolbar leaves the focus where it was", () => {
+    setup();
+    const desktop = screen.getByRole("button", { name: "Desktop" });
+    const notPrevented = fireEvent.mouseDown(desktop);
+    expect(notPrevented).toBe(false);
+  });
+
   it("sends key combinations from the menu", async () => {
     const onSendKeys = vi.fn();
     const { user } = setup({ onSendKeys });

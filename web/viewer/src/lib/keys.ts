@@ -106,3 +106,18 @@ export function linuxKeyCode(code: string): number | undefined {
   }
   return undefined;
 }
+
+/**
+ * Whether a key pressed with the focus on `target` goes to the host: yes
+ * on the picture and the page itself (and the field the on-screen keyboard
+ * types into), no in the session's own controls (toolbar, menus, dialogs,
+ * buttons, other fields), so they can be used with the keyboard.
+ */
+export function keysGoToHost(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return true;
+  if (target.closest("[data-keys-to-host]")) return true;
+  if (target.closest("[role=toolbar], [role=menu], [role=dialog], [role=radiogroup]")) {
+    return false;
+  }
+  return !target.closest("button, a[href], input, select, textarea");
+}

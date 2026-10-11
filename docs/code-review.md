@@ -403,7 +403,13 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** a window-level handler forwards Tab, Enter, Space and arrows to the host whatever has
   focus; menus lack focus handling and arrow keys.
 - **Fix:** forward only when the screen has focus; APG menu and radio group patterns.
-- **Status:** open
+- **Status:** fixed. `keysGoToHost` (pure): keys go to the host from the picture, the page and the
+  on-screen keyboard's field, not from toolbar, menus, dialogs or other controls. A mouse click on
+  the toolbar keeps the focus where it was (typing right after still goes to the host);
+  Strg+Alt+T takes the keyboard into the toolbar, Esc gives it back. The menu follows the WAI-ARIA
+  menu button pattern (focus into the menu, arrows, Home/End, Esc back to the button); the radio
+  group is one tab stop with arrow keys. Tests in `keys.test.ts`, `session-view.test.tsx`,
+  `primitives.test.tsx`, `live.test.tsx`.
 
 ## B. Security
 

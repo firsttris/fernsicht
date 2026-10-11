@@ -36,6 +36,8 @@ network. The host serves the page itself.
   the “Tasten senden” (send keys) menu. In full screen (button in the
   toolbar), Chrome and Edge also pass through the Windows key, Alt+Tab and
   Esc; to leave full screen, hold Esc.
+- **Toolbar by keyboard:** Ctrl+Alt+T moves the keyboard into the toolbar,
+  Esc gives it back to the host; Ctrl+Alt+F shows and hides the toolbar.
 - **What does not work:** Keys that the browser keeps for itself (for
   example Ctrl+W) do not reach the host. Use the app for that. On the
   iPhone there is no full screen for web pages.

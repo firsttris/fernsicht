@@ -283,6 +283,19 @@ describe("Web-Viewer am Host", () => {
     expect(sentKeys().slice(-2)).toEqual(["+28", "-28"]);
   });
 
+  it("keeps the keys of its own toolbar", async () => {
+    const { pc } = await connected();
+    const keys = () => pc.channel.sent.filter((m) => m.t === "k");
+    const mode = screen.getByRole("button", { name: "Gaming" });
+    mode.focus();
+    fireEvent.keyDown(mode, { code: "Tab", key: "Tab" });
+    fireEvent.keyDown(mode, { code: "Enter", key: "Enter" });
+    expect(keys()).toEqual([]);
+    // From the page itself they go to the host.
+    fireEvent.keyDown(document.body, { code: "KeyA" });
+    expect(keys()).toEqual([{ t: "k", c: 30, p: true }]);
+  });
+
   it("mutes the host's sound", async () => {
     const { user } = await connected();
     const picture = screen.getByLabelText<HTMLVideoElement>("Bildschirm von zentrale");

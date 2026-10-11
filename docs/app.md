@@ -80,6 +80,11 @@ The app's session page has the toolbar:
 - Sound on and off; “Trennen” (disconnect).
 - “Zwischenablage” (clipboard) and “Dateien senden” (send files) are not built yet.
 
+Every key goes to the host, so the toolbar has its own way in: Ctrl+Alt+F shows and hides it,
+Ctrl+Alt+T moves the keyboard into it (Tab, arrows, Enter; menus open with the arrow keys), and Esc
+gives the keyboard back to the host. A mouse click on the toolbar does not take the keyboard away
+from the host.
+
 ### Latency overlay
 
 The overlay shows glass-to-glass latency and its stages – Capture, Encode, “Netz” (network), Decode,

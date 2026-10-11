@@ -37,7 +37,7 @@ import { PadTracker } from "../lib/gamepad";
 import { WheelAccumulator, contentRect, linuxButton, toAbsolute } from "../lib/input";
 import { BACKSPACE, ENTER, diffText, guessLayout, tapKey, typeText } from "../lib/textkeys";
 import { NO_ZOOM, TouchController, type TouchMode, type Zoom } from "../lib/touch";
-import { linuxKeyCode } from "../lib/keys";
+import { keysGoToHost, linuxKeyCode } from "../lib/keys";
 
 export function LiveSessionPage({
   session,
@@ -373,8 +373,10 @@ export function RemoteScreen({
       if (dx || dy) session.send({ t: "w", dx, dy });
     };
     const onKey = (e: KeyboardEvent) => {
-      // Strg+Alt+F shows and hides the toolbar here.
-      if (e.ctrlKey && e.altKey && e.code === "KeyF") return;
+      // The session's own controls keep their keys.
+      if (!keysGoToHost(e.target)) return;
+      // Strg+Alt+F shows and hides the toolbar, Strg+Alt+T goes into it.
+      if (e.ctrlKey && e.altKey && (e.code === "KeyF" || e.code === "KeyT")) return;
       const code = linuxKeyCode(e.code);
       if (code === undefined) return;
       e.preventDefault();
@@ -517,6 +519,7 @@ export function TextInput({
   return (
     <input
       ref={input}
+      data-keys-to-host
       aria-label="Text an den Host"
       autoCapitalize="off"
       autoComplete="off"
