@@ -99,7 +99,9 @@ packets lost → frames dropped, as WebRTC there has no FEC.
 
 ### Desktop and gaming mode
 
-- **Desktop:** the pointer moves absolutely, the host's pointer is drawn in the picture.
+- **Desktop:** the pointer moves absolutely. The window shows the host's pointer image as its own
+  pointer, so it moves at once, without the round trip; until the host knows where in the image the
+  pointer's tip is (a moment after the first move), the host's pointer is drawn in the picture.
 - **Gaming:** a click into the window captures the pointer; it then moves relatively, as games want
   it. Ctrl+Alt+Shift+M lets it go.
 

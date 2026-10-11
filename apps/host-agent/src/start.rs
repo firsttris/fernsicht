@@ -343,6 +343,7 @@ fn new_shared(stats: &Arc<HostStats>, params: &SessionParams, loss: &LossEstimat
         monitor_request: Default::default(),
         screen: Default::default(),
         screen_changes: AtomicU64::new(0),
+        pointer: AtomicU64::new(crate::shared::NO_POINTER),
     }
 }
 

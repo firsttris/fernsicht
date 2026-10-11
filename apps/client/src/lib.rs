@@ -43,7 +43,6 @@ use fernsicht_render::{HeadlessPresenter, Presenter};
 pub use fernsicht_secure::{Identity, Peer, PublicKey, Trusted};
 
 use crate::audio::{AudioPacket, audio_loop};
-use crate::cursor::CursorTracker;
 use crate::network::{NetOutcome, Pipe, ReceivedFrame, network_loop};
 use crate::present::{Hw, PresentResult, present_loop};
 
@@ -51,6 +50,7 @@ pub use config::{
     AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DecoderChoice, OverlayOutput,
     offered_codecs,
 };
+pub use cursor::{LocalPointer, PointerShare, system_cursor};
 pub use failure::{Failure, FailureCode, failure_of};
 pub use hosts::{
     DEFAULT_PORT, PAIR_TIMEOUT, default_state_dir, find_host, is_address, pair, printable,
@@ -58,7 +58,7 @@ pub use hosts::{
 };
 pub use input::{
     InputHandle, MAX_CHORD, chord_events, pad_events_while_focused, parse_keys_command,
-    window_to_stream,
+    picture_scale, window_to_stream,
 };
 pub use monitors::{Monitor, MonitorControl, MonitorList, MonitorRequest, parse_monitor_command};
 pub use present::{AppLine, AppStats};
@@ -95,7 +95,7 @@ pub fn run_with(
     let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
     let need_keyframe = Arc::new(AtomicBool::new(true));
     let info = Arc::new(Mutex::new(StreamInfo::default()));
-    let cursor = Arc::new(Mutex::new(CursorTracker::default()));
+    let cursor = cfg.pointer.clone();
     let (free_tx, free_rx) = bounded(BUFFERS);
     for _ in 0..BUFFERS {
         free_tx.send(ReceivedFrame::empty()).unwrap();
@@ -131,7 +131,7 @@ pub fn run_with(
         free_rx: &free_rx,
         free_tx: &free_tx,
         need_keyframe: &need_keyframe,
-        cursor: &cursor,
+        cursor: &cursor.tracker,
     };
     let net = network_loop(&cfg, &socket, &stop, &pipe, &info);
     // Closing the queue ends the present thread once it has drained.
@@ -142,6 +142,7 @@ pub fn run_with(
         .map(|t| t.join().expect("audio thread panicked"))
         .unwrap_or_default();
     let cursor = cursor
+        .tracker
         .lock()
         .map(|t| (t.positions, t.shapes))
         .unwrap_or_default();
@@ -173,7 +174,7 @@ type Shared = (
     Arc<Mutex<StreamInfo>>,
     Sender<ReceivedFrame>,
     Arc<AtomicBool>,
-    Arc<Mutex<CursorTracker>>,
+    Arc<PointerShare>,
 );
 
 /// Starts the decode/present thread; it ends when the queue closes.

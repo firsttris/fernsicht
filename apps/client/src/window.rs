@@ -19,7 +19,7 @@ use winit::event::{
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
+use winit::window::{CursorGrabMode, CustomCursor, Fullscreen, Window, WindowId};
 
 enum UserEvent {
     /// The client thread has ended (duration over, host gone, error).
@@ -72,6 +72,11 @@ struct App {
     pads_focused: Arc<AtomicBool>,
     /// The host's monitors; Ctrl+Alt+Shift+←/→ switches.
     monitors: Arc<fernsicht_client::MonitorControl>,
+    /// The host's pointer, shown as this window's own pointer once its
+    /// hotspot is known (it then moves here at once).
+    pointer: Arc<fernsicht_client::PointerShare>,
+    /// The pointer image set now: serial, hotspot, scale in ‰.
+    shown_pointer: Option<(u32, (u16, u16), u32)>,
 }
 
 fn mouse_button(b: MouseButton) -> Option<u16> {
@@ -105,6 +110,42 @@ impl App {
         // before it says goodbye.
         self.stop.store(true, Ordering::Release);
         event_loop.exit();
+    }
+
+    /// Shows the host's pointer as this window's own while it can: with
+    /// input going to the host, not captured, and the host's hotspot known.
+    /// Otherwise the pointer is drawn into the picture where the host has
+    /// it, a round trip later.
+    fn update_pointer(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(w), Some(input)) = (&self.window, &self.input) else {
+            return;
+        };
+        let Some(p) = (!self.captured).then(|| self.pointer.local()).flatten() else {
+            if self.shown_pointer.take().is_some() {
+                w.set_cursor_visible(false);
+                self.pointer.set_shown_locally(false);
+            }
+            return;
+        };
+        let size = w.inner_size();
+        let scale = input.stream_size().map_or(1.0, |s| {
+            fernsicht_client::picture_scale((size.width, size.height), s, p.screen)
+        });
+        let key = (p.serial, p.hotspot, (scale * 1000.0).round() as u32);
+        if self.shown_pointer == Some(key) {
+            return;
+        }
+        let (width, height, hot, rgba) =
+            fernsicht_client::system_cursor(&p.image, p.hotspot, scale);
+        match CustomCursor::from_rgba(rgba, width, height, hot.0, hot.1) {
+            Ok(source) => {
+                w.set_cursor(event_loop.create_custom_cursor(source));
+                w.set_cursor_visible(true);
+                self.pointer.set_shown_locally(true);
+                self.shown_pointer = Some(key);
+            }
+            Err(e) => log::debug!("pointer image: {e}"),
+        }
     }
 
     /// Captures the pointer (locked in place, relative motion) or lets
@@ -230,7 +271,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         };
         if self.input.is_some() {
-            // The host's pointer is drawn in the picture instead.
+            // The host's pointer is drawn in the picture instead, until
+            // the window can show it as its own (`update_pointer`).
             window.set_cursor_visible(false);
             log::info!(
                 "mouse and keyboard go to the host; Ctrl+Alt+Shift+Q quits, \
@@ -261,6 +303,10 @@ impl ApplicationHandler<UserEvent> for App {
             run_with(cfg, stop, factory)
         }));
         self.window = Some(window);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.update_pointer(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -389,6 +435,7 @@ pub fn run(
     let input = options.send_input.then(|| Arc::new(InputHandle::default()));
     cfg.input = input.clone();
     let monitors = cfg.monitors.clone();
+    let pointer = cfg.pointer.clone();
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     // Mode switches from the app arrive on another thread.
     let proxy = event_loop.create_proxy();
@@ -432,6 +479,8 @@ pub fn run(
         pads_focused,
         shortcuts: None,
         monitors,
+        pointer,
+        shown_pointer: None,
     };
     event_loop.run_app(&mut app)?;
     app.stop.store(true, Ordering::Relaxed);

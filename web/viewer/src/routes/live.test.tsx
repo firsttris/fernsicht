@@ -43,7 +43,7 @@ async function connected(mode: "desktop" | "gaming" = "desktop") {
 }
 
 function cursorPosition(x: number, y: number): ArrayBuffer {
-  const b = new ArrayBuffer(24);
+  const b = new ArrayBuffer(28);
   const v = new DataView(b);
   v.setUint8(0, 0xf5);
   v.setUint8(1, 1);

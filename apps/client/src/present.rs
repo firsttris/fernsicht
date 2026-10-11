@@ -17,7 +17,7 @@ use fernsicht_render::{Presenter, overlay};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{DecoderChoice, OverlayOutput};
-use crate::cursor::CursorTracker;
+use crate::cursor::PointerShare;
 use crate::input::InputHandle;
 use crate::monitors::{MonitorControl, MonitorList};
 use crate::network::{OVERLAY_INTERVAL, ReceivedFrame};
@@ -148,7 +148,7 @@ pub(crate) fn present_loop(
     hw: &Hw,
     mut record: Option<&mut dyn std::io::Write>,
     presenter: &mut dyn Presenter,
-    cursor: &Mutex<CursorTracker>,
+    cursor: &PointerShare,
     monitors: &MonitorControl,
     input: Option<&InputHandle>,
 ) -> PresentResult {
@@ -233,7 +233,7 @@ fn show(
     presenter: &mut dyn Presenter,
     decoder: &mut dyn Decoder,
     decoded: &DecodedFrame,
-    cursor: &Mutex<CursorTracker>,
+    cursor: &PointerShare,
 ) -> bool {
     // The last picture's memory is free for the decoder once the GPU has
     // shown it (long done by now).
@@ -245,7 +245,8 @@ fn show(
         }),
         None => None,
     };
-    let pointer = cursor.lock().ok().and_then(|t| t.overlay());
+    // Not when the window shows the pointer as its own.
+    let pointer = cursor.overlay();
     presenter
         .present(decoded, picture.as_ref(), pointer.as_ref())
         .inspect_err(|e| log::warn!("present: {e}"))

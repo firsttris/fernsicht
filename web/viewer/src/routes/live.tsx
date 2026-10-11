@@ -18,6 +18,7 @@ import {
   createCursorAssembler,
   type CursorPosition,
   decodeCursorPacket,
+  localCursor,
   placement,
 } from "../lib/cursor";
 import {
@@ -268,12 +269,36 @@ export function RemoteScreen({
     // The box's size is read when it changes, not per packet.
     let size = { width: el.clientWidth, height: el.clientHeight };
     let shown = "";
+    // The pointer as the browser's own, once the host knows its hotspot:
+    // the image (scaled like the picture) as the video's CSS cursor.
+    let own = { key: "", css: null as string | null };
+    const ownCursor = (p: ReturnType<typeof placement>) => {
+      const local = localCursor(at, image, p);
+      if (!local) return null;
+      const key = `${local.serial} ${local.width} ${local.height} ${local.hotX} ${local.hotY}`;
+      if (key !== own.key) {
+        const canvas = document.createElement("canvas");
+        canvas.width = local.width;
+        canvas.height = local.height;
+        const ctx = canvas.getContext("2d");
+        ctx?.drawImage(c, 0, 0, local.width, local.height);
+        own = {
+          key,
+          css: ctx
+            ? `url(${canvas.toDataURL("image/png")}) ${local.hotX} ${local.hotY}, none`
+            : null,
+        };
+      }
+      return own.css;
+    };
     const place = () => {
       const p = placement(at, image, size, { width: v.videoWidth, height: v.videoHeight });
-      const key = p ? `${p.left} ${p.top} ${p.width} ${p.height}` : "";
+      const css = ownCursor(p);
+      v.style.cursor = css ?? "";
+      const key = css ? "own" : p ? `${p.left} ${p.top} ${p.width} ${p.height}` : "";
       if (key === shown) return;
       shown = key;
-      if (!p) {
+      if (!p || css) {
         c.style.display = "none";
         return;
       }

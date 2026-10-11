@@ -8,6 +8,7 @@ use std::time::Duration;
 use fernsicht_proto::{Codec, CodecSet};
 use fernsicht_secure::{Identity, PublicKey};
 
+use crate::cursor::PointerShare;
 use crate::input::InputHandle;
 use crate::monitors::MonitorControl;
 
@@ -39,6 +40,8 @@ pub struct ClientConfig {
     pub muted: Arc<AtomicBool>,
     /// The host's monitors as it reports them, and switches asked for.
     pub monitors: Arc<MonitorControl>,
+    /// The host's pointer, for the window to show as its own.
+    pub pointer: Arc<PointerShare>,
     /// Our key and the paired host's: the session is authenticated and
     /// encrypted. `None` (the library default) talks plain, for tests; the
     /// program always sets it.
@@ -68,6 +71,7 @@ impl Default for ClientConfig {
             audio: AudioOutput::Off,
             muted: Arc::default(),
             monitors: Arc::default(),
+            pointer: Arc::default(),
             security: None,
             record: None,
         }

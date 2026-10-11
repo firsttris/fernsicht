@@ -5,22 +5,30 @@ import {
   createCursorAssembler,
   bgraPremultipliedToRgba,
   decodeCursorPacket,
+  localCursor,
   placement,
 } from "./cursor";
 
-function position(visible: boolean, x: number, y: number): ArrayBuffer {
-  const b = new ArrayBuffer(24);
+function position(
+  visible: boolean,
+  x: number,
+  y: number,
+  hotspot: [number, number] | null = null,
+): ArrayBuffer {
+  const b = new ArrayBuffer(28);
   const v = new DataView(b);
   v.setUint8(0, 0xf5);
   v.setUint8(1, 1);
   v.setUint8(2, 8);
-  v.setUint8(3, visible ? 1 : 0);
+  v.setUint8(3, (visible ? 1 : 0) | (hotspot ? 2 : 0));
   v.setUint32(4, 7, true);
   v.setUint32(8, 3, true);
   v.setInt32(12, x, true);
   v.setInt32(16, y, true);
   v.setUint16(20, 2560, true);
   v.setUint16(22, 1440, true);
+  v.setUint16(24, hotspot?.[0] ?? 0, true);
+  v.setUint16(26, hotspot?.[1] ?? 0, true);
   return b;
 }
 
@@ -39,6 +47,34 @@ function shape(serial: number, w: number, h: number, offset: number, fill: numbe
   return b;
 }
 
+describe("the pointer as the browser's own", () => {
+  it("reads the hotspot when the host knows it", () => {
+    expect(decodeCursorPacket(position(true, 5, 6))).toMatchObject({ hotspot: null });
+    expect(decodeCursorPacket(position(true, 5, 6, [3, 4]))).toMatchObject({
+      hotspot: { x: 3, y: 4 },
+    });
+    // The old length (before the hotspot) is not a pointer packet.
+    expect(decodeCursorPacket(position(true, 5, 6).slice(0, 24))).toBeNull();
+  });
+
+  it("is scaled like the picture, hotspot and all", () => {
+    const image = { serial: 3, width: 32, height: 32, rgba: new Uint8ClampedArray(32 * 32 * 4) };
+    const at = decodeCursorPacket(position(true, 960, 540, [8, 4])) as never;
+    const half = { left: 0, top: 0, width: 16, height: 16 };
+    expect(localCursor(at, image, half)).toEqual({
+      serial: 3,
+      width: 16,
+      height: 16,
+      hotX: 4,
+      hotY: 2,
+    });
+    // Without the hotspot, or for another image: drawn as before.
+    const unknown = decodeCursorPacket(position(true, 960, 540)) as never;
+    expect(localCursor(unknown, image, half)).toBeNull();
+    expect(localCursor(at, { ...image, serial: 4 }, half)).toBeNull();
+  });
+});
+
 describe("where the pointer goes", () => {
   const image = { serial: 3, width: 32, height: 32, rgba: new Uint8ClampedArray(32 * 32 * 4) };
   const at = {
@@ -49,6 +85,7 @@ describe("where the pointer goes", () => {
     y: 540,
     screenWidth: 1920,
     screenHeight: 1080,
+    hotspot: null,
   };
 
   it("scales the host's position like the picture", () => {
@@ -83,6 +120,7 @@ describe("pointer packets", () => {
       y: 100,
       screenWidth: 2560,
       screenHeight: 1440,
+      hotspot: null,
     });
     expect(decodeCursorPacket(position(false, 0, 0))).toMatchObject({ visible: false });
   });

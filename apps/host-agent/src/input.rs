@@ -49,6 +49,11 @@ impl InputSink for FollowScreen {
             self.seen = now;
             self.uinput.set_area(input_area(self.shared.screen()));
         }
+        // Where the pointer goes: the capture thread learns the pointer
+        // image's hotspot from it (see `pointer::hotspot`).
+        if let fernsicht_input::InputEvent::MouseAbs { x, y } = *event {
+            self.shared.note_pointer(x, y);
+        }
         self.uinput.inject(event)
     }
 

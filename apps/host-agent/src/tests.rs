@@ -84,6 +84,7 @@ fn shared() -> Shared {
         monitor_request: Default::default(),
         screen: Default::default(),
         screen_changes: AtomicU64::new(0),
+        pointer: AtomicU64::new(crate::shared::NO_POINTER),
     }
 }
 
@@ -423,4 +424,72 @@ fn repeated_errors_are_collapsed() {
         e.report("worse".into(), t0 + ms(1020)).as_deref(),
         Some("worse")
     );
+}
+
+#[test]
+fn the_pointer_hotspot_is_learnt_from_where_input_put_it() {
+    use crate::pointer::hotspot;
+    use fernsicht_capture::{CursorImage, CursorState};
+    use fernsicht_proto::Packet;
+
+    // The middle of a 2560×1440 screen is pixel (1280, 720); an image at
+    // (1270, 715) has the pointer 10 right and 5 down in it.
+    let middle = (32_768, 32_768);
+    assert_eq!(
+        hotspot(middle, (2560, 1440), (1270, 715), (32, 32)),
+        Some((10, 5))
+    );
+    assert_eq!(
+        hotspot(middle, (2560, 1440), (1300, 715), (32, 32)),
+        None,
+        "left of it"
+    );
+    assert_eq!(
+        hotspot(middle, (2560, 1440), (1240, 715), (32, 32)),
+        None,
+        "right of it"
+    );
+
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+    socket
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let link = Link::Udp(UdpLink {
+        peer: socket.local_addr().unwrap(),
+        socket: socket.clone(),
+        session_id: 1,
+        crypto: None,
+        confirmed: Arc::new(AtomicBool::new(true)),
+        gso: Arc::new(AtomicBool::new(true)),
+    });
+    let mut cursor = CursorSender::new(link, 1, (2560, 1440));
+    let state = CursorState {
+        visible: true,
+        x: 1270,
+        y: 715,
+        serial: 3,
+        image: Arc::new(CursorImage {
+            width: 32,
+            height: 32,
+            pixels: vec![0; 32 * 32 * 4],
+        }),
+    };
+    // The hotspot in the last position packet sent.
+    let sent = |cursor: &mut CursorSender, pointer| {
+        cursor.send(&state, false, pointer);
+        let mut buf = [0u8; 2048];
+        let mut last = None;
+        while let Ok(n) = socket.recv(&mut buf) {
+            if let Ok(Packet::Cursor(c)) = Packet::decode(&buf[..n]) {
+                last = Some(c.hotspot);
+            }
+        }
+        last.expect("a position")
+    };
+    // Just moved: the compositor may not have drawn it there yet.
+    assert_eq!(sent(&mut cursor, Some((middle, 10))), None);
+    assert_eq!(sent(&mut cursor, Some((middle, 100))), Some((10, 5)));
+    // Kept for the image, also once the input is old.
+    assert_eq!(sent(&mut cursor, Some((middle, 60_000))), Some((10, 5)));
+    assert_eq!(sent(&mut cursor, None), Some((10, 5)));
 }

@@ -2,9 +2,11 @@
  * The host's pointer, as it arrives on the data channel: the same packets
  * as in the native protocol (crates/proto), little-endian.
  *
- * Cursor (24 bytes): magic, version, kind 8, flags (1 = visible),
- * session id, shape serial, x, y (i32, top-left corner on the screen),
- * screen width, screen height (u16).
+ * Cursor (28 bytes): magic, version, kind 8, flags (1 = visible, 2 = the
+ * hotspot is known), session id, shape serial, x, y (i32, top-left corner
+ * on the screen), screen width, screen height, hotspot x, hotspot y (u16).
+ * With the hotspot known, the page shows the image as the browser's own
+ * pointer, which moves without delay.
  *
  * CursorShape (20 bytes + piece): magic, version, kind 9, flags, session
  * id, serial, width, height (u16), offset (u32); then up to 1024 bytes of
@@ -28,6 +30,8 @@ export interface CursorPosition {
   y: number;
   screenWidth: number;
   screenHeight: number;
+  /** Where in the image the pointer is, once the host learnt it. */
+  hotspot: { x: number; y: number } | null;
 }
 
 export interface CursorPiece {
@@ -45,15 +49,17 @@ export function decodeCursorPacket(buf: ArrayBuffer): CursorPosition | CursorPie
   if (v.byteLength < 4 || v.getUint8(0) !== MAGIC || v.getUint8(1) !== VERSION) return null;
   const kind = v.getUint8(2);
   if (kind === KIND_CURSOR) {
-    if (v.byteLength !== 24) return null;
+    if (v.byteLength !== 28) return null;
+    const flags = v.getUint8(3);
     return {
       kind: "position",
-      visible: (v.getUint8(3) & 1) === 1,
+      visible: (flags & 1) === 1,
       serial: v.getUint32(8, true),
       x: v.getInt32(12, true),
       y: v.getInt32(16, true),
       screenWidth: v.getUint16(20, true),
       screenHeight: v.getUint16(22, true),
+      hotspot: (flags & 2) === 2 ? { x: v.getUint16(24, true), y: v.getUint16(26, true) } : null,
     };
   }
   if (kind === KIND_SHAPE) {
@@ -133,6 +139,28 @@ export function createCursorAssembler(): (p: CursorPiece) => CursorImage | null 
     if (have.size * CURSOR_CHUNK < bytes.length) return null;
     have.clear();
     return { serial, width, height, rgba: bgraPremultipliedToRgba(bytes) };
+  };
+}
+
+/** The pointer as the browser's own: its size on the page and the hotspot,
+ * scaled like the picture (`placed`, from `placement`). `null` while the
+ * host's hotspot is not known or the image is not the one shown. */
+export function localCursor(
+  at: CursorPosition | null,
+  image: CursorImage | null,
+  placed: Rect | null,
+): { serial: number; width: number; height: number; hotX: number; hotY: number } | null {
+  if (!at?.visible || !at.hotspot || !image || !placed || at.serial !== image.serial) return null;
+  const scale = placed.width / image.width;
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+  const clamp = (v: number, max: number) => Math.min(max - 1, Math.max(0, Math.round(v * scale)));
+  return {
+    serial: image.serial,
+    width,
+    height,
+    hotX: clamp(at.hotspot.x, width),
+    hotY: clamp(at.hotspot.y, height),
   };
 }
 

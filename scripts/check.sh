@@ -15,6 +15,8 @@ step "Rust: format and clippy"
 cargo fmt --all --check
 cargo fmt --manifest-path fuzz/Cargo.toml --check
 cargo clippy --workspace --all-targets -- -D warnings
+# The client's window (CI builds it with --all-features).
+cargo clippy -p fernsicht-client --all-targets --features window -- -D warnings
 
 step "Rust: tests"
 if $quick; then

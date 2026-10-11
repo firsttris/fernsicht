@@ -93,6 +93,11 @@ impl InputHandle {
         Some(InputEvent::MouseAbs { x, y })
     }
 
+    /// The streamed screen's size, once the host said it.
+    pub fn stream_size(&self) -> Option<(u32, u32)> {
+        *self.stream.lock().ok()?
+    }
+
     pub(crate) fn set_stream(&self, size: (u32, u32)) {
         if let Ok(mut s) = self.stream.lock() {
             *s = Some(size);
@@ -113,6 +118,18 @@ pub fn pad_events_while_focused(
             input.push(e);
         }
     }
+}
+
+/// Window pixels per pixel of the host's screen, as the picture is shown:
+/// the stream (`stream`, scaled from the host's `screen`) letterboxed into
+/// `window`.
+pub fn picture_scale(window: (u32, u32), stream: (u32, u32), screen: (u32, u32)) -> f64 {
+    if stream.0 == 0 || stream.1 == 0 || screen.0 == 0 {
+        return 1.0;
+    }
+    let fit =
+        (f64::from(window.0) / f64::from(stream.0)).min(f64::from(window.1) / f64::from(stream.1));
+    fit * f64::from(stream.0) / f64::from(screen.0)
 }
 
 /// Where a window position falls on the stream (shown letterboxed in the

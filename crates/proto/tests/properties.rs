@@ -110,9 +110,9 @@ proptest! {
 
     #[test]
     fn cursor_roundtrip(session_id: u32, visible: bool, shape_serial: u32, x: i32, y: i32,
-                        screen_width: u16, screen_height: u16) {
+                        screen_width: u16, screen_height: u16, hotspot: Option<(u16, u16)>) {
         let mut buf = [0u8; Cursor::LEN];
-        let c = Cursor { session_id, visible, shape_serial, x, y, screen_width, screen_height };
+        let c = Cursor { session_id, visible, shape_serial, x, y, screen_width, screen_height, hotspot };
         let n = c.encode(&mut buf);
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Cursor(c)));
     }

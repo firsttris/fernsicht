@@ -95,7 +95,7 @@ impl Kind {
         match self {
             Kind::Video => FLAG_KEYFRAME,
             Kind::Feedback => FLAG_REQUEST_KEYFRAME | FLAG_REQUEST_CURSOR,
-            Kind::Cursor => FLAG_CURSOR_VISIBLE,
+            Kind::Cursor => FLAG_CURSOR_VISIBLE | FLAG_CURSOR_HOTSPOT,
             Kind::Handshake => FLAG_REPLY,
             Kind::Announce => FLAG_PAIRING | FLAG_BUSY,
             Kind::KeyframeRequest => FLAG_HAS_FRAME,
@@ -597,6 +597,7 @@ pub const MAX_CURSOR_SIZE: u16 = 256;
 pub const CURSOR_CHUNK: usize = 1024;
 
 const FLAG_CURSOR_VISIBLE: u8 = 0x01;
+const FLAG_CURSOR_HOTSPOT: u8 = 0x02;
 
 /// Where the pointer is, host → client, with every captured frame.
 ///
@@ -616,14 +617,20 @@ pub struct Cursor {
     /// Size of the captured screen, to place the cursor on a scaled video.
     pub screen_width: u16,
     pub screen_height: u16,
+    /// Where in the image the pointer is, once the host learnt it: the
+    /// client can then show the image as its own pointer (D6).
+    pub hotspot: Option<(u16, u16)>,
 }
 
 impl Cursor {
-    pub const LEN: usize = PREFIX_LEN + 20;
+    pub const LEN: usize = PREFIX_LEN + 24;
 
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         let mut w = Writer::new(&mut buf[..Self::LEN]);
-        let flags = if self.visible { FLAG_CURSOR_VISIBLE } else { 0 };
+        let mut flags = if self.visible { FLAG_CURSOR_VISIBLE } else { 0 };
+        if self.hotspot.is_some() {
+            flags |= FLAG_CURSOR_HOTSPOT;
+        }
         w.prefix(Kind::Cursor, flags);
         w.u32(self.session_id);
         w.u32(self.shape_serial);
@@ -631,6 +638,9 @@ impl Cursor {
         w.u32(self.y as u32);
         w.u16(self.screen_width);
         w.u16(self.screen_height);
+        let (hx, hy) = self.hotspot.unwrap_or((0, 0));
+        w.u16(hx);
+        w.u16(hy);
         Self::LEN
     }
 
@@ -643,6 +653,10 @@ impl Cursor {
             y: r.u32()? as i32,
             screen_width: r.u16()?,
             screen_height: r.u16()?,
+            hotspot: {
+                let h = (r.u16()?, r.u16()?);
+                (flags & FLAG_CURSOR_HOTSPOT != 0).then_some(h)
+            },
         })
     }
 }
@@ -1630,6 +1644,7 @@ mod tests {
             y: 4,
             screen_width: 1920,
             screen_height: 1080,
+            hotspot: None,
         }
         .encode(&mut buf);
         add(n, &buf);
@@ -1812,10 +1827,18 @@ mod tests {
             y: 1439,
             screen_width: 2560,
             screen_height: 1440,
+            hotspot: None,
         };
         let n = c.encode(&mut buf);
         assert_eq!(n, Cursor::LEN);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Cursor(c));
+        // The hotspot, once known, travels with the position.
+        let known = Cursor {
+            hotspot: Some((4, 9)),
+            ..c
+        };
+        let n = known.encode(&mut buf);
+        assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Cursor(known));
         let hidden = Cursor {
             visible: false,
             ..c

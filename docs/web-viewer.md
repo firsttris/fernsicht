@@ -24,7 +24,9 @@ network. The host serves the page itself.
   without retransmits (a lost move is not waited for, the next one
   replaces it), everything else a reliable, ordered one. Positions are
   numbered across both, so an old one never undoes a newer one.
-- **Input:** In **Desktop** mode the mouse controls the host directly. In
+- **Input:** In **Desktop** mode the mouse controls the host directly, and
+  the host's pointer image is the browser's own pointer (it moves at once,
+  without the round trip) as soon as the host knows its tip. In
   **Gaming** mode a click into the video captures the mouse pointer, and
   Esc releases it; where the browser can, the movement is raw, without the
   desktop's acceleration (`unadjustedMovement`). On secure pages Chrome

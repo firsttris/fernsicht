@@ -85,7 +85,7 @@ pub(crate) fn capture_loop(
         // thing the client can show before the frame it belongs to.
         if let Some(c) = source.cursor() {
             let asked = shared.cursor_requested.swap(false, Ordering::Relaxed);
-            cursor.send(&c, asked);
+            cursor.send(&c, asked, shared.pointer());
         }
     }
     slot.close();

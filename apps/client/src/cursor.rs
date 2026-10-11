@@ -1,8 +1,11 @@
 //! The host's pointer: its image arrives in pieces ([`CursorShape`]), its
 //! position with every frame ([`Cursor`]). The tracker puts both together
-//! for the presenter.
+//! for the presenter. Once the host learnt where in the image the pointer
+//! is (its hotspot), the window can show the image as this machine's own
+//! pointer, which moves without any delay ([`PointerShare::local`]).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use fernsicht_capture::CursorImage;
 use fernsicht_proto::{CURSOR_CHUNK, Cursor, CursorShape};
@@ -87,6 +90,20 @@ impl CursorTracker {
         })
     }
 
+    /// The host's pointer for this machine to show as its own: visible,
+    /// complete, and its hotspot known.
+    pub(crate) fn local(&self) -> Option<LocalPointer> {
+        let c = self.position?;
+        let (serial, image) = self.shape.as_ref()?;
+        let hotspot = c.hotspot?;
+        (c.visible && *serial == c.shape_serial).then(|| LocalPointer {
+            serial: *serial,
+            image: image.clone(),
+            hotspot,
+            screen: (u32::from(c.screen_width), u32::from(c.screen_height)),
+        })
+    }
+
     /// What to draw. Until the image of a new shape is complete, the
     /// previous one stands in.
     pub(crate) fn overlay(&self) -> Option<CursorOverlay> {
@@ -101,6 +118,102 @@ impl CursorTracker {
             screen_height: u32::from(c.screen_height),
         })
     }
+}
+
+/// The host's pointer as this machine's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalPointer {
+    /// Changes with the image.
+    pub serial: u32,
+    /// BGRA, premultiplied alpha, in the host's screen pixels.
+    pub image: Arc<CursorImage>,
+    /// Where in the image the pointer is.
+    pub hotspot: (u16, u16),
+    /// The host's screen size: the picture may be scaled from it.
+    pub screen: (u32, u32),
+}
+
+/// The pointer, shared between the network thread (fills it), the present
+/// thread (draws it into the picture) and the window (shows it as its own
+/// pointer instead, when it can).
+#[derive(Default)]
+pub struct PointerShare {
+    pub(crate) tracker: Mutex<CursorTracker>,
+    /// The window shows the pointer itself: not drawn into the picture.
+    shown_locally: AtomicBool,
+}
+
+impl std::fmt::Debug for PointerShare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PointerShare").finish_non_exhaustive()
+    }
+}
+
+impl PointerShare {
+    /// The host's pointer for this machine to show as its own, if it can.
+    pub fn local(&self) -> Option<LocalPointer> {
+        self.tracker.lock().ok()?.local()
+    }
+
+    /// Whether the window shows the pointer itself now.
+    pub fn set_shown_locally(&self, on: bool) {
+        self.shown_locally.store(on, Ordering::Relaxed);
+    }
+
+    /// What the present thread draws into the picture.
+    pub(crate) fn overlay(&self) -> Option<CursorOverlay> {
+        if self.shown_locally.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.tracker.lock().ok()?.overlay()
+    }
+}
+
+/// A pointer image as a window system takes it: straight RGBA, scaled by
+/// `scale` (window pixels per host screen pixel), with the hotspot scaled
+/// along. (width, height, hotspot, pixels.)
+pub fn system_cursor(
+    image: &CursorImage,
+    hotspot: (u16, u16),
+    scale: f64,
+) -> (u16, u16, (u16, u16), Vec<u8>) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let size = |v: u32| ((f64::from(v) * scale).round() as u32).clamp(1, 256);
+    let (w, h) = (size(image.width), size(image.height));
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        // Nearest pixel of the original.
+        let sy = (u64::from(y) * u64::from(image.height) / u64::from(h)) as u32;
+        for x in 0..w {
+            let sx = (u64::from(x) * u64::from(image.width) / u64::from(w)) as u32;
+            let i = ((sy * image.width + sx) * 4) as usize;
+            let (b, g, r, a) = (
+                image.pixels[i],
+                image.pixels[i + 1],
+                image.pixels[i + 2],
+                image.pixels[i + 3],
+            );
+            let straight = |c: u8| {
+                if a == 0 {
+                    0
+                } else {
+                    (u32::from(c) * 255 / u32::from(a)).min(255) as u8
+                }
+            };
+            rgba.extend_from_slice(&[straight(r), straight(g), straight(b), a]);
+        }
+    }
+    let hot = |v: u16, max: u32| ((f64::from(v) * scale).round() as u32).min(max - 1) as u16;
+    (
+        w as u16,
+        h as u16,
+        (hot(hotspot.0, w), hot(hotspot.1, h)),
+        rgba,
+    )
 }
 
 #[cfg(test)]
@@ -140,7 +253,63 @@ mod tests {
             y,
             screen_width: 2560,
             screen_height: 1440,
+            hotspot: None,
         }
+    }
+
+    #[test]
+    fn the_pointer_is_shown_locally_once_its_hotspot_is_known() {
+        let share = PointerShare::default();
+        let img = image(8, 8, 0);
+        if let Ok(mut t) = share.tracker.lock() {
+            feed(&mut t, 2, 8, 8, &img, None);
+            t.on_position(at(10, 20, 2, true));
+        }
+        assert_eq!(share.local(), None, "no hotspot yet");
+        assert!(share.overlay().is_some());
+        if let Ok(mut t) = share.tracker.lock() {
+            t.on_position(Cursor {
+                hotspot: Some((1, 2)),
+                ..at(10, 20, 2, true)
+            });
+        }
+        let local = share.local().unwrap();
+        assert_eq!(
+            (local.serial, local.hotspot, local.screen),
+            (2, (1, 2), (2560, 1440))
+        );
+        // While the window shows it, the picture does not.
+        share.set_shown_locally(true);
+        assert_eq!(share.overlay(), None);
+        share.set_shown_locally(false);
+        assert!(share.overlay().is_some());
+        // Hidden on the host: not shown here either.
+        if let Ok(mut t) = share.tracker.lock() {
+            t.on_position(Cursor {
+                hotspot: Some((1, 2)),
+                ..at(10, 20, 2, false)
+            });
+        }
+        assert_eq!(share.local(), None);
+    }
+
+    #[test]
+    fn a_system_cursor_is_straight_rgba_scaled_with_its_hotspot() {
+        // 2×1: half-transparent red (premultiplied), opaque blue.
+        let img = CursorImage {
+            width: 2,
+            height: 1,
+            pixels: vec![0, 0, 128, 128, 255, 0, 0, 255],
+        };
+        let (w, h, hot, rgba) = system_cursor(&img, (1, 0), 1.0);
+        assert_eq!((w, h, hot), (2, 1, (1, 0)));
+        assert_eq!(rgba, vec![255, 0, 0, 128, 0, 0, 255, 255]);
+        // Twice the size: each pixel twice, the hotspot along.
+        let (w, h, hot, rgba) = system_cursor(&img, (1, 0), 2.0);
+        assert_eq!((w, h, hot), (4, 2, (2, 0)));
+        assert_eq!(&rgba[..8], &[255, 0, 0, 128, 255, 0, 0, 128]);
+        // Nonsense scale: as it is.
+        assert_eq!(system_cursor(&img, (1, 0), f64::NAN).0, 2);
     }
 
     #[test]

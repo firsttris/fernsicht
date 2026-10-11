@@ -876,6 +876,18 @@ it (FFmpeg's NVENC writes no chroma location, and left is the default), and the 
 chroma a quarter texel right; GPU tests put a red column at an odd x and check where it lands,
 and the VAAPI test reads the location back from the stream. The other D items are open.
 
+Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is what feels slow),
+D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
+flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
+D4, D9.
+
+D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
+it: once the pointer rested after absolute input, the tip is where input put it, against the
+image's position (`pointer::hotspot`, per image). The Cursor packet carries it (flag 2, 4 bytes
+more). With it the window sets the image as its own system cursor (winit `CustomCursor`, scaled
+like the picture) and the presenter leaves it out of the picture; the web viewer sets it as the
+video's CSS cursor. Until the tip is known, or with the pointer captured, nothing changes.
+
 ## E. Clean code and consistency
 
 | ID | Finding | Where | Status |

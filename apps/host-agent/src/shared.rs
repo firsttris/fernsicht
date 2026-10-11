@@ -53,9 +53,34 @@ pub(crate) struct Shared {
     /// The monitor shown and the others; changes count `screen_changes`.
     pub(crate) screen: std::sync::Mutex<Option<fernsicht_capture::ScreenInfo>>,
     pub(crate) screen_changes: AtomicU64,
+    /// Where input last put the pointer, 0..65535 on the monitor shown, and
+    /// when (packed, see [`Shared::note_pointer`]); `NO_POINTER` before.
+    pub(crate) pointer: AtomicU64,
 }
 
+/// [`Shared::pointer`] before any absolute pointer input.
+pub(crate) const NO_POINTER: u64 = u64::MAX;
+
 impl Shared {
+    /// Input put the pointer at `(x, y)` (0..65535 on the monitor shown).
+    pub(crate) fn note_pointer(&self, x: u16, y: u16) {
+        let ms = (fernsicht_core::now_us() / 1000) as u32;
+        let packed = u64::from(x) | u64::from(y) << 16 | u64::from(ms) << 32;
+        self.pointer.store(packed, Ordering::Relaxed);
+    }
+
+    /// Where input last put the pointer, and how many ms ago.
+    pub(crate) fn pointer(&self) -> Option<((u16, u16), u32)> {
+        let p = self.pointer.load(Ordering::Relaxed);
+        (p != NO_POINTER).then(|| {
+            let now = (fernsicht_core::now_us() / 1000) as u32;
+            (
+                (p as u16, (p >> 16) as u16),
+                now.wrapping_sub((p >> 32) as u32),
+            )
+        })
+    }
+
     /// The client asked for a keyframe: one comes, unless one is on its way
     /// already (see [`keyframe::already_coming`]). `client_has` is the last
     /// frame the client completed, `rtt` its round trip.

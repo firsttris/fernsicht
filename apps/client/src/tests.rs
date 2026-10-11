@@ -428,3 +428,14 @@ fn failures_keep_their_code_through_context_and_the_app_line() {
         AppLine::Stats(_)
     ));
 }
+
+#[test]
+fn the_picture_scale_is_window_pixels_per_host_pixel() {
+    use crate::input::picture_scale;
+    // A 2560×1440 screen streamed at 1920×1080 into a 1280×720 window.
+    assert!((picture_scale((1280, 720), (1920, 1080), (2560, 1440)) - 0.5).abs() < 1e-9);
+    // Letterboxed: a tall window, the width decides.
+    assert!((picture_scale((1920, 2000), (1920, 1080), (1920, 1080)) - 1.0).abs() < 1e-9);
+    // Not known yet: as it is.
+    assert_eq!(picture_scale((800, 600), (0, 0), (1920, 1080)), 1.0);
+}
