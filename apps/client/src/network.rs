@@ -25,7 +25,7 @@ use crate::config::{ClientConfig, CodecChoice, offered_codecs};
 use crate::cursor::CursorTracker;
 use crate::hosts::reject_text;
 use crate::input::InputLink;
-use crate::monitors::MonitorList;
+use crate::monitors::{Monitor, MonitorList};
 use crate::present::Hw;
 
 pub(crate) const HELLO_INTERVAL: Duration = Duration::from_millis(250);
@@ -549,7 +549,11 @@ fn on_packet(
                     current: m.current,
                     list: m
                         .iter()
-                        .map(|e| (e.name.to_string(), e.width, e.height))
+                        .map(|e| Monitor {
+                            name: e.name.to_string(),
+                            width: e.width,
+                            height: e.height,
+                        })
                         .collect(),
                 });
             }

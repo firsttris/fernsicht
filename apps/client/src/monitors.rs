@@ -2,13 +2,23 @@
 
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
+
 /// The host's monitors, as its last [`fernsicht_proto::Monitors`] said.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonitorList {
     /// Index of the one shown.
     pub current: u8,
-    /// Name (connector), width, height.
-    pub list: Vec<(String, u16, u16)>,
+    pub list: Vec<Monitor>,
+}
+
+/// One of the host's monitors.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Monitor {
+    /// The connector, e.g. `DP-1`.
+    pub name: String,
+    pub width: u16,
+    pub height: u16,
 }
 
 impl MonitorList {
@@ -24,25 +34,6 @@ impl MonitorList {
             MonitorRequest::Next => (self.current + 1) % n,
             MonitorRequest::Previous => (self.current + n - 1) % n,
         })
-    }
-
-    /// For the app's overlay JSON.
-    pub fn json(&self) -> String {
-        let list: Vec<String> = self
-            .list
-            .iter()
-            .map(|(name, w, h)| {
-                format!(
-                    "{{\"name\":{},\"width\":{w},\"height\":{h}}}",
-                    serde_json::Value::from(name.as_str())
-                )
-            })
-            .collect();
-        format!(
-            "{{\"current\":{},\"list\":[{}]}}",
-            self.current,
-            list.join(",")
-        )
     }
 }
 

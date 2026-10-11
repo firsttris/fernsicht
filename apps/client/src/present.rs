@@ -14,11 +14,12 @@ use fernsicht_net::keyframe::RefChain;
 use fernsicht_proto::Codec;
 use fernsicht_render::overlay::StreamInfo;
 use fernsicht_render::{Presenter, overlay};
+use serde::{Deserialize, Serialize};
 
 use crate::config::{DecoderChoice, OverlayOutput};
 use crate::cursor::CursorTracker;
 use crate::input::InputHandle;
-use crate::monitors::MonitorControl;
+use crate::monitors::{MonitorControl, MonitorList};
 use crate::network::{OVERLAY_INTERVAL, ReceivedFrame};
 
 /// What the present thread needs to create a hardware decoder.
@@ -95,6 +96,17 @@ fn make_hw_decoder(codec: Codec, hw: &Hw) -> Result<Box<dyn Decoder>, CodecError
         "no {label} decoder: {}",
         errors.join("; ")
     )))
+}
+
+/// What the client tells the app once a second (`--app`, one JSON line on
+/// stdout): the overlay's numbers and the host's monitors once it listed
+/// them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppStats {
+    #[serde(flatten)]
+    pub overlay: overlay::Stats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitors: Option<MonitorList>,
 }
 
 #[derive(Default)]
@@ -256,12 +268,13 @@ fn show_overlay(
             println!();
         }
         OverlayOutput::Json => {
-            let mut json = overlay::json(stats, &info);
-            if let Some(m) = monitors.list() {
-                json.pop();
-                json.push_str(&format!(",\"monitors\":{}}}", m.json()));
+            let line = AppStats {
+                overlay: overlay::stats(stats, &info),
+                monitors: monitors.list(),
+            };
+            if let Ok(json) = serde_json::to_string(&line) {
+                println!("{json}");
             }
-            println!("{json}");
         }
     }
 }

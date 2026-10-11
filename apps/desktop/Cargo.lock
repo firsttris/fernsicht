@@ -1317,6 +1317,7 @@ dependencies = [
  "fernsicht-secure",
  "libc",
  "log",
+ "serde",
  "serde_json",
 ]
 
@@ -1417,6 +1418,7 @@ dependencies = [
  "fernsicht-codec",
  "fernsicht-core",
  "fernsicht-proto",
+ "serde",
 ]
 
 [[package]]

@@ -1229,6 +1229,7 @@ dependencies = [
  "libc",
  "log",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "wayland-backend",
  "wayland-client",
@@ -1363,6 +1364,7 @@ dependencies = [
  "naga",
  "proptest",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "winit",
 ]

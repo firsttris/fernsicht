@@ -10,6 +10,7 @@ use std::fmt::Write;
 
 use fernsicht_core::latency::{LatencyStats, Stage};
 use fernsicht_proto::Codec;
+use serde::{Deserialize, Serialize};
 
 /// Everything the overlay shows besides the per-stage latencies.
 #[derive(Clone, Copy, Debug, Default)]
@@ -86,37 +87,69 @@ pub fn lines(stats: &LatencyStats, info: &StreamInfo) -> Vec<String> {
     out
 }
 
-/// The same values as one JSON object, for the desktop app (the shape of
-/// its `SessionStats`, plus glass-to-glass and RTT).
-pub fn json(stats: &LatencyStats, info: &StreamInfo) -> String {
+/// The overlay's numbers for the desktop app, which reads them as JSON from
+/// the client's output once a second.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stats {
+    pub glass_to_glass_us: Spread,
+    /// Average per stage.
+    pub stages_us: Stages,
+    pub codec: String,
+    pub fps: f32,
+    pub bitrate_bps: u64,
+    /// Packets lost on the way, before FEC: 0–1.
+    pub loss_before_fec: f32,
+    /// Frames lost despite FEC: 0–1.
+    pub loss_after_fec: f32,
+    /// Round trip to the host, where known.
+    pub rtt_us: Option<u64>,
+}
+
+/// Average, 95th percentile and maximum, µs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spread {
+    pub avg: u32,
+    pub p95: u32,
+    pub max: u32,
+}
+
+/// One duration per pipeline stage, µs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stages {
+    pub capture: u32,
+    pub encode: u32,
+    pub network: u32,
+    pub decode: u32,
+    pub present: u32,
+}
+
+/// The values of [`lines`] for the desktop app.
+pub fn stats(stats: &LatencyStats, info: &StreamInfo) -> Stats {
     let total = stats.total();
-    let mut stages = String::new();
-    for (i, stage) in Stage::ALL.iter().enumerate() {
-        let key = match stage {
-            Stage::Capture => "capture",
-            Stage::Encode => "encode",
-            Stage::Network => "network",
-            Stage::Decode => "decode",
-            Stage::Present => "present",
-        };
-        let sep = if i > 0 { "," } else { "" };
-        let _ = write!(stages, "{sep}\"{key}\":{}", stats.stage(*stage).avg);
-    }
+    let avg = |s: Stage| stats.stage(s).avg;
+    // JSON has no NaN.
     let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
-    format!(
-        "{{\"glassToGlassUs\":{{\"avg\":{},\"p95\":{},\"max\":{}}},\"stagesUs\":{{{stages}}},\
-         \"codec\":\"{}\",\"fps\":{},\"bitrateBps\":{},\"lossBeforeFec\":{},\
-         \"lossAfterFec\":{},\"rttUs\":{}}}",
-        total.avg,
-        total.p95,
-        total.max,
-        codec_label(info.codec),
-        finite(info.fps),
-        info.bitrate_bps,
-        finite(info.loss_before_fec),
-        finite(info.loss_after_fec),
-        info.rtt_us.map_or("null".into(), |r| r.to_string()),
-    )
+    Stats {
+        glass_to_glass_us: Spread {
+            avg: total.avg,
+            p95: total.p95,
+            max: total.max,
+        },
+        stages_us: Stages {
+            capture: avg(Stage::Capture),
+            encode: avg(Stage::Encode),
+            network: avg(Stage::Network),
+            decode: avg(Stage::Decode),
+            present: avg(Stage::Present),
+        },
+        codec: codec_label(info.codec).to_owned(),
+        fps: finite(info.fps),
+        bitrate_bps: info.bitrate_bps,
+        loss_before_fec: finite(info.loss_before_fec),
+        loss_after_fec: finite(info.loss_after_fec),
+        rtt_us: info.rtt_us,
+    }
 }
 
 #[cfg(test)]
@@ -164,7 +197,7 @@ mod tests {
             "Codec AV1 · Bildrate 120 fps · Bitrate 38 Mbit/s · Verlust (FEC) 0,4 % → 0"
         );
 
-        let j: serde_json::Value = serde_json::from_str(&json(&stats, &info)).unwrap();
+        let j = serde_json::to_value(super::stats(&stats, &info)).unwrap();
         assert_eq!(j["glassToGlassUs"]["avg"], 14_000);
         assert_eq!(j["stagesUs"]["capture"], 1_000);
         assert_eq!(j["stagesUs"]["network"], 3_000);
@@ -179,8 +212,12 @@ mod tests {
             fps: f32::NAN,
             ..info
         };
-        let j: serde_json::Value = serde_json::from_str(&json(&stats, &with_rtt)).unwrap();
+        let j = serde_json::to_value(super::stats(&stats, &with_rtt)).unwrap();
         assert_eq!(j["rttUs"], 1_250);
         assert_eq!(j["fps"], 0.0, "never NaN, which JSON cannot carry");
+        // What the app reads back is what was written.
+        let s = super::stats(&stats, &with_rtt);
+        let text = serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Stats>(&text).unwrap(), s);
     }
 }

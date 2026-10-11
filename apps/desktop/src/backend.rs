@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use fernsicht_client::discover::{FoundHost, broadcast_targets, discover};
-use fernsicht_client::{DEFAULT_PORT, Identity, Trusted, pair};
+use fernsicht_client::{AppStats, DEFAULT_PORT, Identity, Trusted, pair};
 use fernsicht_host_agent::control;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -122,8 +122,8 @@ pub struct SessionState {
     pub active: bool,
     pub device_id: Option<String>,
     pub device_name: Option<String>,
-    /// The client's latest overlay (see `fernsicht_render::overlay::json`).
-    pub stats: Option<Value>,
+    /// The client's latest overlay and the host's monitors.
+    pub stats: Option<AppStats>,
     /// Why it ended, if it failed.
     pub error: Option<String>,
 }
@@ -147,7 +147,7 @@ struct Running {
     child: Child,
     /// Closing it ends the client (it runs with `--app`).
     stdin: Option<ChildStdin>,
-    stats: Arc<Mutex<Option<Value>>>,
+    stats: Arc<Mutex<Option<AppStats>>>,
     log: Arc<Mutex<VecDeque<String>>>,
 }
 
@@ -387,9 +387,9 @@ impl Backend {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.starts_with('{')
-                    && let Ok(v) = serde_json::from_str::<Value>(&line)
+                    && let Ok(s) = serde_json::from_str::<AppStats>(&line)
                 {
-                    *into.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+                    *into.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
                 }
             }
         });

@@ -58,7 +58,8 @@ pub use input::{
     InputHandle, MAX_CHORD, chord_events, pad_events_while_focused, parse_keys_command,
     window_to_stream,
 };
-pub use monitors::{MonitorControl, MonitorList, MonitorRequest, parse_monitor_command};
+pub use monitors::{Monitor, MonitorControl, MonitorList, MonitorRequest, parse_monitor_command};
+pub use present::AppStats;
 pub use summary::{AudioSummary, RunSummary};
 
 /// Completed frames waiting for the decoder.

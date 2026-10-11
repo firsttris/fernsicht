@@ -16,9 +16,9 @@ use crate::input::{
     InputHandle, InputLink, chord_events, pad_events_while_focused, parse_keys_command,
     window_to_stream,
 };
-use crate::monitors::{MonitorList, MonitorRequest, parse_monitor_command};
+use crate::monitors::{Monitor, MonitorList, MonitorRequest, parse_monitor_command};
 use crate::network::{RateWindow, ReceivedFrame, ratio};
-use crate::present::timings;
+use crate::present::{AppStats, timings};
 
 #[test]
 fn gamepads_follow_the_focus() {
@@ -43,11 +43,17 @@ fn gamepads_follow_the_focus() {
 fn monitor_requests_are_resolved_against_the_list() {
     let l = MonitorList {
         current: 1,
-        list: vec![
-            ("DP-2".into(), 2560, 1440),
-            ("DP-1".into(), 2560, 1440),
-            ("HDMI-A-1".into(), 1920, 1080),
-        ],
+        list: [
+            ("DP-2", 2560, 1440),
+            ("DP-1", 2560, 1440),
+            ("HDMI-A-1", 1920, 1080),
+        ]
+        .map(|(name, width, height)| Monitor {
+            name: name.into(),
+            width,
+            height,
+        })
+        .into(),
     };
     assert_eq!(l.resolve(MonitorRequest::Next), Some(2));
     assert_eq!(l.resolve(MonitorRequest::Previous), Some(0));
@@ -59,7 +65,7 @@ fn monitor_requests_are_resolved_against_the_list() {
     };
     assert_eq!(last.resolve(MonitorRequest::Next), Some(0), "wraps around");
     assert_eq!(MonitorList::default().resolve(MonitorRequest::Next), None);
-    let v: serde_json::Value = serde_json::from_str(&l.json()).unwrap();
+    let v = serde_json::to_value(&l).unwrap();
     assert_eq!(v["current"], 1);
     assert_eq!(v["list"][2]["name"], "HDMI-A-1");
     assert_eq!(v["list"][0]["width"], 2560);
@@ -352,4 +358,37 @@ fn frame_timings_are_put_on_the_clients_clock() {
         (t.received, t.decoded, t.presented),
         (9_000, 11_000, 12_500)
     );
+}
+
+#[test]
+fn the_app_gets_the_overlay_and_the_monitors_in_one_object() {
+    let line = AppStats {
+        overlay: fernsicht_render::overlay::Stats {
+            codec: "AV1".into(),
+            fps: 60.0,
+            ..Default::default()
+        },
+        monitors: None,
+    };
+    let v = serde_json::to_value(&line).unwrap();
+    assert_eq!(v["codec"], "AV1");
+    assert_eq!(v["stagesUs"]["network"], 0);
+    assert!(
+        v.get("monitors").is_none(),
+        "left out until the host lists them"
+    );
+    let with = AppStats {
+        monitors: Some(MonitorList {
+            current: 0,
+            list: vec![Monitor {
+                name: "DP-1".into(),
+                width: 2560,
+                height: 1440,
+            }],
+        }),
+        ..line
+    };
+    let text = serde_json::to_string(&with).unwrap();
+    assert!(text.contains(r#""monitors":{"current":0,"list":[{"name":"DP-1""#));
+    assert_eq!(serde_json::from_str::<AppStats>(&text).unwrap(), with);
 }

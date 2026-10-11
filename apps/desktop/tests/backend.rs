@@ -145,10 +145,7 @@ fn find_pair_connect_and_forget() {
     remote.command("gaming").unwrap();
     assert!(remote.session().active, "commands do not end the session");
     let stats = remote.session().stats.unwrap();
-    assert!(
-        stats["glassToGlassUs"]["avg"].as_u64().unwrap() > 0,
-        "{stats}"
-    );
+    assert!(stats.overlay.glass_to_glass_us.avg > 0, "{stats:?}");
     assert!(app.this_machine().host.unwrap()["session"].is_object());
     remote.disconnect();
     let s = remote.session();

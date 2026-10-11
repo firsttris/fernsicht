@@ -260,7 +260,14 @@ fn monitors_are_listed_and_switched() {
     }
     let list = monitors.list().unwrap();
     assert_eq!(list.current, 0);
-    assert_eq!(list.list[1], ("DP-1".to_string(), 2560, 1440));
+    assert_eq!(
+        list.list[1],
+        fernsicht_client::Monitor {
+            name: "DP-1".into(),
+            width: 2560,
+            height: 1440
+        }
+    );
     monitors.request(MonitorRequest::Next);
     client.join().unwrap().unwrap();
     let seen = host.finish();

@@ -29,6 +29,7 @@ fernsicht-proto.workspace = true
 log = { workspace = true, optional = true }
 naga = { workspace = true, optional = true }
 raw-window-handle = { workspace = true, optional = true }
+serde.workspace = true
 winit = { workspace = true, optional = true }
 
 [dev-dependencies]
