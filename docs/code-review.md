@@ -769,7 +769,10 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Where:** `web/viewer/src/routes/live.tsx:183-196, 326-346`.
 - **Fix:** skip unchanged positions; move the canvas through a ref; cache the rect; skip known shapes.
-- **Status:** open
+- **Status:** fixed. Position and image live in the pointer effect, not in React state: a packet
+  places the canvas through its style, only when the placement changed. The box's size is read on
+  resize (`ResizeObserver`), the picture's on the video's `resize`; a repeated shape is not put
+  together and drawn again. The placement is a pure function (`placement`) with unit tests.
 
 ### C14 · Pointer lock is not tuned for games
 

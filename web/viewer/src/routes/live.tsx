@@ -18,6 +18,7 @@ import {
   CursorAssembler,
   type CursorPosition,
   decodeCursorPacket,
+  placement,
 } from "../lib/cursor";
 import {
   type ConnectionPhase,
@@ -224,8 +225,6 @@ export function RemoteScreen({
   live.current = { touchMode, zoom, onZoom };
   const video = useRef<HTMLVideoElement>(null);
   const pointer = useRef<HTMLCanvasElement>(null);
-  const [cursor, setCursor] = useState<CursorPosition | null>(null);
-  const [image, setImage] = useState<CursorImage | null>(null);
   const [needsClick, setNeedsClick] = useState(false);
 
   // Picture and sound. Playing with sound needs a click on the page; the
@@ -252,30 +251,75 @@ export function RemoteScreen({
     return () => v.cancelVideoFrameCallback(handle);
   }, [frameTimes]);
 
-  // The host's pointer.
+  // The host's pointer, drawn and placed outside React: its packets come
+  // with every frame, and a render per packet would redo the whole screen.
   useEffect(() => {
+    const c = pointer.current;
+    const el = box.current;
+    const v = video.current;
+    if (!c || !el || !v) return;
     const shapes = new CursorAssembler();
+    let image: CursorImage | null = null;
+    let at: CursorPosition | null = null;
+    // The box's size is read when it changes, not per packet.
+    let size = { width: el.clientWidth, height: el.clientHeight };
+    let shown = "";
+    const place = () => {
+      const p = placement(at, image, size, { width: v.videoWidth, height: v.videoHeight });
+      const key = p ? `${p.left} ${p.top} ${p.width} ${p.height}` : "";
+      if (key === shown) return;
+      shown = key;
+      if (!p) {
+        c.style.display = "none";
+        return;
+      }
+      Object.assign(c.style, {
+        display: "",
+        left: `${p.left}px`,
+        top: `${p.top}px`,
+        width: `${p.width}px`,
+        height: `${p.height}px`,
+      });
+    };
+    const draw = (img: CursorImage) => {
+      image = img;
+      c.width = img.width;
+      c.height = img.height;
+      c.getContext("2d")?.putImageData(new ImageData(img.rgba, img.width, img.height), 0, 0);
+    };
     const onMessage = (e: MessageEvent) => {
       if (!(e.data instanceof ArrayBuffer)) return;
       const p = decodeCursorPacket(e.data);
-      if (p?.kind === "position") setCursor(p);
-      if (p?.kind === "shape") {
+      if (p?.kind === "position") {
+        at = p;
+        place();
+      } else if (p?.kind === "shape" && p.serial !== image?.serial) {
+        // The host repeats shapes so a lost piece heals; a known one is
+        // drawn already.
         const img = shapes.add(p);
-        if (img) setImage(img);
+        if (img) {
+          draw(img);
+          place();
+        }
       }
     };
+    const resized = () => {
+      size = { width: el.clientWidth, height: el.clientHeight };
+      place();
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resized);
+    observer?.observe(el);
+    window.addEventListener("resize", resized);
+    // The picture's size changes with the monitor shown.
+    v.addEventListener("resize", place);
     session.channel.addEventListener("message", onMessage);
-    return () => session.channel.removeEventListener("message", onMessage);
+    return () => {
+      session.channel.removeEventListener("message", onMessage);
+      v.removeEventListener("resize", place);
+      window.removeEventListener("resize", resized);
+      observer?.disconnect();
+    };
   }, [session]);
-
-  useEffect(() => {
-    const c = pointer.current;
-    const ctx = c?.getContext("2d");
-    if (!c || !ctx || !image) return;
-    c.width = image.width;
-    c.height = image.height;
-    ctx.putImageData(new ImageData(image.rgba, image.width, image.height), 0, 0);
-  }, [image]);
 
   // Gamepads: polled once per frame (the API has no events for changes).
   // Some browsers keep them from plain-http pages; then there are none.
@@ -409,28 +453,6 @@ export function RemoteScreen({
     };
   }, [session, mode]);
 
-  // The pointer image where the host has it, scaled like the picture.
-  const placed = (() => {
-    const el = box.current;
-    const v = video.current;
-    if (!cursor?.visible || !image || cursor.serial !== image.serial || !el || !v) return null;
-    if (!cursor.screenWidth || !cursor.screenHeight) return null;
-    const r = el.getBoundingClientRect();
-    const pic = contentRect(
-      { left: 0, top: 0, width: r.width, height: r.height },
-      v.videoWidth,
-      v.videoHeight,
-    );
-    const sx = pic.width / cursor.screenWidth;
-    const sy = pic.height / cursor.screenHeight;
-    return {
-      left: pic.left + cursor.x * sx,
-      top: pic.top + cursor.y * sy,
-      width: image.width * sx,
-      height: image.height * sy,
-    };
-  })();
-
   return (
     <div
       ref={box}
@@ -455,15 +477,12 @@ export function RemoteScreen({
           className="h-full w-full object-contain"
           aria-label={`Bildschirm von ${session.hostName}`}
         />
+        {/* Placed by the pointer effect above, not by React. */}
         <canvas
           ref={pointer}
           aria-hidden
           className="pointer-events-none absolute"
-          style={
-            placed
-              ? { left: placed.left, top: placed.top, width: placed.width, height: placed.height }
-              : { display: "none" }
-          }
+          style={{ display: "none" }}
         />
       </div>
       {needsClick && (

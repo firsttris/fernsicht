@@ -11,6 +11,8 @@
  * the image from `offset` on, B G R A per pixel, premultiplied alpha.
  */
 
+import { type Rect, contentRect } from "./input";
+
 const MAGIC = 0xf5;
 const VERSION = 1;
 const KIND_CURSOR = 8;
@@ -82,6 +84,31 @@ export interface CursorImage {
   height: number;
   /** Straight-alpha RGBA, ready for `ImageData`. */
   rgba: Uint8ClampedArray<ArrayBuffer>;
+}
+
+/**
+ * Where the pointer image goes in a `box` of that size showing a video of
+ * `video` pixels: the host's position scaled like the picture. `null`
+ * while it is hidden, its image is not the one it shows, or a size is not
+ * known yet.
+ */
+export function placement(
+  at: CursorPosition | null,
+  image: CursorImage | null,
+  box: { width: number; height: number },
+  video: { width: number; height: number },
+): Rect | null {
+  if (!at?.visible || !image || at.serial !== image.serial) return null;
+  if (!at.screenWidth || !at.screenHeight) return null;
+  const pic = contentRect({ left: 0, top: 0, ...box }, video.width, video.height);
+  const sx = pic.width / at.screenWidth;
+  const sy = pic.height / at.screenHeight;
+  return {
+    left: pic.left + at.x * sx,
+    top: pic.top + at.y * sy,
+    width: image.width * sx,
+    height: image.height * sy,
+  };
 }
 
 /** Puts a shape's pieces together; a piece of a newer shape starts over. */

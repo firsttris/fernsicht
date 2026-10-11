@@ -5,6 +5,7 @@ import {
   CursorAssembler,
   bgraPremultipliedToRgba,
   decodeCursorPacket,
+  placement,
 } from "./cursor";
 
 function position(visible: boolean, x: number, y: number): ArrayBuffer {
@@ -37,6 +38,40 @@ function shape(serial: number, w: number, h: number, offset: number, fill: numbe
   new Uint8Array(b, 20).fill(fill);
   return b;
 }
+
+describe("where the pointer goes", () => {
+  const image = { serial: 3, width: 32, height: 32, rgba: new Uint8ClampedArray(32 * 32 * 4) };
+  const at = {
+    kind: "position" as const,
+    visible: true,
+    serial: 3,
+    x: 960,
+    y: 540,
+    screenWidth: 1920,
+    screenHeight: 1080,
+  };
+
+  it("scales the host's position like the picture", () => {
+    // A 16:9 picture in a box of 1000×700: letterboxed, 1000×562.5 tall.
+    const p = placement(at, image, { width: 1000, height: 700 }, { width: 1920, height: 1080 });
+    expect(p).toEqual({
+      left: 500,
+      top: (700 - 562.5) / 2 + 281.25,
+      width: 32 * (1000 / 1920),
+      height: 32 * (562.5 / 1080),
+    });
+  });
+
+  it("shows nothing while hidden, with another image, or before sizes are known", () => {
+    const box = { width: 1000, height: 700 };
+    const video = { width: 1920, height: 1080 };
+    expect(placement({ ...at, visible: false }, image, box, video)).toBeNull();
+    expect(placement({ ...at, serial: 4 }, image, box, video)).toBeNull();
+    expect(placement(at, null, box, video)).toBeNull();
+    expect(placement(null, image, box, video)).toBeNull();
+    expect(placement({ ...at, screenWidth: 0 }, image, box, video)).toBeNull();
+  });
+});
 
 describe("pointer packets", () => {
   it("reads positions, also off the screen's edge", () => {
