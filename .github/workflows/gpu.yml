@@ -46,8 +46,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: GPU capabilities and hardware H.264 smoke test
         run: dev/gpu-check.sh --expect ${{ matrix.gpu }} --summary "$GITHUB_STEP_SUMMARY"
+      # Everything but the GPU's own tests, in parallel. fernsicht-gpu runs
+      # below, one test at a time: Vulkan tests side by side on the NVIDIA
+      # driver once spun forever here (chroma_is_sited_left, 2026-10-11).
       - name: Tests on this machine
-        run: scripts/annotate-failures.sh cargo test --workspace --exclude fernsicht-e2e
+        timeout-minutes: 15
+        run: >
+          scripts/annotate-failures.sh cargo test --workspace
+          --exclude fernsicht-e2e --exclude fernsicht-gpu
       # AMD: decoded pictures shown without a copy (DMA-BUF import);
       # NVIDIA: CPU upload and screen input (Vulkan → CUDA) on the
       # proprietary driver.
