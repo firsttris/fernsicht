@@ -210,8 +210,11 @@ export async function connect(pin: string, hostName: string): Promise<LiveSessio
     // Positions carry a number from one counter on both channels: the host
     // drops one older than the last it applied (unordered delivery).
     let seq = 0;
-    const stamp = (msg: FromBrowser): FromBrowser =>
-      msg.t === "m" ? { ...msg, s: (seq = (seq + 1) >>> 0) } : msg;
+    const stamp = (msg: FromBrowser): FromBrowser => {
+      if (msg.t !== "m") return msg;
+      seq = (seq + 1) >>> 0;
+      return { ...msg, s: seq };
+    };
     const send = (msg: FromBrowser) => {
       if (channel.readyState === "open") channel.send(JSON.stringify(stamp(msg)));
     };

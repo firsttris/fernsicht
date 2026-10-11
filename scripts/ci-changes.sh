@@ -22,7 +22,7 @@ files=$(git diff --name-only "$base" HEAD)
 # app and the generated TypeScript types sit between them.
 shared='^(\.github/|scripts/)'
 rust='^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/|apps/(client|host-agent|desktop)/|tests/|fuzz/|packaging/|dev/)'
-web='^(web/|apps/client-ui/|apps/desktop/|package\.json$|pnpm-(lock|workspace)\.yaml$|\.prettier)'
+web='^(web/|apps/client-ui/|apps/desktop/|package\.json$|pnpm-(lock|workspace)\.yaml$|biome\.json$)'
 touches() { grep -qE "$1|$shared" <<<"$files"; }
 echo "rust=$(touches "$rust" && echo true || echo false)"
 echo "web=$(touches "$web" && echo true || echo false)"

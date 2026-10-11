@@ -24,8 +24,8 @@ else
 fi
 PROPTEST_CASES=1024 cargo test --workspace --test properties
 
-step "Web: format, types, tests, build"
-pnpm format:check
+step "Web: format and lint (Biome), types, tests, build"
+pnpm check
 pnpm -r typecheck
 pnpm test
 pnpm -r build

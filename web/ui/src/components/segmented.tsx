@@ -40,6 +40,7 @@ export function Segmented<T extends string>({
       className={cn("flex gap-0.5 rounded-md border border-border bg-muted p-[3px]", className)}
     >
       {options.map((o) => (
+        // biome-ignore lint/a11y/useSemanticElements: a segmented control: buttons in a radiogroup with roving focus, drawn as one bar
         <button
           key={o.value}
           type="button"

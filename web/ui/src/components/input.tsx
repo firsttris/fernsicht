@@ -15,5 +15,6 @@ export function Input({ className, ...props }: React.ComponentProps<"input">) {
 }
 
 export function Label({ className, ...props }: React.ComponentProps<"label">) {
+  // biome-ignore lint/a11y/noLabelWithoutControl: callers pass htmlFor
   return <label className={cn("text-[13px] font-medium", className)} {...props} />;
 }

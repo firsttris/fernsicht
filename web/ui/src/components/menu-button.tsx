@@ -108,8 +108,9 @@ export function MenuButton({
             <button
               key={item.label}
               type="button"
-              role={radio ? "menuitemradio" : "menuitem"}
-              aria-checked={radio ? Boolean(item.checked) : undefined}
+              {...(radio
+                ? { role: "menuitemradio", "aria-checked": Boolean(item.checked) }
+                : { role: "menuitem" })}
               className="cursor-pointer rounded-md border-0 bg-transparent px-3 py-1.5 text-left text-sm whitespace-nowrap text-foreground hover:bg-secondary aria-checked:font-semibold"
               tabIndex={-1}
               onClick={() => {

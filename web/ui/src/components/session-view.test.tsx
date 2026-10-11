@@ -205,7 +205,7 @@ describe("SessionView", () => {
   });
 
   it("shows no overlay until stats arrive, and renders a custom video surface", () => {
-    setup({ stats: undefined, children: <video aria-label="Stream" /> });
+    setup({ stats: undefined, children: <canvas aria-label="Stream" /> });
     expect(screen.queryByRole("region", { name: "Latenz" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Stream")).toBeInTheDocument();
     expect(screen.queryByText(/Videostream von/)).not.toBeInTheDocument();

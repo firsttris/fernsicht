@@ -73,6 +73,12 @@ jobs:
             libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev
       - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo bench --workspace --no-run
+      # The oldest Rust the crates promise to build with (rust-version).
+      - name: Minimum supported Rust
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          cargo +"$msrv" check --workspace --all-targets
 
   # The whole workspace's tests, end to end included, run once: measured
   # for coverage, with the property tests at CI's strength and the device
@@ -287,12 +293,18 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets
       - run: cargo test
+      # Its own rust-version: Tauri needs a newer Rust than the other crates.
+      - name: Minimum supported Rust
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          cargo +"$msrv" check --all-targets
 
   # ── Web ───────────────────────────────────────────────────────────────
   # Builds the UIs once; the desktop app and the browser tests take them
   # from here.
   web-lint:
-    name: Web · format, typecheck, build
+    name: Web · format, lint, typecheck, build
     needs: changes
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
@@ -304,7 +316,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check
+      - run: pnpm check # Biome: format and lint
       - run: pnpm -r typecheck
       - run: pnpm -r build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -95,7 +95,7 @@ leaves out the end-to-end and browser tests):
 ```sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-pnpm install && pnpm format:check && pnpm -r typecheck && pnpm test
+pnpm install && pnpm check && pnpm -r typecheck && pnpm test
 pnpm test:coverage && pnpm test:e2e
 pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
 cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test

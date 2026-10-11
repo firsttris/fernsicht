@@ -17,10 +17,10 @@ describe("Button", () => {
   it("renders its child element with asChild", () => {
     render(
       <Button asChild size="sm">
-        <a href="/x">Link</a>
+        <a href="/x">Zu den Geräten</a>
       </Button>,
     );
-    const link = screen.getByRole("link", { name: "Link" });
+    const link = screen.getByRole("link", { name: "Zu den Geräten" });
     expect(link).toHaveAttribute("href", "/x");
     expect(link).toHaveClass("h-8");
   });

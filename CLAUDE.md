@@ -65,7 +65,8 @@ Functional, not object-oriented:
   `AudioSink`, and their test doubles); no trait hierarchies, no traits for a single type. A
   struct that owns a hardware handle (RAII) may have methods; keep the logic in free functions it
   calls.
-- **TypeScript/React:** function components and hooks; no classes. State machines as a pure
+- **TypeScript/React:** TypeScript 7; Biome formats and lints (`pnpm check`, `biome.json`; no ESLint,
+  no Prettier), with React's hook rules. Function components and hooks; no classes. State machines as a pure
   `step(state, event) → { state, effects }` or a closure from a `create…()` function; errors as
   values (discriminated unions), not subclasses. Lookup tables instead of long `switch`es.
 - **Size:** a file does one thing; split by domain once it grows past ~400 lines, a function past
@@ -89,7 +90,7 @@ Green before every push: `scripts/check.sh` runs all of the following that needs
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 PROPTEST_CASES=1024 cargo test --workspace --test properties   # CI's strength; rare cases fail there
-pnpm format:check && pnpm -r typecheck && pnpm test
+pnpm check && pnpm -r typecheck && pnpm test
 pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
 cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 shellcheck packaging/*.sh scripts/*.sh dev/*.sh dev/runner/*.sh

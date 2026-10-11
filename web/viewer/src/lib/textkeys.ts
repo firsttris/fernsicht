@@ -15,11 +15,12 @@ const SHIFT = 42;
 const ALTGR = 100;
 export const ENTER = 28;
 export const BACKSPACE = 14;
+// biome-ignore format: laid out like the keyboard's rows
 const LETTERS: Record<string, number> = {
   q: 16, w: 17, e: 18, r: 19, t: 20, y: 21, u: 22, i: 23, o: 24, p: 25,
   a: 30, s: 31, d: 32, f: 33, g: 34, h: 35, j: 36, k: 37, l: 38,
   z: 44, x: 45, c: 46, v: 47, b: 48, n: 49, m: 50,
-}; // prettier-ignore
+};
 
 interface Stroke {
   code: number;
@@ -32,6 +33,7 @@ const shift = (code: number): Stroke => ({ code, shift: true });
 const altgr = (code: number): Stroke => ({ code, altgr: true });
 
 /** Characters beyond letters and digits, per layout. */
+// biome-ignore format: laid out like the keyboard's rows
 const SYMBOLS: Record<HostLayout, Record<string, Stroke>> = {
   us: {
     "!": shift(2), "@": shift(3), "#": shift(4), $: shift(5), "%": shift(6),
@@ -56,7 +58,7 @@ const SYMBOLS: Record<HostLayout, Record<string, Stroke>> = {
     "-": plain(53), _: shift(53),
     "<": plain(86), ">": shift(86), "|": altgr(86),
   },
-}; // prettier-ignore
+};
 
 function stroke(ch: string, layout: HostLayout): Stroke | undefined {
   if (ch === " ") return plain(57);
