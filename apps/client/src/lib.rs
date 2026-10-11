@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use fernsicht_audio::jitter::Encoded;
 use fernsicht_codec::synthetic::SyntheticDecoder;
 use fernsicht_codec::{CodecError, DecodedFrame, Decoder};
 use fernsicht_core::latency::{FrameTimings, LatencyStats, Stage, Summary};
@@ -366,13 +367,12 @@ impl std::fmt::Debug for InputLink {
 }
 
 impl InputLink {
-    fn send(&self, events: &[(u32, InputEvent)]) {
-        let mut out = [0u8; MAX_DATAGRAM];
-        let n = InputHeader::encode(self.session_id, events, &mut out);
+    /// Sends an encoded input packet (sealed in a secure session).
+    fn send(&self, packet: &[u8]) {
         send_packet(
             &self.socket,
             self.crypto.as_deref().map(|t| (t, self.session_id)),
-            &out[..n],
+            packet,
         );
     }
 }
@@ -382,13 +382,17 @@ impl InputHandle {
     /// network thread wakes only every few milliseconds.
     pub fn push(&self, event: InputEvent) {
         let link = self.link.lock().ok().and_then(|l| l.clone());
-        let due = self.queue.lock().ok().and_then(|mut q| {
+        let mut out = [0u8; MAX_DATAGRAM];
+        let n = self.queue.lock().ok().and_then(|mut q| {
             q.push(event);
             // Only with a session: `due` marks the events as sent.
-            link.as_ref().and_then(|_| q.due(Instant::now()))
+            let id = link.as_ref()?.session_id;
+            q.due(Instant::now())
+                .map(|events| InputHeader::encode(id, events, &mut out))
         });
-        if let (Some(link), Some(events)) = (link, due) {
-            link.send(&events);
+        // Sent after the queue is let go.
+        if let (Some(link), Some(n)) = (link, n) {
+            link.send(&out[..n]);
         }
     }
 
@@ -1005,13 +1009,11 @@ fn network_loop(
             Duration::from_millis(500)
         };
         if let (Some((session_id, _)), Some(input)) = (session, &cfg.input) {
-            let due = input
-                .queue
-                .lock()
-                .ok()
-                .and_then(|mut q| q.due(Instant::now()));
-            if let Some(events) = due {
-                let n = InputHeader::encode(session_id, &events, &mut out);
+            let n = input.queue.lock().ok().and_then(|mut q| {
+                q.due(Instant::now())
+                    .map(|events| InputHeader::encode(session_id, events, &mut out))
+            });
+            if let Some(n) = n {
                 send_packet(socket, seal_with, &out[..n]);
             }
         }
@@ -1213,12 +1215,15 @@ fn network_loop(
                 Packet::Audio(h, frame, previous) => {
                     if session.is_some_and(|(id, _)| id == h.session_id)
                         && let Some(tx) = pipe.audio_tx
+                        // The parser bounds both; no allocation per frame.
+                        && let (Some(frame), Some(previous)) =
+                            (Encoded::new(frame), Encoded::new(previous))
                     {
                         // Full only if playback stalls; then dropping is right.
                         let _ = tx.try_send(AudioPacket {
                             seq: h.seq,
-                            frame: frame.to_vec(),
-                            previous: previous.to_vec(),
+                            frame,
+                            previous,
                             captured_local: h.capture_us as i64 - clock.offset_us(),
                         });
                     }
@@ -1301,13 +1306,11 @@ fn network_loop(
         // Keys and buttons released on the way out (closing releases what
         // the window held) leave before the goodbye.
         if let Some(input) = &cfg.input
-            && let Some(events) = input
-                .queue
-                .lock()
-                .ok()
-                .and_then(|mut q| q.due(Instant::now()))
+            && let Some(n) = input.queue.lock().ok().and_then(|mut q| {
+                q.due(Instant::now())
+                    .map(|events| InputHeader::encode(session_id, events, &mut out))
+            })
         {
-            let n = InputHeader::encode(session_id, &events, &mut out);
             send_packet(socket, seal_with, &out[..n]);
         }
         // More than once: a lost goodbye would keep the session, and
@@ -1602,8 +1605,9 @@ fn present_loop(
 /// One audio packet for the playback thread.
 struct AudioPacket {
     seq: u32,
-    frame: Vec<u8>,
-    previous: Vec<u8>,
+    frame: Encoded,
+    /// Empty for the first packet.
+    previous: Encoded,
     /// When the host played it, on our clock (µs).
     captured_local: i64,
 }
@@ -1660,20 +1664,16 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
     let mut pcm: fernsicht_audio::Frame =
         [0; fernsicht_audio::FRAME_SAMPLES * fernsicht_audio::CHANNELS];
     let mut stretched = Vec::with_capacity(pcm.len() + fernsicht_audio::CHANNELS);
-    let mut captured: std::collections::BTreeMap<u32, i64> = Default::default();
+    // The newest frame's seq and when the host played it, on our clock.
+    let mut captured: Option<(u32, i64)> = None;
     let mut started = false;
     let mut delays = (0u64, 0u64);
     take(first, &mut jitter, &mut captured);
-    fn take(
-        p: AudioPacket,
-        jitter: &mut Jitter,
-        captured: &mut std::collections::BTreeMap<u32, i64>,
-    ) {
-        jitter.push(p.seq, &p.frame);
-        jitter.push(p.seq.wrapping_sub(1), &p.previous);
-        captured.insert(p.seq, p.captured_local);
-        while captured.len() > 64 {
-            captured.pop_first();
+    fn take(p: AudioPacket, jitter: &mut Jitter, captured: &mut Option<(u32, i64)>) {
+        jitter.push(p.seq, p.frame.as_slice());
+        jitter.push(p.seq.wrapping_sub(1), p.previous.as_slice());
+        if captured.is_none_or(|(seq, _)| (p.seq.wrapping_sub(seq) as i32) > 0) {
+            *captured = Some((p.seq, p.captured_local));
         }
     }
     loop {
@@ -1699,7 +1699,7 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
             }
         }
         let result = match jitter.pop() {
-            Next::Frame(data) => decoder.decode(Some(&data), &mut pcm),
+            Next::Frame(data) => decoder.decode(Some(data), &mut pcm),
             Next::Lost => decoder.decode(None, &mut pcm),
             Next::Empty if started => decoder.decode(None, &mut pcm),
             Next::Empty => continue,
@@ -1719,7 +1719,7 @@ fn audio_loop(rx: &Receiver<AudioPacket>, out: &AudioOutput, muted: &AtomicBool)
             break;
         }
         // Delay of the newest frame: from the host's output to ours.
-        if let Some((_, &t)) = captured.last_key_value() {
+        if let Some((_, t)) = captured {
             let queued = jitter.depth() as u64 * frame_us;
             let d = ((now_us() as i64 - t).max(0) as u64)
                 .saturating_add(queued)
@@ -1753,8 +1753,8 @@ mod tests {
         assert!(input.queue.lock().unwrap().due(Instant::now()).is_none());
         focused.store(true, Ordering::Release);
         send(a(true));
-        let sent = input.queue.lock().unwrap().due(Instant::now()).unwrap();
-        assert_eq!(sent, vec![(1, a(true))]);
+        let mut q = input.queue.lock().unwrap();
+        assert_eq!(q.due(Instant::now()).unwrap(), [(1, a(true))]);
     }
 
     #[test]

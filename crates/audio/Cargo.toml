@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 fernsicht-core.workspace = true
+fernsicht-proto.workspace = true
 libc.workspace = true
 libloading.workspace = true
 

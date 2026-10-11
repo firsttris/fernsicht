@@ -828,7 +828,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 - **Problem:** audio copies four times per 5 ms packet (~800 allocations/s); `architecture.md` and
   `performance.md` say nothing allocates.
 - **Fix:** fixed buffers moved into the jitter buffer; arrays elsewhere.
-- **Status:** open
+- **Status:** fixed. Sound packets carry their frames in fixed arrays (`Encoded`, at most
+  `MAX_AUDIO_FRAME`); the jitter buffer is a ring of 32 fixed slots and lends the frame it plays;
+  the newest capture time is one value, not a map. `InputQueue::due` lends a reused buffer, the
+  pad state is bit sets and an array and hands its events to a callback, uinput translates into a
+  fixed list and writes from the stack. The video path was without allocations already.
 
 ### C19 · Packet size on VPN tunnels
 

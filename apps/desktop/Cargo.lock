@@ -1285,6 +1285,7 @@ name = "fernsicht-audio"
 version = "0.1.4"
 dependencies = [
  "fernsicht-core",
+ "fernsicht-proto",
  "libc",
  "libloading 0.8.9",
 ]

@@ -220,15 +220,18 @@ impl Device {
         Ok(Self { file })
     }
 
-    /// Writes events followed by a SYN_REPORT, in one write.
+    /// Writes events followed by a SYN_REPORT, in one write (at most
+    /// [`Events::MAX`] at a time, from the stack).
     fn emit(&mut self, events: &[(u16, u16, i32)]) -> Result<(), String> {
-        let mut buf = Vec::with_capacity((events.len() + 1) * 24);
-        for &(kind, code, value) in events {
-            buf.extend_from_slice(&input_event(kind, code, value));
+        let mut buf = [0u8; (Events::MAX + 1) * 24];
+        let mut n = 0;
+        for &(kind, code, value) in events.iter().take(Events::MAX) {
+            buf[n..n + 24].copy_from_slice(&input_event(kind, code, value));
+            n += 24;
         }
-        buf.extend_from_slice(&input_event(EV_SYN, SYN_REPORT, 0));
+        buf[n..n + 24].copy_from_slice(&input_event(EV_SYN, SYN_REPORT, 0));
         self.file
-            .write_all(&buf)
+            .write_all(&buf[..n + 24])
             .map_err(|e| format!("uinput write: {e}"))
     }
 }
@@ -441,24 +444,55 @@ fn button_pointer(pressed: bool, down_on: Option<Pointer>, last_moved: Pointer) 
 }
 
 /// The evdev events for one input event, and the device they go to.
-fn translate(event: &InputEvent, area: &AbsArea) -> (Target, Vec<(u16, u16, i32)>) {
+/// The kernel events for one input event, at most [`Self::MAX`]: no
+/// allocation per event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Events {
+    len: usize,
+    items: [(u16, u16, i32); Events::MAX],
+}
+
+impl Events {
+    /// Scrolling both ways, each with its notch.
+    const MAX: usize = 4;
+
+    fn of(items: &[(u16, u16, i32)]) -> Self {
+        let mut e = Self::default();
+        for &item in items {
+            e.push(item);
+        }
+        e
+    }
+
+    fn push(&mut self, item: (u16, u16, i32)) {
+        self.items[self.len] = item;
+        self.len += 1;
+    }
+
+    fn as_slice(&self) -> &[(u16, u16, i32)] {
+        &self.items[..self.len]
+    }
+}
+
+fn translate(event: &InputEvent, area: &AbsArea) -> (Target, Events) {
     match *event {
         InputEvent::MouseAbs { x, y } => {
             let (x, y) = area.map(x, y);
             (
                 Target::Absolute,
-                vec![(EV_ABS, ABS_X, x), (EV_ABS, ABS_Y, y)],
+                Events::of(&[(EV_ABS, ABS_X, x), (EV_ABS, ABS_Y, y)]),
             )
         }
         InputEvent::MouseRel { dx, dy } => (
             Target::Relative,
-            vec![(EV_REL, REL_X, dx), (EV_REL, REL_Y, dy)],
+            Events::of(&[(EV_REL, REL_X, dx), (EV_REL, REL_Y, dy)]),
         ),
-        InputEvent::Button { code, pressed } => {
-            (Target::Pointer, vec![(EV_KEY, code, i32::from(pressed))])
-        }
+        InputEvent::Button { code, pressed } => (
+            Target::Pointer,
+            Events::of(&[(EV_KEY, code, i32::from(pressed))]),
+        ),
         InputEvent::Scroll { dx, dy } => {
-            let mut v = Vec::new();
+            let mut v = Events::default();
             // Hi-res units plus the classic notches for older clients.
             if dy != 0 {
                 v.push((EV_REL, REL_WHEEL_HI_RES, dy));
@@ -474,16 +508,18 @@ fn translate(event: &InputEvent, area: &AbsArea) -> (Target, Vec<(u16, u16, i32)
             }
             (Target::Pointer, v)
         }
-        InputEvent::Key { code, pressed } => {
-            (Target::Keyboard, vec![(EV_KEY, code, i32::from(pressed))])
-        }
+        InputEvent::Key { code, pressed } => (
+            Target::Keyboard,
+            Events::of(&[(EV_KEY, code, i32::from(pressed))]),
+        ),
         InputEvent::PadButton { pad, code, pressed } => (
             Target::Pad(pad),
-            vec![(EV_KEY, xpad_button(code), i32::from(pressed))],
+            Events::of(&[(EV_KEY, xpad_button(code), i32::from(pressed))]),
         ),
-        InputEvent::PadAxis { pad, axis, value } => {
-            (Target::Pad(pad), vec![(EV_ABS, axis as u16, value)])
-        }
+        InputEvent::PadAxis { pad, axis, value } => (
+            Target::Pad(pad),
+            Events::of(&[(EV_ABS, axis as u16, value)]),
+        ),
     }
 }
 
@@ -534,7 +570,7 @@ impl InputSink for Uinput {
             _ => {}
         }
         let (target, events) = translate(event, &self.area);
-        if events.is_empty() {
+        if events.len == 0 {
             return Ok(());
         }
         let device = match target {
@@ -553,7 +589,7 @@ impl InputSink for Uinput {
             },
             Target::Pad(n) => self.pad(n)?,
         };
-        device.emit(&events)
+        device.emit(events.as_slice())
     }
 
     fn release_all(&mut self) {
@@ -621,7 +657,8 @@ mod tests {
     }
 
     fn translate_whole(e: &InputEvent) -> (Target, Vec<(u16, u16, i32)>) {
-        translate(e, &AbsArea::default())
+        let (target, events) = translate(e, &AbsArea::default());
+        (target, events.as_slice().to_vec())
     }
 
     #[test]

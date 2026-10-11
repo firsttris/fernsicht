@@ -12,7 +12,7 @@
 //! directory is looked at again every two seconds, and a pad that is
 //! unplugged leaves its buttons released and sticks centered.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -131,18 +131,40 @@ pub fn scale(m: &AxisMap, value: i32) -> i32 {
 }
 
 /// The state of one pad, to turn device events into protocol events and
-/// to let go of everything when it is unplugged.
+/// to let go of everything when it is unplugged. Fixed fields: events come
+/// hundreds of times a second, and none allocates.
 #[derive(Debug, Default)]
 pub struct PadState {
-    held: BTreeSet<u16>,
-    /// Protocol axes away from rest.
-    axes: BTreeMap<PadAxis, i32>,
-    /// D-pad buttons held, for pads that report it as buttons.
-    dpad: BTreeSet<u16>,
+    /// Buttons held, bit `code - BTN_PAD_FIRST`.
+    held: u16,
+    /// Protocol axes away from rest, in the order of [`AXES`].
+    axes: [i32; AXES.len()],
+    /// D-pad buttons held (pads that report it as buttons), bit
+    /// `code - BTN_DPAD_UP`.
+    dpad: u8,
+}
+
+/// The protocol's axes, in the order they are let go of.
+const AXES: [PadAxis; 8] = [
+    PadAxis::LeftX,
+    PadAxis::LeftY,
+    PadAxis::RightX,
+    PadAxis::RightY,
+    PadAxis::LeftTrigger,
+    PadAxis::RightTrigger,
+    PadAxis::DpadX,
+    PadAxis::DpadY,
+];
+
+fn axis_slot(axis: PadAxis) -> usize {
+    AXES.iter()
+        .position(|&a| a == axis)
+        .expect("every axis is listed")
 }
 
 impl PadState {
-    /// The protocol events for one device event (`kind`, `code`, `value`).
+    /// The protocol events for one device event (`kind`, `code`, `value`),
+    /// handed to `emit`.
     pub fn translate(
         &mut self,
         map: &Mapping,
@@ -150,22 +172,18 @@ impl PadState {
         kind: u16,
         code: u16,
         value: i32,
-    ) -> Vec<InputEvent> {
-        let mut out = Vec::new();
+        mut emit: impl FnMut(InputEvent),
+    ) {
         let mut axis = |state: &mut Self, axis: PadAxis, v: i32| {
-            if state.axes.get(&axis).copied().unwrap_or(0) == v {
-                return;
+            let slot = &mut state.axes[axis_slot(axis)];
+            if *slot != v {
+                *slot = v;
+                emit(InputEvent::PadAxis {
+                    pad,
+                    axis,
+                    value: v,
+                });
             }
-            if v == 0 {
-                state.axes.remove(&axis);
-            } else {
-                state.axes.insert(axis, v);
-            }
-            out.push(InputEvent::PadAxis {
-                pad,
-                axis,
-                value: v,
-            });
         };
         match (kind, code) {
             (EV_ABS, _) => {
@@ -184,12 +202,13 @@ impl PadState {
                 }
             }
             (EV_KEY, BTN_DPAD_UP..=BTN_DPAD_RIGHT) => {
+                let bit = 1u8 << (code - BTN_DPAD_UP);
                 if value != 0 {
-                    self.dpad.insert(code);
+                    self.dpad |= bit;
                 } else {
-                    self.dpad.remove(&code);
+                    self.dpad &= !bit;
                 }
-                let held = |c| i32::from(self.dpad.contains(&c));
+                let held = |c: u16| i32::from(self.dpad & (1 << (c - BTN_DPAD_UP)) != 0);
                 let x = held(BTN_DPAD_RIGHT) - held(BTN_DPAD_LEFT);
                 let y = held(BTN_DPAD_DOWN) - held(BTN_DPAD_UP);
                 axis(self, PadAxis::DpadX, x);
@@ -205,42 +224,45 @@ impl PadState {
                 let pressed = match value {
                     0 => false,
                     1 => true,
-                    _ => return out,
+                    _ => return,
                 };
-                if pressed == self.held.contains(&code) {
-                    return out;
+                let bit = 1u16 << (code - BTN_PAD_FIRST);
+                if pressed == (self.held & bit != 0) {
+                    return;
                 }
                 if pressed {
-                    self.held.insert(code);
+                    self.held |= bit;
                 } else {
-                    self.held.remove(&code);
+                    self.held &= !bit;
                 }
-                out.push(InputEvent::PadButton { pad, code, pressed });
+                emit(InputEvent::PadButton { pad, code, pressed });
             }
             _ => {}
         }
-        out
     }
 
     /// Everything released and centered (the pad went away).
     pub fn release(&mut self, pad: u8) -> Vec<InputEvent> {
-        let buttons =
-            std::mem::take(&mut self.held)
-                .into_iter()
-                .map(|code| InputEvent::PadButton {
-                    pad,
-                    code,
-                    pressed: false,
-                });
-        let axes = std::mem::take(&mut self.axes)
-            .into_keys()
-            .map(|axis| InputEvent::PadAxis {
+        let held = std::mem::take(&mut self.held);
+        let axes = std::mem::take(&mut self.axes);
+        self.dpad = 0;
+        let buttons = (BTN_PAD_FIRST..=BTN_PAD_LAST)
+            .filter(|c| held & (1 << (c - BTN_PAD_FIRST)) != 0)
+            .map(|code| InputEvent::PadButton {
+                pad,
+                code,
+                pressed: false,
+            });
+        let moved = AXES
+            .iter()
+            .zip(axes)
+            .filter(|(_, v)| *v != 0)
+            .map(|(&axis, _)| InputEvent::PadAxis {
                 pad,
                 axis,
                 value: 0,
             });
-        self.dpad.clear();
-        buttons.chain(axes).collect()
+        buttons.chain(moved).collect()
     }
 }
 
@@ -382,9 +404,8 @@ impl Gamepads {
                                 let kind = u16::from_ne_bytes([e[16], e[17]]);
                                 let code = u16::from_ne_bytes([e[18], e[19]]);
                                 let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
-                                for ev in p.state.translate(&p.map, p.slot, kind, code, value) {
-                                    sink(ev);
-                                }
+                                p.state
+                                    .translate(&p.map, p.slot, kind, code, value, &mut sink);
                             }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -466,6 +487,20 @@ fn scan(dir: &Path, skip_own: bool, pads: &mut Vec<OpenPad>) {
 mod tests {
     use super::*;
 
+    /// The events one device event makes.
+    fn events(
+        s: &mut PadState,
+        m: &Mapping,
+        pad: u8,
+        kind: u16,
+        code: u16,
+        value: i32,
+    ) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        s.translate(m, pad, kind, code, value, |e| out.push(e));
+        out
+    }
+
     /// An Xbox-like pad: sticks ±32768, triggers 0..1023, hat.
     fn xbox(swap: bool) -> Mapping {
         let abs = [
@@ -517,7 +552,7 @@ mod tests {
     fn events_become_protocol_events() {
         let m = xbox(false);
         let mut s = PadState::default();
-        let t = |s: &mut PadState, kind, code, value| s.translate(&m, 1, kind, code, value);
+        let t = |s: &mut PadState, kind, code, value| events(s, &m, 1, kind, code, value);
         assert_eq!(
             t(&mut s, EV_KEY, BTN_SOUTH, 1),
             [InputEvent::PadButton {
@@ -568,7 +603,7 @@ mod tests {
         let m = xbox(true);
         let mut s = PadState::default();
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_NORTH, 1),
+            events(&mut s, &m, 0, EV_KEY, BTN_NORTH, 1),
             [InputEvent::PadButton {
                 pad: 0,
                 code: BTN_WEST,
@@ -576,7 +611,7 @@ mod tests {
             }]
         );
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_WEST, 1),
+            events(&mut s, &m, 0, EV_KEY, BTN_WEST, 1),
             [InputEvent::PadButton {
                 pad: 0,
                 code: BTN_NORTH,
@@ -659,23 +694,23 @@ mod tests {
             value,
         };
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_TR2, 1),
+            events(&mut s, &m, 0, EV_KEY, BTN_TR2, 1),
             [axis(PadAxis::RightTrigger, 255)]
         );
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_DPAD_LEFT, 1),
+            events(&mut s, &m, 0, EV_KEY, BTN_DPAD_LEFT, 1),
             [axis(PadAxis::DpadX, -1)]
         );
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_DPAD_DOWN, 1),
+            events(&mut s, &m, 0, EV_KEY, BTN_DPAD_DOWN, 1),
             [axis(PadAxis::DpadY, 1)]
         );
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_DPAD_LEFT, 0),
+            events(&mut s, &m, 0, EV_KEY, BTN_DPAD_LEFT, 0),
             [axis(PadAxis::DpadX, 0)]
         );
         assert_eq!(
-            s.translate(&m, 0, EV_KEY, BTN_TR2, 0),
+            events(&mut s, &m, 0, EV_KEY, BTN_TR2, 0),
             [axis(PadAxis::RightTrigger, 0)]
         );
     }

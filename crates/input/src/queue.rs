@@ -45,6 +45,8 @@ pub struct InputQueue {
     /// Gamepad buttons held, and axes away from rest, per pad.
     pad_held: BTreeSet<(u8, u16)>,
     pad_axes: BTreeMap<(u8, PadAxis), i32>,
+    /// What [`Self::due`] hands out, reused: no allocation per send.
+    sending: Vec<(u32, InputEvent)>,
 }
 
 impl Default for InputQueue {
@@ -57,6 +59,7 @@ impl Default for InputQueue {
             held: BTreeSet::new(),
             pad_held: BTreeSet::new(),
             pad_axes: BTreeMap::new(),
+            sending: Vec::with_capacity(MAX_INPUT_EVENTS),
         }
     }
 }
@@ -213,7 +216,7 @@ impl InputQueue {
 
     /// The events to send now, if any: when something new is queued, or
     /// when unacknowledged events wait longer than the resend time.
-    pub fn due(&mut self, now: Instant) -> Option<Vec<(u32, InputEvent)>> {
+    pub fn due(&mut self, now: Instant) -> Option<&[(u32, InputEvent)]> {
         if self.entries.is_empty() {
             return None;
         }
@@ -225,16 +228,13 @@ impl InputQueue {
             return None;
         }
         self.last_sent = Some(now);
-        Some(
-            self.entries
-                .iter_mut()
-                .take(MAX_INPUT_EVENTS)
-                .map(|e| {
-                    e.sent = true;
-                    (e.seq, e.event)
-                })
-                .collect(),
-        )
+        self.sending.clear();
+        self.sending
+            .extend(self.entries.iter_mut().take(MAX_INPUT_EVENTS).map(|e| {
+                e.sent = true;
+                (e.seq, e.event)
+            }));
+        Some(&self.sending)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -261,7 +261,7 @@ mod tests {
         let t0 = Instant::now();
         q.push(key(30, true));
         q.push(key(30, false));
-        let first = q.due(t0).unwrap();
+        let first = q.due(t0).unwrap().to_vec();
         assert_eq!(first, vec![(1, key(30, true)), (2, key(30, false))]);
         assert_eq!(q.due(t0), None, "nothing new, not yet time to resend");
         // Lost: sent again after a moment, same sequence numbers.
@@ -387,8 +387,8 @@ mod tests {
         let out: Vec<InputEvent> = q
             .due(Instant::now())
             .unwrap()
-            .into_iter()
-            .map(|(_, e)| e)
+            .iter()
+            .map(|&(_, e)| e)
             .collect();
         assert_eq!(
             out,
@@ -448,7 +448,7 @@ mod tests {
         q.push(axis(PadAxis::LeftX, 1000));
         q.push(a(false));
         q.push(axis(PadAxis::LeftX, 2000));
-        let events: Vec<InputEvent> = q.due(t0).unwrap().into_iter().map(|(_, e)| e).collect();
+        let events: Vec<InputEvent> = q.due(t0).unwrap().iter().map(|&(_, e)| e).collect();
         assert_eq!(
             events,
             [
@@ -494,8 +494,8 @@ mod tests {
         let events: Vec<InputEvent> = q
             .due(t0 + RESEND_AFTER)
             .unwrap()
-            .into_iter()
-            .map(|(_, e)| e)
+            .iter()
+            .map(|&(_, e)| e)
             .collect();
         // The unsent 300 stays: a value at rest is never folded into
         // another (a quick flick still reaches the host).
