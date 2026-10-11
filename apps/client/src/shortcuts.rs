@@ -136,8 +136,9 @@ struct WaylandLock {
 
 impl WaylandLock {
     fn new(display: *mut std::ffi::c_void, surface: *mut std::ffi::c_void) -> Result<Self, String> {
-        // SAFETY: winit's display outlives the window this lock belongs to;
-        // a foreign backend does not close it.
+        // SAFETY: winit's display lives as long as the window this lock
+        // belongs to, and the lock is dropped before the window (the field
+        // order of the client's `App`); a foreign backend does not close it.
         let backend =
             unsafe { wayland_backend::client::Backend::from_foreign_display(display.cast()) };
         let conn = Connection::from_backend(backend);

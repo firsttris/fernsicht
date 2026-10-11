@@ -476,6 +476,11 @@ mod window {
     const WHEEL_PER_PIXEL: f64 = 8.0;
 
     struct App {
+        /// Passes the desktop's shortcuts (Meta, Alt+Tab) to the host.
+        /// Declared before `window`, so it is dropped first: on Wayland it
+        /// talks to winit's display connection, which goes with the window
+        /// once the event loop is gone.
+        shortcuts: Option<crate::shortcuts::ShortcutLock>,
         cfg: Option<ClientConfig>,
         stop: Arc<AtomicBool>,
         proxy: EventLoopProxy<UserEvent>,
@@ -493,8 +498,6 @@ mod window {
         /// Fractions of pixels of relative motion, carried over.
         motion_rest: (f64, f64),
         focused: bool,
-        /// Passes the desktop's shortcuts (Meta, Alt+Tab) to the host.
-        shortcuts: Option<crate::shortcuts::ShortcutLock>,
         /// The host's monitors; Ctrl+Alt+Shift+←/→ switches.
         monitors: Arc<fernsicht_client::MonitorControl>,
     }

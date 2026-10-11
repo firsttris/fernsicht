@@ -138,7 +138,8 @@ the limits FFmpeg puts on the next latency step.
 - **Problem:** after `run_app` the event loop is gone; `App` drops `window` (the last reference to
   winit's Wayland connection) before `shortcuts`, whose drop then uses the display.
 - **Fix:** drop the shortcut lock first (`app.shortcuts = None` after `run_app`, or field order).
-- **Status:** open
+- **Status:** fixed. `shortcuts` is the first field of `App`, so it is dropped before the window on
+  every path (also the early return when `run_app` fails); the SAFETY comment says why.
 
 ### A9 · Keys and mouse buttons stay pressed on the host
 
