@@ -20,6 +20,7 @@ import { ArrowRight, Lock } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { type HostInfo, connect, connectErrorText, fetchHostInfo } from "../lib/host";
+import { type SecureHint, pageEnv, secureHint } from "../lib/secure";
 
 /** The host serving this page, if any (otherwise the demo). */
 export const hostInfoQuery = {
@@ -157,7 +158,25 @@ function HostForm({ host }: { host: HostInfo }) {
           niedrigste Latenz nutze die Desktop-App.
         </span>
       </div>
+
+      <SecureHintBox hint={secureHint(pageEnv())} />
     </form>
+  );
+}
+
+/** How to give Chrome's secure-page features to the host's HTTP page. */
+function SecureHintBox({ hint }: { hint: SecureHint | null }) {
+  if (!hint) return null;
+  return (
+    <details className="text-xs leading-normal text-muted-foreground">
+      <summary className="cursor-pointer">Systemtasten und Spielmaus freischalten</summary>
+      <p className="mb-0 mt-2">
+        Diese Seite kommt über einfaches HTTP. Dann gibt der Browser Alt+Tab und die Super-Taste im
+        Vollbild nicht an den Host weiter und liefert in Spielen keine rohen Mausbewegungen. So geht
+        es trotzdem: <code>{hint.flag}</code> in die Adresszeile kopieren, dort{" "}
+        <code>{hint.origin}</code> eintragen, „Enabled“ wählen und den Browser neu starten.
+      </p>
+    </details>
   );
 }
 

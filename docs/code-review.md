@@ -890,7 +890,7 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
-D6, D2, D1, D10 and D3 are done; D8 was measured and set aside (below).
+D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 has its first step (below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -980,6 +980,15 @@ host and lowered the bitrate, again without loss. Not seen live yet: an AQM that
 with `ecn`, CAKE) between two of our machines. Not L4S: that needs the scalable reaction (a cut in
 proportion to the share marked, every round trip), which a bitrate that changes at most once a
 second cannot give.
+
+D7, first step (2026-10-12): the browser flag. Over the LAN's plain HTTP, Chrome and Edge keep
+Keyboard Lock and `pointerrawupdate` to secure pages, but treat an origin listed in
+`unsafely-treat-insecure-origin-as-secure` as one. The connect page tells desktop Chrome and Edge
+(not Firefox, Safari or phones, where it unlocks nothing) the flag and the page's address to enter
+(`web/viewer/src/lib/secure.ts`, a pure function of secure context, origin and user agent). Open:
+real HTTPS, which needs a certificate the browser trusts for a LAN address, so a server of ours
+(or the user's own CA); with it the PIN no longer crosses the LAN in clear either (B1's active
+attacker).
 
 ## E. Clean code and consistency
 

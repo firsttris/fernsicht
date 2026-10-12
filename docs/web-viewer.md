@@ -45,7 +45,14 @@ network. The host serves the page itself.
   Super key, Alt+Tab and Esc through in full screen (Keyboard Lock), but
   only on secure pages: over the LAN the page is plain `http://`, so there
   these keys stay with the browser's computer (HTTPS for the viewer is on
-  the list of [next steps](next-steps.md)).
+  the list of [next steps](next-steps.md)). Until then Chrome and Edge can
+  treat the host's address as secure: the connect page says how under
+  “Systemtasten und Spielmaus freischalten” (unlock system keys and the
+  gaming mouse): open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+  (Edge: `edge://flags/…`), enter the page's address
+  (e.g. `http://192.168.178.87:47800`), choose “Enabled” and restart the
+  browser. That brings Keyboard Lock and `pointerrawupdate` to the viewer.
+  Firefox and Safari have neither, so the page shows them no hint.
 - **Toolbar by keyboard:** Ctrl+Alt+T moves the keyboard into the toolbar,
   Esc gives it back to the host; Ctrl+Alt+F shows and hides the toolbar.
 - **What does not work:** Keys that the browser keeps for itself (for

@@ -89,6 +89,22 @@ describe("Web-Viewer am Host", () => {
     expect(await screen.findByText(/keine Kopplung offen/)).toBeVisible();
   });
 
+  it("tells Chrome how to treat the host's HTTP page as secure", async () => {
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("X11 Chrome/141.0.0.0");
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: false });
+    try {
+      const { user } = await renderViewer("/");
+      await user.click(await screen.findByText("Systemtasten und Spielmaus freischalten"));
+      expect(
+        screen.getByText("chrome://flags/#unsafely-treat-insecure-origin-as-secure"),
+      ).toBeVisible();
+      expect(screen.getByText(window.location.origin)).toBeVisible();
+    } finally {
+      ua.mockRestore();
+      Reflect.deleteProperty(window, "isSecureContext");
+    }
+  });
+
   it("offers full screen only where the browser has it", async () => {
     await connected();
     // jsdom, like the iPhone's Safari, has no full screen for pages.
