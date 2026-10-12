@@ -81,6 +81,8 @@ fn shared() -> Shared {
         cursor_requested: AtomicBool::new(false),
         fec_loss: AtomicU32::new(0),
         target_kbps: AtomicU32::new(0),
+        delivery_kbps: AtomicU32::new(0),
+        nacks: crossbeam_channel::bounded(16),
         monitor_request: Default::default(),
         screen: Default::default(),
         screen_changes: AtomicU64::new(0),

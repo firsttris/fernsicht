@@ -225,7 +225,8 @@ impl UdpLink {
     fn send_run(&self, data: &[u8], segment: usize) -> std::io::Result<()> {
         let one_by_one = |d: &[u8]| {
             d.chunks(segment).try_for_each(|g| {
-                socket::send_marked(&self.socket, self.peer, g, socket::Dscp::Video).map(|_| ())
+                socket::send_marked(&self.socket, self.peer, g, socket::Marking::VIDEO_ECN)
+                    .map(|_| ())
             })
         };
         let per_call = (socket::MAX_SEGMENTS_BYTES / segment.max(1)).clamp(1, socket::MAX_SEGMENTS);
@@ -235,7 +236,7 @@ impl UdpLink {
                 continue;
             }
             let bufs = [std::io::IoSlice::new(run)];
-            let video = Some(socket::Dscp::Video);
+            let video = Some(socket::Marking::VIDEO_ECN);
             if let Err(e) =
                 socket::send_segments(&self.socket, self.peer, &bufs, segment as u16, video)
             {

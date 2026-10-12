@@ -57,6 +57,7 @@ pub enum Kind {
     Monitors = 19,
     SelectMonitor = 20,
     KeyframeRequest = 21,
+    Nack = 22,
 }
 
 impl Kind {
@@ -83,6 +84,7 @@ impl Kind {
             19 => Kind::Monitors,
             20 => Kind::SelectMonitor,
             21 => Kind::KeyframeRequest,
+            22 => Kind::Nack,
             _ => return None,
         })
     }
@@ -93,7 +95,7 @@ impl Kind {
     /// and check it themselves.
     fn known_flags(self) -> u8 {
         match self {
-            Kind::Video => FLAG_KEYFRAME,
+            Kind::Video => FLAG_KEYFRAME | FLAG_RETRANSMIT,
             Kind::Feedback => FLAG_REQUEST_KEYFRAME | FLAG_REQUEST_CURSOR,
             Kind::Cursor => FLAG_CURSOR_VISIBLE | FLAG_CURSOR_HOTSPOT,
             Kind::Handshake => FLAG_REPLY,
@@ -111,7 +113,8 @@ impl Kind {
             | Kind::Sealed
             | Kind::Reject
             | Kind::Discover
-            | Kind::SelectMonitor => 0,
+            | Kind::SelectMonitor
+            | Kind::Nack => 0,
         }
     }
 }
@@ -142,6 +145,9 @@ pub enum DecodeError {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoHeader {
     pub keyframe: bool,
+    /// Sent again on the client's request ([`Nack`]): not counted as a
+    /// packet that arrived the first time.
+    pub retransmit: bool,
     pub session_id: u32,
     pub frame_id: u32,
     pub frame_len: u32,
@@ -162,6 +168,7 @@ pub struct VideoHeader {
 }
 
 const FLAG_KEYFRAME: u8 = 0x01;
+const FLAG_RETRANSMIT: u8 = 0x02;
 const FLAG_REQUEST_KEYFRAME: u8 = 0x01;
 const FLAG_REQUEST_CURSOR: u8 = 0x02;
 
@@ -170,7 +177,8 @@ impl VideoHeader {
 
     /// Writes the header into `buf[..Self::LEN]`.
     pub fn write(&self, buf: &mut [u8]) {
-        let flags = if self.keyframe { FLAG_KEYFRAME } else { 0 };
+        let flags = if self.keyframe { FLAG_KEYFRAME } else { 0 }
+            | if self.retransmit { FLAG_RETRANSMIT } else { 0 };
         let mut w = Writer::new(&mut buf[..Self::LEN]);
         w.prefix(Kind::Video, flags);
         w.u32(self.session_id);
@@ -189,9 +197,20 @@ impl VideoHeader {
         w.u8(self.slice_count);
     }
 
+    /// Marks an encoded video packet a retransmission, in place (its
+    /// flags); `false` for anything else.
+    pub fn mark_retransmit(packet: &mut [u8]) -> bool {
+        let video = packet.len() >= Self::LEN && packet[..3] == [MAGIC, VERSION, Kind::Video as u8];
+        if video {
+            packet[3] |= FLAG_RETRANSMIT;
+        }
+        video
+    }
+
     fn read(flags: u8, r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         let h = VideoHeader {
             keyframe: flags & FLAG_KEYFRAME != 0,
+            retransmit: flags & FLAG_RETRANSMIT != 0,
             session_id: r.u32()?,
             frame_id: r.u32()?,
             frame_len: r.u32()?,
@@ -261,10 +280,20 @@ pub struct Feedback {
     pub packets_received: u32,
     pub packets_lost: u32,
     pub packets_recovered: u32,
+    /// How long the interval's frames waited in queues on the way, µs:
+    /// their first packet's one-way delay above the lowest of the last
+    /// seconds. Grows before packets are lost.
+    pub queue_delay_us: u32,
+    /// Packets that arrived marked CE (a router's "congestion" instead of
+    /// a drop, ECN).
+    pub ce_packets: u32,
+    /// The highest rate a frame's back-to-back packets arrived at, kbit/s
+    /// (0: none measured): what the path carries.
+    pub delivery_kbps: u32,
 }
 
 impl Feedback {
-    pub const LEN: usize = PREFIX_LEN + 28;
+    pub const LEN: usize = PREFIX_LEN + 40;
 
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         let mut flags = 0;
@@ -283,6 +312,9 @@ impl Feedback {
         w.u32(self.packets_received);
         w.u32(self.packets_lost);
         w.u32(self.packets_recovered);
+        w.u32(self.queue_delay_us);
+        w.u32(self.ce_packets);
+        w.u32(self.delivery_kbps);
         Self::LEN
     }
 
@@ -297,6 +329,9 @@ impl Feedback {
             packets_received: r.u32()?,
             packets_lost: r.u32()?,
             packets_recovered: r.u32()?,
+            queue_delay_us: r.u32()?,
+            ce_packets: r.u32()?,
+            delivery_kbps: r.u32()?,
         })
     }
 
@@ -1460,6 +1495,95 @@ impl KeyframeRequest {
     }
 }
 
+/// One shard of a frame: its FEC group and its index in the group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShardRef {
+    pub group: u16,
+    pub shard: u16,
+}
+
+/// Shards a NACK names at most (more missing: the frame waits for FEC or a
+/// keyframe).
+pub const MAX_NACK_SHARDS: usize = 64;
+
+/// Client → host: shards of a frame that did not arrive and that FEC cannot
+/// make up for; the host sends them again (marked `retransmit`). Only worth
+/// it where the round trip is short against the frame interval (a LAN).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Nack {
+    pub session_id: u32,
+    pub frame_id: u32,
+    count: u8,
+    shards: [ShardRef; MAX_NACK_SHARDS],
+}
+
+impl Nack {
+    /// The first [`MAX_NACK_SHARDS`] of `shards`.
+    pub fn new(session_id: u32, frame_id: u32, shards: &[ShardRef]) -> Self {
+        let n = shards.len().min(MAX_NACK_SHARDS);
+        let mut list = [ShardRef::default(); MAX_NACK_SHARDS];
+        list[..n].copy_from_slice(&shards[..n]);
+        Nack {
+            session_id,
+            frame_id,
+            count: n as u8,
+            shards: list,
+        }
+    }
+
+    pub fn shards(&self) -> &[ShardRef] {
+        &self.shards[..usize::from(self.count)]
+    }
+
+    /// Bytes this NACK takes on the wire.
+    pub fn len(&self) -> usize {
+        PREFIX_LEN + 9 + 4 * usize::from(self.count)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let n = self.len();
+        let mut w = Writer::new(&mut buf[..n]);
+        w.prefix(Kind::Nack, 0);
+        w.u32(self.session_id);
+        w.u32(self.frame_id);
+        w.u8(self.count);
+        for s in self.shards() {
+            w.u16(s.group);
+            w.u16(s.shard);
+        }
+        n
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let session_id = r.u32()?;
+        let frame_id = r.u32()?;
+        let count = r.u8()?;
+        if count == 0 || usize::from(count) > MAX_NACK_SHARDS {
+            return Err(DecodeError::Invalid("nack shard count"));
+        }
+        let mut shards = [ShardRef::default(); MAX_NACK_SHARDS];
+        for s in &mut shards[..usize::from(count)] {
+            *s = ShardRef {
+                group: r.u16()?,
+                shard: r.u16()?,
+            };
+        }
+        if !r.is_empty() {
+            return Err(DecodeError::Invalid("trailing bytes after nack"));
+        }
+        Ok(Nack {
+            session_id,
+            frame_id,
+            count,
+            shards,
+        })
+    }
+}
+
 /// A parsed datagram. Video payloads borrow from the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -1488,6 +1612,7 @@ pub enum Packet<'a> {
     Monitors(Monitors<'a>),
     SelectMonitor(SelectMonitor),
     KeyframeRequest(KeyframeRequest),
+    Nack(Nack),
 }
 
 impl<'a> Packet<'a> {
@@ -1624,6 +1749,7 @@ impl<'a> Packet<'a> {
                 }
                 Packet::SelectMonitor(m)
             }
+            Kind::Nack => Packet::Nack(Nack::read(&mut r)?),
             Kind::KeyframeRequest => {
                 let k = KeyframeRequest::read(flags, &mut r)?;
                 if !r.is_empty() {
@@ -1676,6 +1802,9 @@ mod tests {
             packets_received: 10,
             packets_lost: 0,
             packets_recovered: 0,
+            queue_delay_us: 0,
+            ce_packets: 0,
+            delivery_kbps: 0,
         }
         .encode(&mut buf);
         add(n, &buf);
@@ -1695,6 +1824,7 @@ mod tests {
     fn video_header() -> VideoHeader {
         VideoHeader {
             keyframe: true,
+            retransmit: false,
             session_id: 0xDEAD_BEEF,
             frame_id: 42,
             frame_len: 5000,
@@ -1788,10 +1918,64 @@ mod tests {
             packets_received: 990,
             packets_lost: 10,
             packets_recovered: 9,
+            queue_delay_us: 3_500,
+            ce_packets: 4,
+            delivery_kbps: 412_000,
         };
         let n = fb.encode(&mut buf);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Feedback(fb));
         assert!((fb.loss_ratio() - 0.01).abs() < 1e-6);
+
+        let missing = [
+            ShardRef { group: 0, shard: 3 },
+            ShardRef { group: 1, shard: 7 },
+        ];
+        let nack = Nack::new(7, 1234, &missing);
+        let n = nack.encode(&mut buf);
+        assert_eq!(n, nack.len());
+        let Packet::Nack(back) = Packet::decode(&buf[..n]).unwrap() else {
+            panic!("not a nack")
+        };
+        assert_eq!((back.session_id, back.frame_id), (7, 1234));
+        assert_eq!(back.shards(), &missing);
+        // At most MAX_NACK_SHARDS; none and trailing bytes are refused.
+        let many = vec![ShardRef::default(); MAX_NACK_SHARDS + 10];
+        assert_eq!(Nack::new(7, 1, &many).shards().len(), MAX_NACK_SHARDS);
+        let n = Nack::new(7, 1, &[]).encode(&mut buf);
+        assert!(Packet::decode(&buf[..n]).is_err(), "an empty nack");
+        let n = nack.encode(&mut buf);
+        assert!(Packet::decode(&buf[..n + 2]).is_err(), "trailing bytes");
+
+        let mut h = video_header();
+        h.retransmit = true;
+        h.write(&mut buf);
+        buf[VideoHeader::LEN..VideoHeader::LEN + 2].copy_from_slice(&[1, 2]);
+        let Packet::Video(back, _) = Packet::decode(&buf[..VideoHeader::LEN + 2]).unwrap() else {
+            panic!("not video")
+        };
+        assert!(back.retransmit && back.keyframe);
+        h.retransmit = false;
+        h.write(&mut buf);
+        assert!(VideoHeader::mark_retransmit(
+            &mut buf[..VideoHeader::LEN + 2]
+        ));
+        let Packet::Video(back, _) = Packet::decode(&buf[..VideoHeader::LEN + 2]).unwrap() else {
+            panic!("not video")
+        };
+        assert_eq!(
+            back,
+            VideoHeader {
+                retransmit: true,
+                ..h
+            },
+            "only the flag"
+        );
+        let n = ClockPing {
+            seq: 1,
+            client_send_us: 2,
+        }
+        .encode(&mut buf);
+        assert!(!VideoHeader::mark_retransmit(&mut buf[..n]), "no video");
 
         let ping = ClockPing {
             seq: 3,

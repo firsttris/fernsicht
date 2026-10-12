@@ -20,8 +20,9 @@ This is already state of the art:
 - **Encoder tuned for latency:** no B-frames, no lookahead, CBR, keyframes
   only on request.
 - **Network:** a custom UDP protocol with forward error correction
-  (Reed-Solomon FEC) instead of retransmission, pacing, and bitrate
-  adaptation under congestion.
+  (Reed-Solomon FEC), in the LAN also retransmission of what FEC cannot
+  repair, pacing at the rate the path delivers, and bitrate adaptation
+  before packets are lost (queue delay, ECN).
 - **Encryption:** Noise/ChaCha20, costs practically no time.
 - **Rust:** no garbage collector pauses, no allocations per frame or packet on the native path.
 
@@ -38,7 +39,7 @@ measurement is missing ([latency-baseline.md](latency-baseline.md)).
 | 4 | **Show immediately instead of waiting for the refresh** (Vulkan "Immediate" in gaming mode) | Up to one display refresh less: on average ≈ 3 ms at 165 Hz, ≈ 8 ms at 60 Hz. The cost is tearing | Small to medium | Open |
 | 5 | **Slices: send parts of the image before the image is finished** (like Parsec) | Several milliseconds per frame, because encoding, sending and decoding overlap | Large | Open |
 | 6 | **Intra refresh instead of keyframes** | No large data bursts after a loss, so less stutter over Wi-Fi | Medium | Open |
-| 7 | **Delay-based congestion control** (like WebRTC) | Reacts to growing transit time before packets are lost. Better over Wi-Fi | Medium | Open (today: loss-based) |
+| 7 | **Delay-based congestion control** (like WebRTC) | Reacts to growing transit time before packets are lost. Better over Wi-Fi | Medium | **Done:** queue delay and ECN marks lower the bitrate before loss; pacing at the measured delivery rate |
 | 8 | **4:4:4 color for the desktop** | Crisp text (today, color is transmitted at half resolution) | Medium | Open, only with NVENC (H.264/HEVC). AMD and Intel do not encode 4:4:4 |
 | 9 | **Bitrate adaptation in the web viewer** (WebRTC bandwidth estimation, TWCC) | The browser gets no more than the network can carry | Medium | Open (today: fixed bitrate) |
 | 10 | **Cable instead of Wi-Fi** | Less latency and variation. Not a software matter | – | Recommendation |
@@ -139,12 +140,13 @@ even, and there is no stutter from a burst.
 
 ### 7 · Congestion control
 
-Today the host lowers the bitrate when frames are lost despite FEC or when
-its sender cannot keep up
+The host lowers the bitrate when frames are lost despite FEC, when its
+sender cannot keep up, and before anything is lost: when frames wait in a
+queue on the way (their transit time grows above the lowest of the last
+10 s) or a router marks them CE (ECN)
 ([`crates/net/src/rate.rs`](https://github.com/firsttris/fernsicht/blob/main/crates/net/src/rate.rs)).
-Delay-based control also watches whether the transit time of the packets
-grows. That is the early sign that a queue is filling up somewhere. It then
-slows down before anything is lost at all.
+It paces at the rate the client measures the path deliver, so that a
+keyframe does not fill the slowest link's queue either.
 
 ## What cannot be made faster
 

@@ -345,6 +345,10 @@ fn new_shared(stats: &Arc<HostStats>, params: &SessionParams, loss: &LossEstimat
         cursor_requested: AtomicBool::new(false),
         fec_loss: AtomicU32::new(loss.estimate().to_bits()),
         target_kbps: AtomicU32::new(0),
+        delivery_kbps: AtomicU32::new(0),
+        // A few frames' worth; more waiting means the sender is behind,
+        // and then they come too late anyway.
+        nacks: crossbeam_channel::bounded(16),
         monitor_request: Default::default(),
         screen: Default::default(),
         screen_changes: AtomicU64::new(0),

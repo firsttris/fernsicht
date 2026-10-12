@@ -1,8 +1,9 @@
 //! End-to-end test harness.
 //!
 //! [`ImpairedLink`] is a UDP proxy between client and host that injects
-//! the faults real networks have: random loss, duplication, reordering,
-//! delay with jitter, and blackouts. [`Scenario`] runs a real host agent and
+//! the faults real networks have: random loss, bursts of it, duplication,
+//! reordering, delay with jitter, blackouts, and a bottleneck whose queue
+//! grows (and marks congestion, ECN). [`Scenario`] runs a real host agent and
 //! a real client (in-process, same code as the binaries) through it.
 
 use std::cmp::Reverse;
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use fernsicht_client::{ClientConfig, RunSummary};
 use fernsicht_host_agent::{HostAgent, HostConfig, HostStats};
-use fernsicht_net::socket::bind_udp;
+use fernsicht_net::socket::{self, bind_udp};
 use fernsicht_proto::Packet;
 
 /// Faults applied to one direction of the link.
@@ -33,6 +34,16 @@ pub struct Impairment {
     pub jitter: Duration,
     /// Drop everything from `start` (after the first datagram) for `length`.
     pub blackout: Option<(Duration, Duration)>,
+    /// Every `period`, drop the next `count` datagrams in a row: more of a
+    /// frame than FEC repairs.
+    pub burst: Option<(Duration, u32)>,
+    /// A bottleneck of this many kbit/s (0: none): datagrams queue for it.
+    pub rate_kbps: u32,
+    /// Its queue holds this long; beyond, it drops (tail drop).
+    pub queue_limit: Option<Duration>,
+    /// It marks datagrams CE that waited longer than this, instead of
+    /// dropping them (an ECN-capable AQM).
+    pub mark_ce_above: Option<Duration>,
 }
 
 impl Impairment {
@@ -54,7 +65,18 @@ impl Impairment {
             && self.delay.is_zero()
             && self.jitter.is_zero()
             && self.blackout.is_none()
+            && self.rate_kbps == 0
     }
+}
+
+/// One direction's state: the bottleneck, the bursts.
+#[derive(Default)]
+struct Path {
+    /// When the bottleneck has sent everything queued so far.
+    busy_until: Option<Instant>,
+    /// When the next burst starts, and datagrams it still drops.
+    next_burst: Option<Instant>,
+    burst_left: u32,
 }
 
 /// Counters for one direction.
@@ -64,6 +86,8 @@ pub struct DirectionStats {
     pub dropped: AtomicU64,
     pub duplicated: AtomicU64,
     pub reordered: AtomicU64,
+    /// Marked CE by the bottleneck.
+    pub ce_marked: AtomicU64,
 }
 
 /// What the link observed.
@@ -103,6 +127,8 @@ struct Pending {
     due: Instant,
     seq: u64,
     to_client: bool,
+    /// Arrives marked CE.
+    ce: bool,
     data: Vec<u8>,
 }
 
@@ -158,6 +184,7 @@ impl ImpairedLink {
             );
             threads.push(std::thread::spawn(move || {
                 let mut rng = Rng(seed | 1);
+                let mut path = Path::default();
                 let mut buf = [0u8; 2048];
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((n, from)) = src.recv_from(&mut buf) else {
@@ -171,6 +198,7 @@ impl ImpairedLink {
                         false,
                         &up,
                         &mut rng,
+                        &mut path,
                         t0,
                         &stats.up,
                         &queue,
@@ -195,6 +223,7 @@ impl ImpairedLink {
             );
             threads.push(std::thread::spawn(move || {
                 let mut rng = Rng(seed.rotate_left(17) | 1);
+                let mut path = Path::default();
                 let mut buf = [0u8; 2048];
                 while !stop.load(Ordering::Relaxed) {
                     let Ok(n) = src.recv(&mut buf) else {
@@ -210,6 +239,7 @@ impl ImpairedLink {
                         true,
                         &down,
                         &mut rng,
+                        &mut path,
                         t0,
                         &stats.down,
                         &queue,
@@ -239,7 +269,14 @@ impl ImpairedLink {
                             drop(heap);
                             if p.to_client {
                                 if let Some(to) = *client_addr.lock().unwrap() {
-                                    let _ = client_side.send_to(&p.data, to);
+                                    // What a router marking congestion
+                                    // forwards: the video's DSCP, ECN CE.
+                                    let _ = if p.ce {
+                                        let tos = socket::Marking::VIDEO_ECN.tos() | socket::CE;
+                                        socket::send_tos(&client_side, to, &p.data, tos)
+                                    } else {
+                                        client_side.send_to(&p.data, to)
+                                    };
                                 }
                             } else {
                                 let _ = host_side.send(&p.data);
@@ -325,6 +362,7 @@ fn forward(
     to_client: bool,
     imp: &Impairment,
     rng: &mut Rng,
+    path: &mut Path,
     t0: Instant,
     stats: &DirectionStats,
     queue: &Queue,
@@ -338,9 +376,28 @@ fn forward(
             return;
         }
     }
-    if rng.chance(imp.loss) {
+    if rng.chance(imp.loss) || in_burst(imp, path, Instant::now()) {
         stats.dropped.fetch_add(1, Ordering::Relaxed);
         return;
+    }
+    // The bottleneck: a datagram waits for those before it, then takes its
+    // own time on the wire.
+    let now = Instant::now();
+    let (mut queued, mut ce) = (Duration::ZERO, false);
+    if imp.rate_kbps > 0 {
+        let start = path.busy_until.map_or(now, |t| t.max(now));
+        let wait = start - now;
+        if imp.queue_limit.is_some_and(|limit| wait > limit) {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let wire = Duration::from_micros(data.len() as u64 * 8_000 / u64::from(imp.rate_kbps));
+        path.busy_until = Some(start + wire);
+        queued = wait + wire;
+        ce = imp.mark_ce_above.is_some_and(|above| wait > above);
+        if ce {
+            stats.ce_marked.fetch_add(1, Ordering::Relaxed);
+        }
     }
     let copies = if rng.chance(imp.duplicate) {
         stats.duplicated.fetch_add(1, Ordering::Relaxed);
@@ -354,7 +411,7 @@ fn forward(
             send_now(data);
             continue;
         }
-        let mut delay = imp.delay + imp.jitter.mul_f64(rng.unit());
+        let mut delay = queued + imp.delay + imp.jitter.mul_f64(rng.unit());
         if rng.chance(imp.reorder) {
             stats.reordered.fetch_add(1, Ordering::Relaxed);
             delay += Duration::from_millis(3);
@@ -364,11 +421,28 @@ fn forward(
             due: Instant::now() + delay,
             seq: seq.fetch_add(1, Ordering::Relaxed),
             to_client,
+            ce,
             data: data.to_vec(),
         }));
         drop(heap);
         queue.ready.notify_one();
     }
+}
+
+/// Whether a burst drops this datagram: one starts every period (the
+/// first a period after the first datagram).
+fn in_burst(imp: &Impairment, path: &mut Path, now: Instant) -> bool {
+    let Some((period, count)) = imp.burst else {
+        return false;
+    };
+    let next = *path.next_burst.get_or_insert(now + period);
+    if now >= next {
+        path.next_burst = Some(next + period);
+        path.burst_left = count;
+    }
+    let dropping = path.burst_left > 0;
+    path.burst_left = path.burst_left.saturating_sub(1);
+    dropping
 }
 
 /// A running host agent on an ephemeral localhost port.

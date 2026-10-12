@@ -2,29 +2,40 @@
 //!
 //! - [`fec`]: splits an encoded frame into Reed-Solomon protected shards
 //! - [`reassembly`]: rebuilds frames on the receiver, latest frame wins
-//! - [`pacer`]: spreads a frame's packets over part of the frame interval
+//! - [`pacer`]: spreads a frame's packets over part of the frame interval,
+//!   at the rate the path delivers
+//! - [`resend`]: the host's last frames, to answer NACKs
 //! - [`clock_sync`]: NTP-style host↔client clock offset estimation
 //! - [`keyframe`]: the reference chain, asking for a keyframe at once,
 //!   answering each loss once
-//! - [`rate`]: bitrate adaptation from the smoothed loss
+//! - [`rate`]: bitrate adaptation from the smoothed loss, queue delay and
+//!   ECN marks
+//! - [`delay`]: how long frames wait in queues on the way
+//! - [`delivery`]: how fast the path delivers, the rate to pace at
 //! - [`loss`]: deterministic packet-loss injection for testing
 //! - [`socket`]: UDP sockets with buffers sized for video bursts
 
 pub mod clock_sync;
+pub mod delay;
+pub mod delivery;
 pub mod fec;
 pub mod keyframe;
 pub mod loss;
 pub mod pacer;
 pub mod rate;
 pub mod reassembly;
+pub mod resend;
 pub mod socket;
 
 pub use clock_sync::ClockSync;
+pub use delay::QueueDelay;
+pub use delivery::DeliveryRate;
 pub use fec::{FecConfig, FrameMeta, LossEstimator, Packetizer};
 pub use loss::LossSim;
 pub use pacer::Pacer;
-pub use rate::RateController;
+pub use rate::{RateController, Signals};
 pub use reassembly::{CompletedFrame, Reassembler, ReceiverStats};
+pub use resend::ResendStore;
 
 /// Compares wrapping frame ids: `true` if `a` is newer than `b`.
 #[inline]

@@ -36,7 +36,7 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 | `--no-web` | | no web viewer |
 | `--web-root` | `../share/fernsicht/viewer` next to the program | the built web viewer (`web/viewer/dist`) |
 | `--no-gpu-boost` | | leave the GPU's clocks alone during sessions |
-| `--pace-mbit` | `400` | pacing rate in Mbit/s for what goes beyond a 64 KiB burst (keyframes) |
+| `--pace-mbit` | `400` | highest pacing rate in Mbit/s for what goes beyond a 64 KiB burst (keyframes); the host paces at the rate the client measures the path deliver, up to this |
 | `--loss <f>` | `0` | drop this fraction of outgoing video packets (testing, e.g. `0.01`) |
 
 ## Client: `fernsicht-client`

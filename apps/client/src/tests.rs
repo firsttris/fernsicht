@@ -439,3 +439,47 @@ fn the_picture_scale_is_window_pixels_per_host_pixel() {
     // Not known yet: as it is.
     assert_eq!(picture_scale((800, 600), (0, 0), (1920, 1080)), 1.0);
 }
+
+#[test]
+fn nacks_go_out_where_the_answer_comes_within_a_frame() {
+    use crate::congestion::{MAX_NACKS_PER_FRAME, nack_in_time, nacks};
+    let frame = Duration::from_micros(16_667);
+    assert!(nack_in_time(Some(500), frame), "a LAN");
+    assert!(!nack_in_time(Some(20_000), frame), "across the internet");
+    assert!(!nack_in_time(None, frame), "before the clock is synced");
+    assert!(
+        !nack_in_time(Some(3_000), Duration::from_micros(4_167)),
+        "240 fps"
+    );
+
+    let shards: Vec<_> = (0..300)
+        .map(|i| fernsicht_proto::ShardRef {
+            group: i / 100,
+            shard: i % 100,
+        })
+        .collect();
+    let sent: Vec<_> = nacks(9, 41, &shards).collect();
+    assert_eq!(
+        sent.len(),
+        MAX_NACKS_PER_FRAME,
+        "a blackout is a keyframe's job"
+    );
+    assert_eq!(
+        sent[0].shards(),
+        &shards[..fernsicht_proto::MAX_NACK_SHARDS]
+    );
+    assert!(sent.iter().all(|n| (n.session_id, n.frame_id) == (9, 41)));
+    assert_eq!(nacks(9, 41, &shards[..3]).count(), 1);
+}
+
+#[test]
+fn a_frames_queue_sample_spans_encoder_to_first_packet() {
+    let h = fernsicht_proto::VideoHeader {
+        capture_us: 10_000,
+        encoded_delta_us: 2_500,
+        ..Default::default()
+    };
+    // The clocks' offset stays in the sample (QueueDelay takes it out):
+    // here the client's clock is behind, the sample negative.
+    assert_eq!(crate::congestion::queue_sample(&h, 3_000), 3_000 - 12_500);
+}

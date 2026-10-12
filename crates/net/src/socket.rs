@@ -40,6 +40,40 @@ impl Dscp {
     }
 }
 
+/// ECN codepoints (RFC 3168): the TOS byte's two low bits. ECT(0): the
+/// transport reacts to congestion marks; CE: a router marked congestion
+/// instead of dropping the packet.
+pub const ECT0: u8 = 0b10;
+pub const CE: u8 = 0b11;
+
+/// How a datagram is marked: its DSCP, and whether it is ECN-capable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Marking {
+    pub dscp: Dscp,
+    /// ECT(0): only for packets whose congestion marks the receiver
+    /// reports and the sender reacts to (the native client's video, D3);
+    /// marking others would ask routers for a courtesy nobody returns.
+    pub ect: bool,
+}
+
+impl Marking {
+    /// Video the client reports CE marks for.
+    pub const VIDEO_ECN: Marking = Marking {
+        dscp: Dscp::Video,
+        ect: true,
+    };
+
+    pub fn tos(self) -> u8 {
+        self.dscp.tos() | if self.ect { ECT0 } else { 0 }
+    }
+}
+
+impl From<Dscp> for Marking {
+    fn from(dscp: Dscp) -> Self {
+        Marking { dscp, ect: false }
+    }
+}
+
 /// Marks everything `socket` sends with `dscp`, unless a send says
 /// otherwise.
 pub fn set_dscp(socket: &UdpSocket, dscp: Dscp) -> io::Result<()> {
@@ -81,19 +115,25 @@ pub fn send_segments(
     to: SocketAddr,
     bufs: &[IoSlice<'_>],
     segment: u16,
-    dscp: Option<Dscp>,
+    mark: Option<Marking>,
 ) -> io::Result<usize> {
-    send_msg(socket, to, bufs, Some(segment), dscp)
+    send_msg(socket, to, bufs, Some(segment), mark.map(Marking::tos))
 }
 
-/// Sends one datagram marked `dscp`, whatever the socket's marking.
+/// Sends one datagram marked `mark`, whatever the socket's marking.
 pub fn send_marked(
     socket: &UdpSocket,
     to: SocketAddr,
     buf: &[u8],
-    dscp: Dscp,
+    mark: impl Into<Marking>,
 ) -> io::Result<usize> {
-    send_msg(socket, to, &[IoSlice::new(buf)], None, Some(dscp))
+    send_tos(socket, to, buf, mark.into().tos())
+}
+
+/// Sends one datagram with the TOS byte `tos` as it stands, ECN bits and
+/// all: what a router that marks congestion forwards (the tests' links).
+pub fn send_tos(socket: &UdpSocket, to: SocketAddr, buf: &[u8], tos: u8) -> io::Result<usize> {
+    send_msg(socket, to, &[IoSlice::new(buf)], None, Some(tos))
 }
 
 /// `sendmsg` with a GSO segment size and a marking as control messages.
@@ -102,7 +142,7 @@ fn send_msg(
     to: SocketAddr,
     bufs: &[IoSlice<'_>],
     segment: Option<u16>,
-    dscp: Option<Dscp>,
+    tos: Option<u8>,
 ) -> io::Result<usize> {
     #[repr(C, align(8))]
     struct Control([u8; 64]);
@@ -130,12 +170,12 @@ fn send_msg(
             used += libc::CMSG_SPACE(2) as usize;
             cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
         }
-        if let Some(dscp) = dscp {
+        if let Some(tos) = tos {
             let size = std::mem::size_of::<libc::c_int>() as u32;
             (*cmsg).cmsg_level = tos_level.0;
             (*cmsg).cmsg_type = tos_level.1;
             (*cmsg).cmsg_len = libc::CMSG_LEN(size) as _;
-            let tos = libc::c_int::from(dscp.tos());
+            let tos = libc::c_int::from(tos);
             std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::c_int>(), tos);
             used += libc::CMSG_SPACE(size) as usize;
         }
@@ -166,11 +206,55 @@ pub fn enable_gro(socket: &UdpSocket) -> bool {
     }
 }
 
+/// Lets [`recv_segments`] report the datagrams' ECN bits (IP_RECVTOS,
+/// IPV6_RECVTCLASS). `false` where the kernel refuses.
+pub fn enable_ecn_reports(socket: &UdpSocket) -> bool {
+    let on: libc::c_int = 1;
+    let set = |level, option| {
+        // SAFETY: setsockopt reads an int from a valid pointer.
+        unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                level,
+                option,
+                (&on as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) == 0
+        }
+    };
+    match socket.local_addr() {
+        Ok(SocketAddr::V4(_)) => set(libc::IPPROTO_IP, libc::IP_RECVTOS),
+        // IPv4 through a v6 socket (mapped addresses) reports IP_TOS.
+        Ok(SocketAddr::V6(_)) => {
+            let v4 = set(libc::IPPROTO_IP, libc::IP_RECVTOS);
+            set(libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS) || v4
+        }
+        Err(_) => false,
+    }
+}
+
+/// What one [`recv_segments`] call brought.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Received {
+    /// Bytes in the buffer.
+    pub len: usize,
+    /// The datagrams' size: iterate with `buf[..len].chunks(size)`.
+    pub size: usize,
+    /// They arrived marked CE (with [`enable_ecn_reports`]). The kernel
+    /// coalesces only datagrams of one marking, so it holds for all.
+    pub ce: bool,
+}
+
+impl Received {
+    /// How many datagrams it holds.
+    pub fn datagrams(&self) -> usize {
+        self.len.div_ceil(self.size.max(1))
+    }
+}
+
 /// Receives into `buf`: one datagram, or with [`enable_gro`] a run of them
-/// of one size (the last may be shorter). Returns the bytes and the
-/// datagrams' size; iterate with `buf[..len].chunks(size)`. `buf` should
-/// hold 64 KiB.
-pub fn recv_segments(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, usize)> {
+/// of one size (the last may be shorter). `buf` should hold 64 KiB.
+pub fn recv_segments(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<Received> {
     #[repr(C, align(8))]
     struct Control([u8; 64]);
     let mut control = Control([0; 64]);
@@ -192,15 +276,27 @@ pub fn recv_segments(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, u
         }
         let n = n as usize;
         let mut size = n;
+        let mut ce = false;
         let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
         while !cmsg.is_null() {
-            if (*cmsg).cmsg_level == libc::SOL_UDP && (*cmsg).cmsg_type == libc::UDP_GRO {
-                let gso = std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::c_int>());
-                size = usize::try_from(gso).unwrap_or(n).clamp(1, n.max(1));
+            let data = libc::CMSG_DATA(cmsg);
+            match ((*cmsg).cmsg_level, (*cmsg).cmsg_type) {
+                (libc::SOL_UDP, libc::UDP_GRO) => {
+                    let gso = std::ptr::read_unaligned(data.cast::<libc::c_int>());
+                    size = usize::try_from(gso).unwrap_or(n).clamp(1, n.max(1));
+                }
+                // IPv4 hands the TOS over as one byte, IPv6 its traffic
+                // class as an int (ip(7), ipv6(7)).
+                (libc::IPPROTO_IP, libc::IP_TOS) => ce = *data & 0b11 == CE,
+                (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => {
+                    let class = std::ptr::read_unaligned(data.cast::<libc::c_int>());
+                    ce = class & 0b11 == libc::c_int::from(CE);
+                }
+                _ => {}
             }
             cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
         }
-        Ok((n, size))
+        Ok(Received { len: n, size, ce })
     }
 }
 
@@ -400,7 +496,7 @@ mod tests {
         let mut got = Vec::new();
         let mut calls = 0;
         while got.len() < 11 {
-            let (n, size) = recv_segments(&b, &mut buf).unwrap();
+            let Received { len: n, size, .. } = recv_segments(&b, &mut buf).unwrap();
             calls += 1;
             got.extend(buf[..n].chunks(size).map(<[u8]>::to_vec));
         }
@@ -413,7 +509,7 @@ mod tests {
         }
         // A plain datagram still comes alone, with its own size.
         a.send_to(b"hi", b.local_addr().unwrap()).unwrap();
-        let (n, size) = recv_segments(&b, &mut buf).unwrap();
+        let Received { len: n, size, .. } = recv_segments(&b, &mut buf).unwrap();
         assert_eq!((&buf[..n], size), (&b"hi"[..], 2));
     }
 
@@ -474,11 +570,30 @@ mod tests {
             to,
             &[IoSlice::new(&[1u8; 2400])],
             1200,
-            Some(Dscp::Video),
+            Some(Marking::VIDEO_ECN),
         )
         .unwrap();
-        assert_eq!(received_tos(&b), 34 << 2);
-        assert_eq!(received_tos(&b), 34 << 2, "each GSO datagram");
+        assert_eq!(received_tos(&b), 34 << 2 | ECT0, "ECN-capable");
+        assert_eq!(received_tos(&b), 34 << 2 | ECT0, "each GSO datagram");
+    }
+
+    #[test]
+    fn a_congestion_mark_is_reported() {
+        let a = bind_udp("127.0.0.1:0").unwrap();
+        let b = bind_udp("127.0.0.1:0").unwrap();
+        b.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        assert!(enable_ecn_reports(&b));
+        let to = b.local_addr().unwrap();
+        let mut buf = vec![0u8; 65_536];
+        send_marked(&a, to, b"plain", Marking::VIDEO_ECN).unwrap();
+        let got = recv_segments(&b, &mut buf).unwrap();
+        assert!(!got.ce);
+        // What a router on the way would do: CE instead of a drop.
+        let ce = Marking::VIDEO_ECN.tos() | CE;
+        send_tos(&a, to, b"marked", ce).unwrap();
+        let got = recv_segments(&b, &mut buf).unwrap();
+        assert_eq!((got.len, got.datagrams(), got.ce), (6, 1, true));
     }
 
     #[test]

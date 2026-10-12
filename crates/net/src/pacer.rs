@@ -52,6 +52,15 @@ impl Pacer {
         }
     }
 
+    /// Paces at `rate_bytes_per_sec` from the next frame on.
+    pub fn set_rate(&mut self, rate_bytes_per_sec: u64) {
+        self.rate_bytes_per_sec = rate_bytes_per_sec.max(1);
+    }
+
+    pub fn rate(&self) -> u64 {
+        self.rate_bytes_per_sec
+    }
+
     /// Sends `packets` through `send` in chunks: what the bucket holds at
     /// once, the rest paced so that the frame leaves within `budget`.
     pub fn pace<P, F, E>(&mut self, packets: &[P], budget: Duration, mut send: F) -> Result<(), E>
@@ -108,6 +117,25 @@ pub fn next_chunk(
     (n, at, debt)
 }
 
+/// What the pacing rate may fall to, as a multiple of the bitrate: a
+/// frame of twice the average beyond the burst still leaves within half
+/// its interval, whatever the measurement got wrong.
+pub const MIN_PACE_PER_BITRATE: u64 = 4;
+
+/// The rate to pace at (C3), bytes per second: what the client measured
+/// the path deliver (`delivery_kbps`, 0 while nothing was measured: then
+/// `cap`), at most `cap` (the configured rate), at least
+/// [`MIN_PACE_PER_BITRATE`] times the bitrate. Faster than the slowest link
+/// would only queue the rest of the frame there.
+pub fn rate_for_delivery(cap: u64, delivery_kbps: u32, bitrate_kbps: u32) -> u64 {
+    if delivery_kbps == 0 {
+        return cap;
+    }
+    let to_bytes = |kbps: u64| kbps * 1000 / 8;
+    let floor = to_bytes(u64::from(bitrate_kbps) * MIN_PACE_PER_BITRATE);
+    to_bytes(u64::from(delivery_kbps)).clamp(floor.min(cap), cap)
+}
+
 /// The rate for a frame of `bytes`, bytes per second: `rate`, or faster
 /// when what the burst does not cover would not leave within `budget`.
 pub fn rate_for(rate: u64, burst: usize, bytes: usize, budget: Duration) -> f64 {
@@ -154,6 +182,26 @@ pub fn wait_until(deadline: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paces_at_what_the_path_delivers_within_bounds() {
+        let cap = 50_000_000; // 400 Mbit/s
+        assert_eq!(rate_for_delivery(cap, 0, 20_000), cap, "nothing measured");
+        // Wi-Fi delivering 150 Mbit/s.
+        assert_eq!(rate_for_delivery(cap, 150_000, 20_000), 18_750_000);
+        assert_eq!(
+            rate_for_delivery(cap, 2_000_000, 20_000),
+            cap,
+            "never above the cap"
+        );
+        // A measurement far too low: four times the bitrate at least.
+        assert_eq!(rate_for_delivery(cap, 30_000, 20_000), 10_000_000);
+        // A bitrate the cap cannot carry four times over: the cap.
+        assert_eq!(rate_for_delivery(cap, 30_000, 150_000), cap);
+        let mut p = Pacer::default();
+        p.set_rate(0);
+        assert_eq!(p.rate(), 1, "never zero");
+    }
 
     const MB: f64 = 1_000_000.0;
 

@@ -15,6 +15,7 @@
 
 mod audio;
 mod config;
+mod congestion;
 mod cursor;
 pub mod discover;
 mod failure;
@@ -163,6 +164,10 @@ fn open_socket(host: &str) -> anyhow::Result<UdpSocket> {
         fernsicht_net::socket::set_dscp(&socket, fernsicht_net::socket::Dscp::Interactive)
     {
         log::debug!("no DSCP marking: {e}");
+    }
+    // Congestion marks on the video count like a growing queue (D3).
+    if !fernsicht_net::socket::enable_ecn_reports(&socket) {
+        log::debug!("no ECN reports: congestion shows as delay and loss only");
     }
     // Bursts of video datagrams come in one receive.
     if !fernsicht_net::socket::enable_gro(&socket) {

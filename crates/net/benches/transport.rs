@@ -1,10 +1,10 @@
-//! Hot-path benchmarks: packetize + FEC, and reassembly with and without
-//! recovery. Run with `cargo bench -p fernsicht-net`.
+//! Hot-path benchmarks: packetize + FEC, reassembly with and without
+//! recovery, and keeping a frame to answer NACKs. Run with `cargo bench -p fernsicht-net`.
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use fernsicht_net::{FecConfig, FrameMeta, Packetizer, Reassembler};
+use fernsicht_net::{FecConfig, FrameMeta, Packetizer, Reassembler, ResendStore};
 use fernsicht_proto::Packet;
 
 /// P-frame at 20 Mbit/s and 60 fps, and a 6× keyframe.
@@ -78,5 +78,25 @@ fn decode(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, packetize, reassemble, decode);
+/// What the host's send thread does after each frame left.
+fn keep_for_nacks(c: &mut Criterion) {
+    let mut g = c.benchmark_group("keep for NACKs");
+    for (name, len) in SIZES {
+        let frame = vec![0x5Au8; len];
+        let mut p = Packetizer::new(FecConfig::default()).unwrap();
+        let pkts: Vec<Vec<u8>> = p.packetize(&meta(0), &frame).unwrap().to_vec();
+        let mut store = ResendStore::default();
+        let mut id = 0;
+        g.throughput(Throughput::Bytes(len as u64));
+        g.bench_with_input(BenchmarkId::from_parameter(name), &pkts, |b, pkts| {
+            b.iter(|| {
+                id += 1;
+                store.keep(id, pkts);
+            });
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(benches, packetize, reassemble, decode, keep_for_nacks);
 criterion_main!(benches);

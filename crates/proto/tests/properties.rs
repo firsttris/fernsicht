@@ -6,7 +6,7 @@ use proptest::prelude::*;
 fn video_header() -> impl Strategy<Value = VideoHeader> {
     (
         (
-            any::<bool>(),
+            (any::<bool>(), any::<bool>()),
             any::<u32>(),
             any::<u32>(),
             1u32..=MAX_FRAME_LEN,
@@ -23,7 +23,7 @@ fn video_header() -> impl Strategy<Value = VideoHeader> {
     )
         .prop_map(
             |(
-                (keyframe, session_id, frame_id, frame_len),
+                ((keyframe, retransmit), session_id, frame_id, frame_len),
                 (capture_us, ready, encoded),
                 (group_count, data_shards, recovery_shards, gi, si),
                 (slice_count, sl),
@@ -31,6 +31,7 @@ fn video_header() -> impl Strategy<Value = VideoHeader> {
                 let total = u32::from(data_shards) + u32::from(recovery_shards);
                 VideoHeader {
                     keyframe,
+                    retransmit,
                     session_id,
                     frame_id,
                     frame_len,
@@ -67,9 +68,11 @@ proptest! {
         session_id: u32, request_keyframe: bool, request_cursor: bool, highest_frame_id: u32,
         frames_completed: u32, frames_dropped: u32,
         packets_received: u32, packets_lost: u32, packets_recovered: u32,
+        queue_delay_us: u32, ce_packets: u32, delivery_kbps: u32,
     ) {
         let fb = Feedback { session_id, request_keyframe, request_cursor, highest_frame_id, frames_completed,
-            frames_dropped, packets_received, packets_lost, packets_recovered };
+            frames_dropped, packets_received, packets_lost, packets_recovered, queue_delay_us,
+            ce_packets, delivery_kbps };
         let mut buf = [0u8; Feedback::LEN];
         let n = fb.encode(&mut buf);
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Feedback(fb)));
@@ -237,6 +240,7 @@ proptest! {
             }
             Packet::SelectMonitor(p) => p.encode(&mut buf),
             Packet::KeyframeRequest(p) => p.encode(&mut buf),
+            Packet::Nack(p) => p.encode(&mut buf),
         };
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
     }

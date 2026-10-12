@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use fernsicht_capture::Frame;
 use fernsicht_core::Slot;
 use fernsicht_input::{Dedup, InputSink};
-use fernsicht_net::{LossEstimator, RateController};
+use fernsicht_net::{LossEstimator, RateController, Signals};
 use fernsicht_proto::{Bye, Codec, Feedback, InputHeader};
 use fernsicht_secure::PublicKey;
 
@@ -132,19 +132,39 @@ pub(crate) fn on_feedback(s: &mut Session, fb: &Feedback) {
     let overflows = HostStats::get(&s.shared.stats.send_overflows);
     let overflow = overflows > s.overflows_seen;
     s.overflows_seen = overflows;
-    if let Some(kbps) = s
-        .rate
-        .report(estimate, fb.frames_dropped, overflow, Instant::now())
-    {
+    let ce = u64::from(fb.ce_packets);
+    s.shared.stats.packets_ce.fetch_add(ce, Ordering::Relaxed);
+    // An interval that measured nothing keeps the last rate.
+    if fb.delivery_kbps > 0 {
+        s.shared
+            .delivery_kbps
+            .store(fb.delivery_kbps, Ordering::Relaxed);
+    }
+    let signals = Signals {
+        loss: estimate,
+        frames_lost: fb.frames_dropped,
+        overflow,
+        queue_delay_us: fb.queue_delay_us,
+        ce_packets: fb.ce_packets,
+    };
+    if let Some(kbps) = s.rate.report_signals(&signals, Instant::now()) {
         log::info!(
-            "session {:08x}: bitrate {:.1} Mbit/s (loss {:.1} %, {} frames lost{})",
+            "session {:08x}: bitrate {:.1} Mbit/s (loss {:.1} %, {} frames lost, \
+             queue {:.1} ms, {} CE{})",
             s.params.session_id,
             f64::from(kbps) / 1000.0,
             estimate * 100.0,
             fb.frames_dropped,
+            f64::from(fb.queue_delay_us) / 1000.0,
+            fb.ce_packets,
             if overflow { ", sender behind" } else { "" }
         );
-        s.shared.target_kbps.store(kbps, Ordering::Relaxed);
+        let stats = &s.shared.stats;
+        let before = s.shared.target_kbps.swap(kbps, Ordering::Relaxed);
+        if kbps < before || before == 0 && kbps < s.params.bitrate_kbps {
+            HostStats::bump(&stats.bitrate_cuts);
+        }
+        stats.bitrate_kbps.store(u64::from(kbps), Ordering::Relaxed);
     }
     log::debug!(
         "feedback: loss {:.2} % recovered {} dropped {} → FEC sized for {:.1} %",

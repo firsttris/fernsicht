@@ -1,4 +1,5 @@
-//! The send thread: encoded frames into FEC-protected, paced datagrams.
+//! The send thread: encoded frames into FEC-protected, paced datagrams,
+//! and the shards the client asks for again (NACK).
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -6,8 +7,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use fernsicht_codec::EncodedFrame;
 use fernsicht_core::clock;
-use fernsicht_net::{FecConfig, FrameMeta, LossSim, Pacer, Packetizer, socket};
-use fernsicht_proto::MAX_DATAGRAM;
+use fernsicht_net::{FecConfig, FrameMeta, LossSim, Pacer, Packetizer, ResendStore, pacer, socket};
+use fernsicht_proto::{MAX_DATAGRAM, Nack};
 
 use crate::config::SessionParams;
 use crate::health::RepeatedError;
@@ -39,12 +40,34 @@ pub(crate) fn send_loop(
     let budget = Duration::from_micros(clock::frame_interval_us(u32::from(params.fps)));
     let mut window: Window = (Instant::now(), Sent::default());
     let mut errors = RepeatedError::default();
+    let mut resend = ResendStore::default();
+    // The configured rate: what pacing never exceeds.
+    let cap = pacer.rate();
 
-    while let Ok(enc) = queue.recv() {
+    loop {
+        let enc = crossbeam_channel::select! {
+            recv(queue) -> enc => match enc {
+                Ok(enc) => enc,
+                Err(_) => break,
+            },
+            recv(shared.nacks.1) -> nack => {
+                if let Ok(nack) = nack {
+                    answer(shared, link, &resend, &nack, &mut scratch, &mut errors)?;
+                }
+                continue;
+            }
+        };
         if !shared.running.load(Ordering::Acquire) {
             break;
         }
         packetizer.set_loss(f32::from_bits(shared.fec_loss.load(Ordering::Relaxed)));
+        let bitrate = match shared.target_kbps.load(Ordering::Relaxed) {
+            0 => params.bitrate_kbps,
+            kbps => kbps,
+        };
+        let delivery = shared.delivery_kbps.load(Ordering::Relaxed);
+        pacer.set_rate(pacer::rate_for_delivery(cap, delivery, bitrate));
+        let frame_id = enc.frame_id;
         let meta = FrameMeta {
             session_id: params.session_id,
             frame_id: enc.frame_id,
@@ -62,19 +85,10 @@ pub(crate) fn send_loop(
                 .iter()
                 .map(Vec::as_slice)
                 .filter(|_| !loss.drop_packet());
-            match link.send_chunk(kept, &mut scratch) {
-                Ok(_) => Ok(()),
-                // The network gone for a moment is packet loss, not a
-                // reason to stop.
-                Err(e) if crate::health::send_error_is_transient(&e) => {
-                    if let Some(line) = errors.report(e.to_string(), Instant::now()) {
-                        log::warn!("send: {line}");
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            transient_ok(link.send_chunk(kept, &mut scratch), &mut errors)
         })?;
+        // After it left: keeping it costs the frame no time.
+        resend.keep(frame_id, pkts);
         HostStats::bump(&shared.stats.frames_sent);
 
         if let Some(r) = throughput::close_after(&mut window, Instant::now(), LOG_EVERY) {
@@ -89,4 +103,33 @@ pub(crate) fn send_loop(
         }
     }
     Ok(())
+}
+
+/// Sends again what `nack` asks for, if it is still kept: unpaced, a few
+/// packets, sealed afresh.
+fn answer(
+    shared: &Shared,
+    link: &Link,
+    resend: &ResendStore,
+    nack: &Nack,
+    scratch: &mut Vec<u8>,
+    errors: &mut RepeatedError,
+) -> std::io::Result<()> {
+    let counted = resend.find(nack).inspect(|_| {
+        HostStats::bump(&shared.stats.packets_resent);
+    });
+    transient_ok(link.send_chunk(counted, scratch), errors)
+}
+
+/// The network gone for a moment is packet loss, not a reason to stop.
+fn transient_ok(sent: std::io::Result<()>, errors: &mut RepeatedError) -> std::io::Result<()> {
+    match sent {
+        Err(e) if crate::health::send_error_is_transient(&e) => {
+            if let Some(line) = errors.report(e.to_string(), Instant::now()) {
+                log::warn!("send: {line}");
+            }
+            Ok(())
+        }
+        other => other,
+    }
 }

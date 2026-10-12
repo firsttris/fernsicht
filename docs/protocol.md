@@ -1,7 +1,8 @@
 # Protocol
 
 Host and client talk over one UDP port (47800 by default) with their own compact protocol. It is
-built for low latency: no retransmission of video (FEC repairs it instead), small fixed headers,
+built for low latency: FEC repairs lost video without a round trip (where the round trip is short
+against a frame, a LAN, the client also asks for what FEC cannot repair), small fixed headers,
 little-endian integers, and a parser that never panics and never allocates. The browser uses WebRTC
 instead (see [web viewer](web-viewer.md)).
 
@@ -17,8 +18,8 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 
 | Kind | Direction | |
 |---|---|---|
-| Video (1) | host → client | one shard of an encoded frame: session, frame ID, frame length, capture time and stage offsets, FEC group position, keyframe flag |
-| Feedback (2) | client → host | every 100 ms: frames completed and dropped, packets received, lost and recovered; asks for a keyframe or the pointer image |
+| Video (1) | host → client | one shard of an encoded frame: session, frame ID, frame length, capture time and stage offsets, FEC group position, keyframe flag, retransmission flag |
+| Feedback (2) | client → host | every 100 ms: frames completed and dropped, packets received, lost and recovered, the queue delay, packets marked CE, the delivery rate; asks for a keyframe or the pointer image |
 | ClockPing (3) / ClockPong (4) | both | clock sync: the client's send time, the host's receive and send times |
 | Hello (5) / HelloAck (6) | client → host / back | the session request (size, fps, bitrate, the codecs the client decodes, whether it wants intra refresh) and the answer (session ID, size, fps, codec, whether the stream refreshes) |
 | Bye (7) | both | the session ends |
@@ -31,6 +32,7 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 | Discover (17) / Announce (18) | client → broadcast / host → client | device discovery in the LAN |
 | Monitors (19) / SelectMonitor (20) | host → client / back | the host's monitors and which is shown; the client's choice |
 | KeyframeRequest (21) | client → host | the client cannot show the stream: the last frame it completed and its round-trip time; sent at once, again while no keyframe comes |
+| Nack (22) | client → host | the shards of one frame FEC cannot repair (FEC group and index, up to 64) |
 
 Limits are enforced while parsing: frames at most 8 MiB, at most 1,024 shards per FEC group, pointer
 images at most 256×256, at most 64 input events per packet, at most 8 monitors. The format is covered
@@ -50,9 +52,16 @@ by property tests and a fuzz target ([testing](testing.md)).
   its last data shard. With several groups, their shards take turns, so that a burst of losses
   spreads over the groups instead of breaking one.
 - The **pacer** is a token bucket: up to 64 KiB leave back-to-back (a P-frame usually fits whole and
-  goes at line rate), the rest at the pacing rate (`--pace-mbit`, 400 Mbit/s), so that switch and
-  Wi-Fi buffers do not overflow on keyframes. The bucket refills between frames. A frame too large
-  to leave within one frame interval at that rate goes faster, so the sender never falls behind.
+  goes at line rate), the rest at the pacing rate, so that switch and Wi-Fi buffers do not overflow
+  on keyframes. The bucket refills between frames. A frame too large to leave within one frame
+  interval at that rate goes faster, so the sender never falls behind.
+- The **pacing rate** is what the path delivers, as the client measures it: a frame that fits in
+  the burst leaves back-to-back and arrives spread out by the slowest link, so its bytes after the
+  first packet over the time to the last are that link's rate (frames that arrive within 250 µs, a
+  GRO run, and frames with retransmissions are left out; each feedback reports the median). The
+  host paces at that rate, at most `--pace-mbit` (400 Mbit/s) and at least four times the bitrate,
+  so that a wrong measurement never holds a frame back much; at `--pace-mbit` until a measurement
+  comes.
 - Datagrams leave in **chunks**: those due within 200 µs of each other, sealed one after the other
   into one buffer and handed to the kernel in one call that it cuts into datagrams (UDP GSO; one by
   one where a route cannot). The send thread sleeps between chunks with a timer slack of 1 µs
@@ -62,6 +71,21 @@ by property tests and a fuzz target ([testing](testing.md)).
   answers, the client's input, feedback and pings. Wi-Fi access points put them into the WMM video
   and voice queues, which get the air first; routers may prioritise them, some ignore or clear the
   marks. The browser's WebRTC socket carries AF41.
+- **ECN:** the native client's video is ECN-capable (ECT(0)): a router with an AQM (fq_codel, CAKE,
+  L4S) marks it CE instead of dropping it when its queue fills. The client reads the marks
+  (`IP_RECVTOS`, `IPV6_RECVTCLASS`) and reports how many packets carried one; the host takes them for
+  congestion, before anything is lost.
+- **Queue delay:** each frame's first packet arrives some time after the frame was encoded, on two
+  clocks whose offset is unknown but constant. The lowest of the last 10 s stands for the path without
+  queues; what a frame takes beyond it, it waited in a queue (a router's, an access point's, the
+  host's own sender). Feedback carries the interval's average.
+- **NACK:** a frame FEC cannot complete is asked for once its packets have been quiet for 2 ms (its
+  sending is over): the client names the missing data shards of each FEC group it has seen, and the
+  host sends them again from the last four frames it keeps, marked as retransmissions and sealed
+  afresh. Only where the round trip and that wait fit in a frame interval (a LAN), so the answer
+  comes before the next frame; further away a keyframe or the refresh heals the loss as before. The
+  shards asked for count as lost when they are asked for, so that FEC goes on sizing for the loss on
+  the wire.
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one. A stream with intra refresh
@@ -76,9 +100,11 @@ by property tests and a fuzz target ([testing](testing.md)).
   Feedback still carries the keyframe flag (for hosts before KeyframeRequest); the host weighs it the
   same way. Browsers ask with RTCP PLI; the round trip comes from their receiver reports.
 - **Bitrate adaptation:** the host lowers the bitrate quickly (×0.7, at most once a second) when its
-  own sender falls behind or loss is heavy (over 20 %), gently (×0.85, at most every 2 s) when frames
-  are lost despite FEC or loss is over 15 %, and raises it carefully (×1.15 after 5 s without either);
-  never above what the client asked for. Random Wi-Fi loss that FEC repairs is not congestion: it
+  own sender falls behind, loss is heavy (over 20 %) or frames wait 50 ms in a queue; gently (×0.85, at
+  most every 2 s) when frames are lost despite FEC, loss is over 15 %, a queue holds them 15 ms or
+  packets arrive marked CE; holds it while a queue of 5–15 ms builds; and raises it carefully (×1.15
+  after 5 s without any of it); never above what the client asked for. The queue thresholds stand
+  clear of Wi-Fi's own jitter of a few milliseconds. Random Wi-Fi loss that FEC repairs is not congestion: it
   neither costs sharpness nor keeps the bitrate from coming back. The running encoder takes the new
   rate: NVENC reconfigures its session in place, VAAPI opens a new codec context on the same device,
   frame pool and converter. Either way the next frame is a keyframe; there is no gap in the picture.

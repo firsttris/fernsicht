@@ -15,6 +15,7 @@ fn one_minute_of_a_bad_network() {
         delay: Duration::from_millis(2),
         jitter: Duration::from_millis(4),
         blackout: Some((Duration::from_secs(30), Duration::from_millis(300))),
+        ..Impairment::none()
     };
     let sc = Scenario {
         width: 1920,

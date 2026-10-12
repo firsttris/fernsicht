@@ -623,14 +623,20 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   de-duplicated, so lossy Wi-Fi can cause keyframe storms.
 - **Fix:** send an immediate request on gap detection (rate-limited); ignore requests within
   RTT + 2 frames of the last keyframe; later NACK and retransmit for keyframes in the LAN.
-- **Status:** fixed, except NACK. The client sends a KeyframeRequest (new packet kind 21: last
+- **Status:** fixed. The client sends a KeyframeRequest (new packet kind 21: last
   complete frame, round-trip time) the moment the need arises and again only when a keyframe
   should have come (`crates/net/src/keyframe.rs`). The host records the last keyframe it sent and
   skips requests it answers: newer than the client's last complete frame and within RTT + 2 frames
   + 10 ms; a client that completed a later frame lost it and gets another at once. Feedback's flag
   and browser PLIs (RTT from str0m's receiver-report statistics) go through the same check.
-  Retransmitting lost keyframe shards (NACK) stays open: intra refresh and reference frame
-  invalidation (D1, D2) would make the keyframe itself rare.
+  NACK (2026-10-12): where the round trip and a 2 ms wait fit in a frame interval (a LAN), the
+  client asks for the data shards FEC cannot repair once a frame's packets went quiet (Nack, kind
+  22), for any frame, keyframes included; the host sends them again from its last four frames
+  (`fernsicht_net::resend`), flagged as retransmissions and sealed afresh. Keeping a frame costs
+  the send thread 2 µs for a 42 kB P-frame, 13 µs for a 250 kB keyframe, after it left. What is asked for counts
+  as lost at once, so FEC goes on sizing for the loss on the wire. End to end, bursts of eight lost
+  datagrams every 200 ms (half a 720p frame, beyond its recovery shards) cost no frame
+  (`shards_fec_cannot_repair_are_sent_again`; without NACK each burst cost one and a keyframe).
 
 ### C3 · Fixed-rate pacing adds latency on cable and paces large frames least
 
@@ -639,12 +645,14 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   frames above ~416 kB go out faster than the pacing rate. Recovery shards of earlier groups go
   before data of later groups.
 - **Fix:** token bucket with a burst allowance; rate from measured capacity; data first, parity last.
-- **Status:** fixed, except the measured rate. The pacer is a token bucket (GCRA): 64 KiB at once,
+- **Status:** fixed. The pacer is a token bucket (GCRA): 64 KiB at once,
   the rest at the pacing rate, faster only when a frame would not leave within one frame interval
   (the budget was half of one). The packetizer sends all data shards before the recovery shards.
   On the clean 1080p60 scenario at 20 Mbit/s the network stage fell from 865 to 268 µs on
-  average (p95 938 → 319 µs). The rate still comes from `--pace-mbit`; deriving it from measured
-  capacity belongs to the delay-based congestion control (D3).
+  average (p95 938 → 319 µs). The rate is measured since D3 (2026-10-12): frames that fit in the
+  burst leave back-to-back, and the client reports the rate the slowest link spread them to
+  (`fernsicht_net::delivery`, the median of each feedback interval); the host paces at it, at most
+  `--pace-mbit`, at least four times the bitrate.
 
 ### C4 · The FEC group layout is weak against bursts
 
@@ -749,9 +757,11 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 
 - **Fix:** video AF41 (WMM video), input, audio, pointer and feedback EF (WMM voice); later ECN as
   the signal for C/D3.
-- **Status:** fixed, ECN left for D3. The host's socket marks EF by default and video datagrams
+- **Status:** fixed. The host's socket marks EF by default and video datagrams
   carry AF41 as a control message with the GSO send (`IP_TOS`, or `IPV6_TCLASS` for IPv6); the
-  client's socket marks EF, the WebRTC socket AF41. A loopback test reads the marks back.
+  client's socket marks EF, the WebRTC socket AF41. A loopback test reads the marks back. ECN
+  (2026-10-12, D3): the native client's video is ECT(0); the client reads CE marks
+  (`IP_RECVTOS`, `IPV6_RECVTCLASS`) and reports their count, which the host takes for congestion.
 
 ### C12 · The web viewer sends input on a reliable, ordered channel
 
@@ -880,7 +890,7 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
-D6, D2, D1 and D10 are done; D8 was measured and set aside (below).
+D6, D2, D1, D10 and D3 are done; D8 was measured and set aside (below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -956,6 +966,20 @@ core busy. PulseAudio's API stays the fallback. The host's capture stays on it: 
 "Adaptive resampling" was already done in A22 (the drift control stretches frames). Tests: the
 format pod and the struct layouts against PipeWire's headers; a real stream, opt-in
 (`FERNSICHT_SOUND=1`, it plays silence; CI has no PipeWire session).
+
+D3 is done (2026-10-12). Feedback carries three signals more. The **queue delay**: each frame's
+first packet against its encoding time, on two clocks whose offset cancels against the lowest of
+the last 10 s (`fernsicht_net::delay`); the interval's average above it is what frames waited in a
+queue. **CE marks**: the native client's video is ECN-capable, and the client counts the packets a
+router marked. And the **delivery rate** the host now paces at (C3). The rate controller lowers the
+bitrate hard from 50 ms of queue, gently from 15 ms or a CE mark, holds it while 5–15 ms build, and
+counts the link clean below 5 ms; the thresholds stand clear of Wi-Fi's own jitter. End to end
+through a 6 Mbit/s bottleneck whose queue never overflows, 10 Mbit/s of video went below 6 Mbit/s
+with nothing lost; through a 9 Mbit/s one that marks CE from 2 ms of queue, the marks reached the
+host and lowered the bitrate, again without loss. Not seen live yet: an AQM that marks (fq_codel
+with `ecn`, CAKE) between two of our machines. Not L4S: that needs the scalable reaction (a cut in
+proportion to the share marked, every round trip), which a bitrate that changes at most once a
+second cannot give.
 
 ## E. Clean code and consistency
 

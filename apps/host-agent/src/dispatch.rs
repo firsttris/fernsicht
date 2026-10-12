@@ -170,6 +170,14 @@ impl HostAgent {
                 }
             }
             Packet::Input(h, body) if authentic => on_input(l, &h, body),
+            Packet::Nack(n) if authentic => {
+                if let Some(s) = l.session.as_ref()
+                    && ours(s, n.session_id)
+                {
+                    // Full: the sender is behind and the answer late.
+                    let _ = s.shared.nacks.0.try_send(n);
+                }
+            }
             Packet::KeyframeRequest(k) if authentic => {
                 if let Some(s) = l.session.as_mut()
                     && ours(s, k.session_id)

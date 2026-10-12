@@ -99,8 +99,10 @@ Added after that:
      bottom, Y at the top); the X/Y swap of the `xpad` driver is
      compensated on both sides.
    - Bitrate: `crates/net/src/rate.rs`. Down on frames that are lost
-     despite FEC, on an overloaded sender, or on more than 20 % loss. Up
-     after 5 s of clean network. The running encoder takes the new rate
+     despite FEC, on an overloaded sender, on more than 20 % loss, and
+     before any loss: on frames waiting 15 ms or more in a queue, on ECN
+     CE marks (D3). Up after 5 s of clean network. The host paces at the
+     delivery rate the client measures. The running encoder takes the new rate
      (NVENC in place, VAAPI with a new codec context on the same GPU
      objects; one keyframe). Tested with VAAPI and 10 % artificial loss.
    - App: page “Einstellungen” (settings) (resolution, frame rate,
@@ -205,9 +207,14 @@ Confirmed live (2026-10-10, according to the user):
    A is at the bottom and Y at the top. With Xbox and PlayStation
    controllers.
 7. **Bitrate adaptation over Wi-Fi.** Connect on the bazzite, look for
-   `bitrate … Mbit/s` in the host's log. Normal Wi-Fi losses leave the
-   bitrate alone. Only frames lost despite FEC, or an overloaded sender,
-   lower it.
+   `bitrate … Mbit/s (… queue … ms, … CE)` in the host's log. Normal
+   Wi-Fi losses and Wi-Fi's own jitter (a few ms of queue) leave the
+   bitrate alone. Frames lost despite FEC, an overloaded sender, a queue
+   of 15 ms and more, or CE marks lower it. NACK (2026-10-12): losses FEC
+   cannot repair should no longer cost a frame in the LAN; the client's
+   summary at the end says how many packets were “sent again”. CE marks need a router with an AQM
+   that marks (fq_codel or CAKE with ECN), which the home network
+   probably lacks.
 8. **Device discovery over Wi-Fi.** Does the broadcast from the bazzite
    reach the zentrale, and the answer come back? The answer goes to an
    ephemeral port of the client. Fedora's zone `FedoraWorkstation`

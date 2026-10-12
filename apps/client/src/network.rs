@@ -11,7 +11,10 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use fernsicht_audio::jitter::Encoded;
 use fernsicht_core::now_us;
 use fernsicht_net::keyframe::Asks;
-use fernsicht_net::{ClockSync, LossSim, Reassembler, ReceiverStats, keyframe};
+use fernsicht_net::socket::Received;
+use fernsicht_net::{
+    ClockSync, DeliveryRate, LossSim, QueueDelay, Reassembler, ReceiverStats, keyframe,
+};
 use fernsicht_proto::{
     Bye, ClockPing, Codec, Feedback, Handshake, Hello, HelloAck, InputHeader, KeyframeRequest,
     MAX_DATAGRAM, Packet, SealedHeader, SelectMonitor, VideoHeader,
@@ -22,6 +25,7 @@ use fernsicht_secure::session::{Initiator, Transport};
 
 use crate::audio::AudioPacket;
 use crate::config::{ClientConfig, CodecChoice, offered_codecs};
+use crate::congestion::{NACK_QUIET_US, nack_in_time, nacks, queue_sample};
 use crate::cursor::CursorTracker;
 use crate::failure::{Failure, FailureCode};
 use crate::input::InputLink;
@@ -123,6 +127,10 @@ struct Net {
     last_feedback: Instant,
     last_packet: Instant,
     rates: RateWindow,
+    /// Congestion signals for the next feedback (D3, C3, C11).
+    queue_delay: QueueDelay,
+    delivery: DeliveryRate,
+    ce_packets: u32,
     overflowed: u64,
     acked_at: Option<Instant>,
     video_seen: bool,
@@ -165,10 +173,15 @@ pub(crate) fn network_loop(
         }
         check_host(cfg, &mut net)?;
         send_due(cfg, socket, pipe, info, &mut net);
-        let Some((len, size)) = receive(socket, &mut rx)? else {
+        let Some(got) = receive(socket, &mut rx)? else {
             continue;
         };
+        let Received { len, size, ce } = got;
         let now = now_us();
+        if ce {
+            let n = u32::try_from(got.datagrams()).unwrap_or(u32::MAX);
+            net.ce_packets = net.ce_packets.saturating_add(n);
+        }
         // With GRO a run of datagrams comes at once.
         for datagram in rx[..len].chunks(size) {
             let Ok(outer) = Packet::decode(datagram) else {
@@ -245,6 +258,9 @@ fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
         last_feedback: Instant::now(),
         last_packet: Instant::now(),
         rates: RateWindow::new(),
+        queue_delay: QueueDelay::default(),
+        delivery: DeliveryRate::default(),
+        ce_packets: 0,
         overflowed: 0,
         acked_at: None,
         video_seen: false,
@@ -296,6 +312,7 @@ fn send_due(
     send_hello(socket, net);
     if let Some((session_id, _)) = net.session {
         send_input(cfg, socket, net, session_id);
+        send_nacks(socket, net, session_id);
         ask_keyframe(socket, pipe, net, session_id);
     }
     ping(cfg, socket, net);
@@ -331,6 +348,25 @@ fn send_input(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net, session_id:
     if let Some(n) = n {
         send_packet(socket, seal_with(net), &net.out[..n]);
     }
+}
+
+/// Asks again for the shards of frames FEC cannot complete, where the
+/// answer comes in time: the round trip and the wait for the frame's last
+/// packets fit in a frame interval (a LAN; further away a keyframe or the
+/// refresh heals the loss as before).
+fn send_nacks(socket: &UdpSocket, net: &mut Net, session_id: u32) {
+    if !nack_in_time(net.clock.rtt_us(), net.frame_interval) {
+        return;
+    }
+    let crypto = net.crypto.as_deref().map(|t| (t, session_id));
+    let out = &mut net.out;
+    net.reassembler
+        .for_each_missing(now_us(), NACK_QUIET_US, |frame_id, shards| {
+            for nack in nacks(session_id, frame_id, shards) {
+                let n = nack.encode(out);
+                send_packet(socket, crypto, &out[..n]);
+            }
+        });
 }
 
 /// A broken picture asks for a keyframe at once, not at the next feedback
@@ -413,6 +449,9 @@ fn send_feedback(
         packets_received: s.packets_received,
         packets_lost: s.packets_lost,
         packets_recovered: s.packets_recovered,
+        queue_delay_us: net.queue_delay.take_interval(),
+        ce_packets: std::mem::take(&mut net.ce_packets),
+        delivery_kbps: net.delivery.take_interval(),
     };
     let n = fb.encode(&mut net.out);
     send_packet(socket, seal_with(net), &net.out[..n]);
@@ -428,7 +467,7 @@ fn send_feedback(
 
 /// The next datagrams (a run of one size with GRO): their length and the
 /// size of each; `None` when the wait ran out or the host is not up yet.
-fn receive(socket: &UdpSocket, rx: &mut [u8]) -> anyhow::Result<Option<(usize, usize)>> {
+fn receive(socket: &UdpSocket, rx: &mut [u8]) -> anyhow::Result<Option<Received>> {
     match fernsicht_net::socket::recv_segments(socket, rx) {
         Ok(n) => Ok(Some(n)),
         Err(e)
@@ -655,8 +694,14 @@ fn on_video(
     let Some(done) = net.reassembler.push(h, payload, now) else {
         return;
     };
-    let (header, completed_us) = (done.header, done.completed_us);
+    let (header, arrival) = (done.header, done.arrival);
+    let completed_us = arrival.completed_us;
     net.rates.frames += 1;
+    if !arrival.retransmitted {
+        net.queue_delay
+            .push(queue_sample(&header, arrival.first_us), now);
+        net.delivery.push(&arrival);
+    }
     // The decoder fell behind by a whole queue: drop the frame; the gap
     // makes it ask for a keyframe.
     let Ok(mut rf) = pipe.free_rx.try_recv() else {

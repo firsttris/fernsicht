@@ -37,7 +37,6 @@ From the [performance](performance.md) page, in its recommended order:
 |---|---|---|
 | **Show immediately** (Vulkan immediate present in gaming mode) | up to one refresh: ≈ 3 ms at 165 Hz, ≈ 8 ms at 60 Hz; costs tearing | small |
 | **Intra refresh** instead of keyframes | no data bursts after a loss, less stutter over Wi-Fi | medium |
-| **Delay-based congestion control** | reacts before packets are lost | medium |
 | **Bitrate adaptation in the web viewer** (WebRTC's TWCC estimate) | browsers get no more than the network carries | medium |
 | **Slices**: send parts of a frame before it is encoded (the header already has the fields) | several ms per frame | large |
 | **4:4:4 colour** for the desktop | crisp text; NVENC only | medium |

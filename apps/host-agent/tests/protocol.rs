@@ -598,8 +598,9 @@ fn reported_loss_raises_fec_redundancy() {
     host.shutdown();
 }
 
-#[test]
-fn congestion_lowers_the_bitrate() {
+/// Frames get smaller while the peer reports `feedback` for three
+/// seconds.
+fn frames_shrink_under(feedback: impl Fn(u32) -> Feedback) {
     let host = Host::default();
     let mut peer = Peer::new(host.addr);
     peer.hello(640, 360, 60, 8_000);
@@ -619,18 +620,8 @@ fn congestion_lowers_the_bitrate() {
         sizes[sizes.len() / 2]
     };
     let before = frame_size(&mut peer);
-    // Congestion for three seconds: heavy loss, frames lost despite FEC.
     for _ in 0..30 {
-        peer.send(|b| {
-            Feedback {
-                session_id: ack.session_id,
-                packets_received: 70,
-                packets_lost: 30,
-                frames_dropped: 1,
-                ..Feedback::default()
-            }
-            .encode(b)
-        });
+        peer.send(|b| feedback(ack.session_id).encode(b));
         std::thread::sleep(Duration::from_millis(100));
     }
     // Frames sent before the change still wait in the socket: skip them.
@@ -639,6 +630,80 @@ fn congestion_lowers_the_bitrate() {
     assert!(
         f64::from(after) < f64::from(before) * 0.6,
         "{before} → {after} bytes per frame"
+    );
+    host.shutdown();
+}
+
+#[test]
+fn congestion_lowers_the_bitrate() {
+    // Heavy loss, frames lost despite FEC.
+    frames_shrink_under(|session_id| Feedback {
+        session_id,
+        packets_received: 70,
+        packets_lost: 30,
+        frames_dropped: 1,
+        ..Feedback::default()
+    });
+}
+
+#[test]
+fn a_queue_lowers_the_bitrate_before_anything_is_lost() {
+    frames_shrink_under(|session_id| Feedback {
+        session_id,
+        packets_received: 100,
+        queue_delay_us: 60_000,
+        ..Feedback::default()
+    });
+}
+
+#[test]
+fn a_nack_brings_the_shards_again() {
+    let host = Host::default();
+    let mut peer = Peer::new(host.addr);
+    peer.hello(640, 360, 60, 8_000);
+    let ack = peer.ack();
+    // A frame's first shard, and what its third carried.
+    let (frame, group) = peer
+        .wait_for(Duration::from_secs(2), |p| match p {
+            Packet::Video(h, _) if h.data_shards >= 3 && h.shard_index == 0 => {
+                Some((h.frame_id, h.group_index))
+            }
+            _ => None,
+        })
+        .expect("no video");
+    let original = peer
+        .wait_for(Duration::from_secs(1), |p| match p {
+            Packet::Video(h, payload) if h.frame_id == frame && h.shard_index == 2 => {
+                Some(payload.to_vec())
+            }
+            _ => None,
+        })
+        .expect("no third shard");
+    let want = [ShardRef { group, shard: 1 }, ShardRef { group, shard: 2 }];
+    peer.send(|b| Nack::new(ack.session_id, frame, &want).encode(b));
+    let mut again = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while again.len() < 2 && Instant::now() < deadline {
+        if let Some(r) = peer.wait_for(Duration::from_millis(100), |p| match p {
+            Packet::Video(h, payload) if h.retransmit => {
+                Some((h.frame_id, h.group_index, h.shard_index, payload.to_vec()))
+            }
+            _ => None,
+        }) {
+            again.push(r);
+        }
+    }
+    assert_eq!(again.len(), 2, "not sent again");
+    assert!(again.iter().all(|(f, g, _, _)| (*f, *g) == (frame, group)));
+    let third = again.iter().find(|r| r.2 == 2).expect("shard 2");
+    assert_eq!(third.3, original, "the same bytes");
+    // Nothing else is marked: only what was asked for.
+    assert!(
+        peer.wait_for(Duration::from_millis(300), |p| match p {
+            Packet::Video(h, _) if h.retransmit => Some(()),
+            _ => None,
+        })
+        .is_none()
     );
     host.shutdown();
 }

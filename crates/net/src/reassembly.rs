@@ -1,8 +1,9 @@
 //! Datagrams → frames, with FEC recovery. Latest frame wins.
 
-use fernsicht_proto::VideoHeader;
+use fernsicht_proto::{ShardRef, VideoHeader};
 use reed_solomon_simd::ReedSolomonDecoder;
 
+use crate::delivery::Arrival;
 use crate::fec::MIN_RECOVERY_CAP;
 use crate::frame_newer;
 use crate::keyframe::RefChain;
@@ -19,10 +20,10 @@ pub const MAX_COUNTED_GAP: u32 = 1 << 16;
 pub struct CompletedFrame<'a> {
     pub header: VideoHeader,
     pub data: &'a [u8],
-    /// Client clock: arrival of the first packet of this frame.
-    pub first_packet_us: u64,
-    /// Client clock: the packet that completed the frame.
-    pub completed_us: u64,
+    /// How it arrived: its first packet and the one that completed it
+    /// (client clock), and whether some of it was retransmitted (then its
+    /// timing says nothing about the path).
+    pub arrival: Arrival,
 }
 
 /// Receiver counters. [`Reassembler::take_interval`] returns and resets the
@@ -34,6 +35,9 @@ pub struct ReceiverStats {
     /// Data shards restored from recovery shards.
     pub packets_recovered: u32,
     pub packets_late: u32,
+    /// Shards sent again on the client's request (NACK); not counted as
+    /// received, so the loss on the wire stays what FEC is sized for.
+    pub packets_retransmitted: u32,
     pub frames_completed: u32,
     pub frames_dropped: u32,
     pub highest_frame_id: u32,
@@ -89,6 +93,13 @@ struct FrameSlot {
     groups_done: usize,
     received: usize,
     first_packet_us: u64,
+    /// Client clock: the last packet that arrived for it.
+    last_packet_us: u64,
+    /// Its missing shards were asked for (once per frame).
+    nacked: bool,
+    /// Packets already booked as lost when they were asked for.
+    lost_booked: usize,
+    retransmitted: bool,
 }
 
 impl FrameSlot {
@@ -111,6 +122,34 @@ impl FrameSlot {
         self.groups_done = 0;
         self.received = 0;
         self.first_packet_us = now_us;
+        self.last_packet_us = now_us;
+        self.nacked = false;
+        self.lost_booked = 0;
+        self.retransmitted = h.retransmit;
+    }
+
+    /// Shards that FEC still lacks, data shards each group misses, into
+    /// `out`. Groups never seen cannot be named (their size is unknown).
+    fn needed(&self, out: &mut Vec<ShardRef>) {
+        out.clear();
+        for (gi, g) in self.groups[..self.header.group_count as usize]
+            .iter()
+            .enumerate()
+        {
+            if !g.seen || g.done || g.total_have >= g.data_shards {
+                continue;
+            }
+            let need = g.data_shards - g.total_have;
+            out.extend(
+                (0..g.data_shards)
+                    .filter(|&i| !g.have[i])
+                    .take(need)
+                    .map(|i| ShardRef {
+                        group: gi as u16,
+                        shard: i as u16,
+                    }),
+            );
+        }
     }
 
     fn matches(&self, h: &VideoHeader, shard: usize) -> bool {
@@ -153,6 +192,8 @@ pub struct Reassembler {
     /// Packets of the last completed frame: the estimate for frames that
     /// never arrived at all.
     typical_packets: u32,
+    /// The shards one NACK names.
+    missing: Vec<ShardRef>,
 }
 
 impl Default for Reassembler {
@@ -172,6 +213,7 @@ impl Reassembler {
             interval: ReceiverStats::default(),
             total: ReceiverStats::default(),
             typical_packets: 0,
+            missing: Vec::new(),
         }
     }
 
@@ -243,7 +285,11 @@ impl Reassembler {
             None => self.session_id = Some(h.session_id),
             _ => {}
         }
-        self.count(|s| s.packets_received = s.packets_received.saturating_add(1));
+        if h.retransmit {
+            self.count(|s| s.packets_retransmitted = s.packets_retransmitted.saturating_add(1));
+        } else {
+            self.count(|s| s.packets_received = s.packets_received.saturating_add(1));
+        }
         // Only forward: a late packet does not move it back.
         if self.total.packets_received == 1 || frame_newer(h.frame_id, self.total.highest_frame_id)
         {
@@ -261,6 +307,8 @@ impl Reassembler {
         let shard = payload.len();
         let idx = self.slot_for(h, shard, now_us)?;
         let slot = &mut self.slots[idx];
+        slot.last_packet_us = now_us;
+        slot.retransmitted |= h.retransmit;
         if slot.complete {
             // Trailing shard of an already completed frame; still counts as
             // received for loss accounting.
@@ -429,15 +477,58 @@ impl Reassembler {
         CompletedFrame {
             header: slot.header,
             data: &slot.buf[..slot.header.frame_len as usize],
-            first_packet_us: slot.first_packet_us,
-            completed_us: now_us,
+            arrival: Arrival {
+                bytes: slot.received * (slot.shard_size + VideoHeader::LEN),
+                packets: slot.received,
+                first_us: slot.first_packet_us,
+                completed_us: now_us,
+                retransmitted: slot.retransmitted,
+            },
+        }
+    }
+
+    /// Frames whose packets went quiet `quiet_us` ago (their sending is
+    /// over) and that FEC cannot complete: `ask` gets each one's id and the
+    /// shards still needed, once per frame. Their missing
+    /// packets are booked as lost now, so FEC goes on sizing for the loss
+    /// on the wire however many the NACK brings back.
+    pub fn for_each_missing(
+        &mut self,
+        now_us: u64,
+        quiet_us: u64,
+        mut ask: impl FnMut(u32, &[ShardRef]),
+    ) {
+        for i in 0..self.slots.len() {
+            let s = &self.slots[i];
+            if !s.active
+                || s.complete
+                || s.nacked
+                || now_us.saturating_sub(s.last_packet_us) < quiet_us
+            {
+                continue;
+            }
+            let mut missing = std::mem::take(&mut self.missing);
+            let slot = &mut self.slots[i];
+            slot.nacked = true;
+            slot.needed(&mut missing);
+            if !missing.is_empty() {
+                let lost = slot.expected_packets().saturating_sub(slot.received);
+                slot.lost_booked = lost;
+                let frame_id = slot.header.frame_id;
+                self.count(|s| s.packets_lost = s.packets_lost.saturating_add(lost as u32));
+                ask(frame_id, &missing);
+            }
+            self.missing = missing;
         }
     }
 
     /// Frees a slot and books its missing packets as lost.
     fn retire(&mut self, idx: usize) {
         let slot = &mut self.slots[idx];
-        let lost = slot.expected_packets().saturating_sub(slot.received) as u32;
+        let lost = slot
+            .expected_packets()
+            .saturating_sub(slot.received)
+            .saturating_sub(slot.lost_booked) as u32;
         slot.active = false;
         self.count(|s| s.packets_lost = s.packets_lost.saturating_add(lost));
     }
@@ -515,6 +606,111 @@ mod tests {
             panic!()
         };
         r.push(&h, payload, 0).map(|f| f.data.to_vec())
+    }
+
+    /// Pushes `pkt` at `now`: the frame it completed, and whether
+    /// retransmissions helped.
+    fn at(r: &mut Reassembler, pkt: &[u8], now: u64) -> Option<(Vec<u8>, bool)> {
+        let Packet::Video(h, payload) = Packet::decode(pkt).unwrap() else {
+            panic!()
+        };
+        r.push(&h, payload, now)
+            .map(|f| (f.data.to_vec(), f.arrival.retransmitted))
+    }
+
+    /// `pkt` as the host sends it again on a NACK.
+    fn resent(pkt: &[u8]) -> Vec<u8> {
+        let Packet::Video(mut h, _) = Packet::decode(pkt).unwrap() else {
+            panic!()
+        };
+        h.retransmit = true;
+        let mut out = pkt.to_vec();
+        h.write(&mut out);
+        out
+    }
+
+    fn asked(r: &mut Reassembler, now: u64) -> Vec<(u32, Vec<ShardRef>)> {
+        let mut out = Vec::new();
+        r.for_each_missing(now, 2_000, |f, s| out.push((f, s.to_vec())));
+        out
+    }
+
+    fn no_fec() -> FecConfig {
+        FecConfig {
+            shard_size: 100,
+            redundancy: 0.0,
+            ..FecConfig::default()
+        }
+    }
+
+    #[test]
+    fn missing_shards_are_asked_for_once_and_retransmissions_complete_the_frame() {
+        let frame: Vec<u8> = (0..2000).map(|i| i as u8).collect();
+        let pkts = packets(0, &frame, no_fec(), true);
+        let mut r = Reassembler::new();
+        for (i, p) in pkts.iter().enumerate() {
+            if i != 3 && i != 11 {
+                assert!(at(&mut r, p, 1_000).is_none());
+            }
+        }
+        // Not while packets may still come, then once.
+        assert!(asked(&mut r, 2_500).is_empty());
+        let shard = |shard| ShardRef { group: 0, shard };
+        assert_eq!(asked(&mut r, 3_000), [(0, vec![shard(3), shard(11)])]);
+        assert!(asked(&mut r, 9_000).is_empty());
+        // Booked as lost when asked for: FEC sizes for the wire's loss.
+        let s = r.take_interval();
+        assert_eq!((s.packets_received, s.packets_lost), (18, 2));
+
+        assert!(at(&mut r, &resent(&pkts[3]), 4_000).is_none());
+        let (data, helped) = at(&mut r, &resent(&pkts[11]), 4_100).unwrap();
+        assert_eq!(data, frame);
+        assert!(helped);
+        let s = r.take_interval();
+        assert_eq!(
+            (
+                s.packets_retransmitted,
+                s.packets_received,
+                s.packets_lost,
+                s.frames_completed,
+                s.frames_dropped
+            ),
+            (2, 0, 0, 1, 0)
+        );
+    }
+
+    #[test]
+    fn what_fec_repairs_is_not_asked_for_nor_booked_twice() {
+        // With recovery shards one loss is FEC's: the frame completes.
+        let with_fec = FecConfig {
+            shard_size: 100,
+            ..FecConfig::default()
+        };
+        let pkts = packets(0, &[7u8; 2000], with_fec, true);
+        let mut r = Reassembler::new();
+        let done = pkts
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != 5)
+            .filter_map(|(_, p)| at(&mut r, p, 1_000))
+            .count();
+        assert_eq!(done, 1);
+        assert!(asked(&mut r, 50_000).is_empty());
+
+        // Frame 0 asks for a shard that never comes; frame 1 completes and
+        // retires it: its loss is booked once.
+        let mut r = Reassembler::new();
+        let one = packets(0, &[1u8; 2000], no_fec(), true);
+        for p in &one[1..] {
+            at(&mut r, p, 1_000);
+        }
+        assert_eq!(asked(&mut r, 5_000).len(), 1);
+        let two = packets(1, &[2u8; 2000], no_fec(), false);
+        for p in &two {
+            at(&mut r, p, 6_000);
+        }
+        let s = r.take_interval();
+        assert_eq!((s.packets_lost, s.frames_dropped), (1, 1));
     }
 
     #[test]

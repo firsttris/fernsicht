@@ -22,6 +22,14 @@ pub struct HostStats {
     pub send_overflows: AtomicU64,
     pub frames_sent: AtomicU64,
     pub audio_frames_sent: AtomicU64,
+    /// Video packets sent again on a NACK.
+    pub packets_resent: AtomicU64,
+    /// Packets the client reported marked CE (ECN) on the way.
+    pub packets_ce: AtomicU64,
+    /// Times the rate controller lowered the bitrate, and the bitrate it
+    /// set last (kbit/s; 0 before it changed one).
+    pub bitrate_cuts: AtomicU64,
+    pub bitrate_kbps: AtomicU64,
 }
 
 impl HostStats {
@@ -48,6 +56,14 @@ pub(crate) struct Shared {
     pub(crate) fec_loss: AtomicU32,
     /// The bitrate the encoder should use now, kbit/s.
     pub(crate) target_kbps: AtomicU32,
+    /// What the client last measured the path deliver, kbit/s (0: not
+    /// yet): the sender paces at it (C3).
+    pub(crate) delivery_kbps: AtomicU32,
+    /// The client's NACKs, for the sender to answer (C2).
+    pub(crate) nacks: (
+        crossbeam_channel::Sender<fernsicht_proto::Nack>,
+        crossbeam_channel::Receiver<fernsicht_proto::Nack>,
+    ),
     /// The client asked for another monitor (index in the list it got).
     pub(crate) monitor_request: std::sync::Mutex<Option<u8>>,
     /// The monitor shown and the others; changes count `screen_changes`.

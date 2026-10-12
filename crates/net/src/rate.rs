@@ -7,6 +7,12 @@
 //! loss (Wi-Fi drops packets at random, not only when full) is FEC's job:
 //! it neither lowers the bitrate nor keeps it from coming back up.
 //!
+//! Queues come before loss (D3): frames that wait on the way (the
+//! client's queue delay, [`crate::delay`]) and packets a router marks CE
+//! instead of dropping them (ECN) count as congestion too, and a queue
+//! that is building keeps the bitrate from going up into it. The
+//! thresholds stand clear of Wi-Fi's own jitter of a few milliseconds.
+//!
 //! Down is quick and up is careful (like TCP): too much bitrate costs
 //! lost frames right away, too little only some sharpness. Changes are
 //! spaced out, because each one may cost the encoder a keyframe.
@@ -25,11 +31,31 @@ pub const SOME_LOSS: f32 = 0.15;
 const DOWN_HARD: f64 = 0.7;
 const DOWN_GENTLY: f64 = 0.85;
 const UP: f64 = 1.15;
+/// Queue delay (µs) from which the bitrate goes down hard, goes down
+/// gently, and below which the link counts as clean; in between it holds.
+pub const DELAY_HEAVY_US: u32 = 50_000;
+pub const DELAY_SOME_US: u32 = 15_000;
+pub const DELAY_CLEAN_US: u32 = 5_000;
 /// Clean this long before going up.
 pub const CLEAN_FOR: Duration = Duration::from_secs(5);
 /// Shortest time between two changes downwards / upwards.
 pub const DOWN_EVERY: Duration = Duration::from_secs(1);
 pub const UP_EVERY: Duration = Duration::from_secs(5);
+
+/// What one client report says about the path.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Signals {
+    /// Loss before FEC, smoothed as FEC sizes for it ([`LossEstimator`]).
+    pub loss: f32,
+    /// Frames lost despite FEC.
+    pub frames_lost: u32,
+    /// The host's sender overflowed since the last report.
+    pub overflow: bool,
+    /// How long frames waited in queues on the way, µs.
+    pub queue_delay_us: u32,
+    /// Packets marked CE (ECN).
+    pub ce_packets: u32,
+}
 
 #[derive(Debug, Clone)]
 pub struct RateController {
@@ -69,14 +95,35 @@ impl RateController {
         overflow: bool,
         now: Instant,
     ) -> Option<u32> {
+        self.report_signals(
+            &Signals {
+                loss,
+                frames_lost,
+                overflow,
+                ..Signals::default()
+            },
+            now,
+        )
+    }
+
+    /// [`Self::report`] with every signal, queues included.
+    pub fn report_signals(&mut self, s: &Signals, now: Instant) -> Option<u32> {
         let since = now.saturating_duration_since(self.last_change);
 
-        let factor = if overflow || loss > HEAVY_LOSS {
+        let factor = if s.overflow || s.loss > HEAVY_LOSS || s.queue_delay_us >= DELAY_HEAVY_US {
             self.clean_since = None;
             (since >= DOWN_EVERY).then_some(DOWN_HARD)
-        } else if frames_lost > 0 || loss > SOME_LOSS {
+        } else if s.frames_lost > 0
+            || s.loss > SOME_LOSS
+            || s.ce_packets > 0
+            || s.queue_delay_us >= DELAY_SOME_US
+        {
             self.clean_since = None;
             (since >= DOWN_EVERY * 2).then_some(DOWN_GENTLY)
+        } else if s.queue_delay_us >= DELAY_CLEAN_US {
+            // A queue is building: no step up into it, none down yet.
+            self.clean_since = None;
+            None
         } else {
             let clean = *self.clean_since.get_or_insert(now);
             (now.saturating_duration_since(clean) >= CLEAN_FOR && since >= UP_EVERY).then_some(UP)
@@ -237,6 +284,65 @@ mod tests {
             feed(&mut c, &mut t, 600, loss);
             assert_eq!(c.0.current(), 20_000, "{loss}");
         }
+    }
+
+    /// Reports 100 ms apart with a queue delay and CE marks, no loss.
+    fn queued(c: &mut Link, t: &mut Instant, n: usize, delay_us: u32, ce: u32) -> Vec<u32> {
+        (0..n)
+            .filter_map(|_| {
+                *t += MS;
+                let loss = c.1.update(0.0);
+                c.0.report_signals(
+                    &Signals {
+                        loss,
+                        queue_delay_us: delay_us,
+                        ce_packets: ce,
+                        ..Signals::default()
+                    },
+                    *t,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_queue_lowers_the_bitrate_before_anything_is_lost() {
+        let mut t = Instant::now();
+        let mut c = link(20_000, t);
+        // 20 ms of queue: gently, every 2 s.
+        let gentle = queued(&mut c, &mut t, 45, 20_000, 0);
+        assert_eq!(gentle.first(), Some(&17_000));
+        assert!(gentle.len() <= 3, "{gentle:?}");
+        // Bufferbloat (a queue of 80 ms): hard, every second.
+        let mut c = link(20_000, t);
+        let hard = queued(&mut c, &mut t, 25, 80_000, 0);
+        assert_eq!(hard.first(), Some(&14_000));
+        assert!(hard.len() >= 2, "{hard:?}");
+    }
+
+    #[test]
+    fn a_building_queue_holds_the_bitrate_where_it_is() {
+        let mut t = Instant::now();
+        let mut c = link(20_000, t);
+        queued(&mut c, &mut t, 30, 80_000, 0);
+        let low = c.0.current();
+        // 8 ms of queue for a minute: neither down nor up.
+        assert!(queued(&mut c, &mut t, 600, 8_000, 0).is_empty());
+        assert_eq!(c.0.current(), low);
+        // Wi-Fi's jitter of a few ms is clean: back up.
+        assert!(!queued(&mut c, &mut t, 600, 3_000, 0).is_empty());
+        assert!(c.0.current() > low);
+    }
+
+    #[test]
+    fn ce_marks_count_as_congestion_without_loss() {
+        let mut t = Instant::now();
+        let mut c = link(20_000, t);
+        let down = queued(&mut c, &mut t, 25, 0, 3);
+        assert_eq!(down.first(), Some(&17_000));
+        // And keep it from going up.
+        let low = c.0.current();
+        assert!(queued(&mut c, &mut t, 600, 0, 1).iter().all(|&k| k <= low));
     }
 
     #[test]

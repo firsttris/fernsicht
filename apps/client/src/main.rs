@@ -452,13 +452,15 @@ fn print_summary(s: &RunSummary) {
         println!("Decoded with {decoder}");
     }
     println!(
-        "Frames: {} shown, {} complete, {} lost · packets: {} received, {} lost, {} repaired by FEC",
+        "Frames: {} shown, {} complete, {} lost · packets: {} received, {} lost, {} repaired by \
+         FEC, {} sent again",
         s.frames_presented,
         s.receiver.frames_completed,
         s.receiver.frames_dropped,
         s.receiver.packets_received,
         s.receiver.packets_lost,
-        s.receiver.packets_recovered
+        s.receiver.packets_recovered,
+        s.receiver.packets_retransmitted
     );
     println!(
         "Glass-to-glass (last {} frames): avg {} · p95 {} · max {}",
