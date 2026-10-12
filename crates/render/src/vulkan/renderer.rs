@@ -457,6 +457,10 @@ impl Renderer {
     }
 
     fn destroy_planes(&self, p: Planes) {
+        // A GPU given up may still use them: left alone (Gpu::give_up).
+        if self.gpu.is_lost() {
+            return;
+        }
         let d = &self.gpu.device;
         // SAFETY: the GPU is idle on these (every frame waits its fence).
         unsafe {
@@ -570,6 +574,9 @@ impl Renderer {
 
     fn destroy_staging(&self, staging: Option<Staging>) {
         let Some(s) = staging else { return };
+        if self.gpu.is_lost() {
+            return;
+        }
         // SAFETY: idle (every frame waits its fence), owned by us.
         unsafe {
             let d = &self.gpu.device;
@@ -580,7 +587,9 @@ impl Renderer {
     }
 
     fn forget_shared(&mut self) {
-        if let Some(s) = self.shared.take() {
+        if let Some(s) = self.shared.take()
+            && !self.gpu.is_lost()
+        {
             // SAFETY: idle (every frame waits its fence), owned by us.
             unsafe {
                 self.gpu.device.destroy_buffer(s.buffer, None);
@@ -1268,6 +1277,10 @@ impl Renderer {
     /// Drops the views of the Vulkan decoder's images (their pool is gone
     /// or about to be).
     fn forget_decoded(&mut self) {
+        if self.gpu.is_lost() {
+            self.decoded.clear();
+            return;
+        }
         let d = &self.gpu.device;
         for (_, v) in self.decoded.drain() {
             // SAFETY: every frame waits for its fence before the next is
@@ -1377,7 +1390,9 @@ impl Renderer {
     }
 
     fn drop_offscreen(&mut self) {
-        if let Some(o) = self.offscreen.take() {
+        if let Some(o) = self.offscreen.take()
+            && !self.gpu.is_lost()
+        {
             let d = &self.gpu.device;
             // SAFETY: idle, owned by us.
             unsafe {
@@ -1445,7 +1460,9 @@ impl Renderer {
     }
 
     fn drop_cursor(&mut self) {
-        if let Some(t) = self.cursor.take() {
+        if let Some(t) = self.cursor.take()
+            && !self.gpu.is_lost()
+        {
             let d = &self.gpu.device;
             // SAFETY: idle (every frame waits), owned by us.
             unsafe {
@@ -1476,6 +1493,10 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        if self.gpu.is_lost() {
+            // It may still use all of it (Gpu::give_up).
+            return;
+        }
         // Wait for the GPU, then destroy what we own.
         self.gpu.wait_idle();
         self.forget_imports();

@@ -102,6 +102,8 @@ pub(crate) struct Pipe<'a> {
     /// Set by the decoder while its reference chain is broken.
     pub(crate) need_keyframe: &'a AtomicBool,
     pub(crate) cursor: &'a Mutex<CursorTracker>,
+    /// Set by the present thread when the GPU was given up.
+    pub(crate) gpu_lost: &'a AtomicBool,
 }
 
 /// The network thread's state between datagrams.
@@ -151,6 +153,15 @@ pub(crate) fn network_loop(
         // released on closing) is seen below.
         if stop.load(Ordering::Acquire) || deadline.is_some_and(|d| Instant::now() >= d) {
             break;
+        }
+        if pipe.gpu_lost.load(Ordering::Relaxed) {
+            say_goodbye(cfg, socket, &mut net);
+            return Err(Failure::new(
+                FailureCode::GpuLost,
+                "this computer's GPU stopped responding; the session ended \
+                 (on NVIDIA the kernel log shows an Xid)",
+            )
+            .into());
         }
         check_host(cfg, &mut net)?;
         send_due(cfg, socket, pipe, info, &mut net);

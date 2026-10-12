@@ -26,6 +26,8 @@ pub enum FailureCode {
     NoAnswer,
     /// The session's host went quiet.
     HostSilent,
+    /// This computer's GPU stopped responding during the session.
+    GpuLost,
     /// The password prompt was dismissed (sharing this computer).
     Cancelled,
     /// No pkexec to set up the host as administrator.

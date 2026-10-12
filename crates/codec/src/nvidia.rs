@@ -302,10 +302,13 @@ impl NvencEncoder {
             Err(e) => return Err(CodecError::Backend(format!("screen input for NVENC: {e}"))),
         };
         // Waits for Vulkan: the picture is complete when NVENC reads it.
-        input
-            .converter
-            .convert(image)
-            .map_err(CodecError::Backend)?;
+        if let Err(e) = input.converter.convert(image) {
+            return Err(if input.converter.gpu_lost() {
+                CodecError::GpuLost
+            } else {
+                CodecError::Backend(e)
+            });
+        }
         let l = input.converter.layout();
         // SAFETY: hw is an empty frame (encode() unrefs it); the buffer
         // outlives the references FFmpeg takes (dropped with the packet).

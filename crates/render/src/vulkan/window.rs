@@ -139,6 +139,10 @@ impl WindowPresenter {
             return;
         };
         let gpu = self.renderer.gpu();
+        if gpu.is_lost() {
+            // It may still use the images (Gpu::give_up).
+            return;
+        }
         let swapchain_fn = gpu.swapchain.as_ref().expect("created for a window");
         gpu.wait_idle();
         // SAFETY: the GPU is idle; owned by us.
@@ -371,6 +375,10 @@ impl Presenter for WindowPresenter {
         Some(self.renderer.gpu().clone())
     }
 
+    fn gpu_lost(&self) -> bool {
+        self.renderer.gpu().is_lost()
+    }
+
     fn present(
         &mut self,
         _frame: &DecodedFrame,
@@ -410,6 +418,10 @@ impl Presenter for WindowPresenter {
 impl Drop for WindowPresenter {
     fn drop(&mut self) {
         self.destroy_swapchain();
+        if self.renderer.gpu().is_lost() {
+            // The swapchain was left alive with it.
+            return;
+        }
         // SAFETY: the swapchain is gone, the surface is ours.
         unsafe { self.surface_fn.destroy_surface(self.surface, None) };
     }

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use fernsicht_capture::Frame;
-use fernsicht_codec::{EncodedFrame, Encoder};
+use fernsicht_codec::{CodecError, EncodedFrame, Encoder};
 use fernsicht_core::Slot;
 
 use crate::backends::fit;
@@ -102,6 +102,12 @@ pub(crate) fn encode_loop(
                     }
                     Err(TrySendError::Disconnected(_)) => break,
                 }
+            }
+            Err(CodecError::GpuLost) => {
+                // Nothing will encode any more: the session ends instead of
+                // living on without a picture.
+                log::error!("encode: the GPU stopped responding; ending the session");
+                break;
             }
             Err(e) => {
                 if let Some(line) = errors.report(e.to_string(), Instant::now()) {

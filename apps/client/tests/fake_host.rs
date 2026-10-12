@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use fernsicht_capture::{Frame, PixelFormat};
 use fernsicht_client::{
-    ClientConfig, CodecChoice, MonitorRequest, PresenterFactory, RunSummary, run, run_with,
+    ClientConfig, CodecChoice, FailureCode, MonitorRequest, PresenterFactory, RunSummary,
+    failure_of, run, run_with,
 };
 use fernsicht_codec::synthetic::SyntheticEncoder;
 use fernsicht_codec::{DecodedFrame, EncodedFrame, Encoder, Picture, PictureKind};
@@ -556,6 +557,50 @@ impl Presenter for Recording {
             .overlays
             .extend(lines.iter().cloned());
     }
+}
+
+/// A window whose GPU stops responding after a few frames.
+struct Failing(u64);
+
+impl Presenter for Failing {
+    fn present(
+        &mut self,
+        _: &DecodedFrame,
+        _: Option<&Picture<'_>>,
+        _: Option<&CursorOverlay>,
+    ) -> Result<(), String> {
+        self.0 += 1;
+        if self.gpu_lost() {
+            Err("the GPU stopped responding".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn gpu_lost(&self) -> bool {
+        self.0 > 10
+    }
+}
+
+#[test]
+fn a_gpu_that_stops_responding_ends_the_session_with_a_reason() {
+    let host = FakeHost::start(Script::default());
+    let t = Instant::now();
+    let err = run_with(
+        ClientConfig {
+            host: host.addr.clone(),
+            duration: Some(Duration::from_secs(10)),
+            host_timeout: Duration::from_millis(600),
+            ..ClientConfig::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+        Box::new(|| Ok(Box::new(Failing(0)) as Box<dyn Presenter>)),
+    )
+    .unwrap_err();
+    host.finish();
+    assert_eq!(failure_of(&err).code, FailureCode::GpuLost, "{err:#}");
+    // Ended right away, not at the end of the session's ten seconds.
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 }
 
 fn client_with(host: &FakeHost, secs: f32, factory: PresenterFactory) -> RunSummary {

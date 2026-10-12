@@ -306,6 +306,15 @@ unsafe extern "C" fn pick_vulkan(
 /// took just over a second once on the NVIDIA runner (GTX 1080).
 const DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Fails once `gpu` was given up: FFmpeg would wait for it for ever.
+fn usable(gpu: &Gpu) -> Result<(), CodecError> {
+    if gpu.is_lost() {
+        Err(CodecError::GpuLost)
+    } else {
+        Ok(())
+    }
+}
+
 /// Names each frame pool a decoder uses, across decoders.
 static POOLS: AtomicU64 = AtomicU64::new(1);
 
@@ -468,7 +477,15 @@ impl VulkanDecoder {
                 DECODE_TIMEOUT.as_nanos() as u64,
             )
         }
-        .map_err(|e| CodecError::Backend(format!("wait for the decoder: {e}")))
+        .map_err(|e| {
+            if matches!(e, vk::Result::TIMEOUT | vk::Result::ERROR_DEVICE_LOST) {
+                // FFmpeg would wait for this frame for ever when it frees it.
+                self.device.gpu.give_up(&format!("the decoder: {e}"));
+                CodecError::GpuLost
+            } else {
+                CodecError::Backend(format!("wait for the decoder: {e}"))
+            }
+        })
     }
 
     /// Whether the stream says its last frame is BT.709 limited range.
@@ -495,6 +512,7 @@ impl VulkanDecoder {
 
 impl Decoder for VulkanDecoder {
     fn decode(&mut self, data: &[u8], out: &mut DecodedFrame) -> Result<(), CodecError> {
+        usable(&self.device.gpu)?;
         if data.is_empty() || data.len() > i32::MAX as usize {
             return Err(CodecError::Corrupt("empty or oversized packet"));
         }
@@ -595,6 +613,11 @@ impl Decoder for VulkanDecoder {
 
 impl Drop for VulkanDecoder {
     fn drop(&mut self) {
+        if self.device.gpu.is_lost() {
+            // FFmpeg would wait for the GPU for ever while freeing its
+            // frames (ff_vk_decode_free_frame): left to the process's end.
+            return;
+        }
         // The presenter may still read the last picture.
         self.device.gpu.wait_idle();
         // SAFETY: each pointer is either null or owned by us; the device
@@ -955,7 +978,13 @@ impl VulkanEncoder {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL.as_raw(),
                 u64::from(vk::AccessFlags::TRANSFER_WRITE.as_raw()),
             );
-            result.map_err(backend)
+            result.map_err(|e| {
+                if self.device.gpu.is_lost() {
+                    CodecError::GpuLost
+                } else {
+                    CodecError::Backend(e)
+                }
+            })
         }
     }
 
@@ -973,6 +1002,7 @@ impl Encoder for VulkanEncoder {
     fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
         out.data.clear();
         out.keyframe = false;
+        usable(&self.device.gpu)?;
         // SAFETY: all pointers were created in new() and stay valid.
         unsafe {
             ffi::av_frame_unref(self.hw);
@@ -1037,6 +1067,10 @@ impl Encoder for VulkanEncoder {
 
 impl Drop for VulkanEncoder {
     fn drop(&mut self) {
+        if self.device.gpu.is_lost() {
+            // As for the decoder: FFmpeg would wait for the GPU for ever.
+            return;
+        }
         self.converter = None;
         self.device.gpu.wait_idle();
         // SAFETY: each pointer is either null or owned by us; the device

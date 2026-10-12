@@ -54,6 +54,12 @@ pub trait Presenter {
     /// The latency overlay, about once per second.
     fn overlay(&mut self, _lines: &[String]) {}
 
+    /// Whether the GPU it draws with stopped responding and was given up:
+    /// nothing will be shown any more.
+    fn gpu_lost(&self) -> bool {
+        false
+    }
+
     /// The Vulkan device it draws with, for a decoder whose pictures it
     /// can then sample where they were decoded.
     #[cfg(feature = "vulkan")]

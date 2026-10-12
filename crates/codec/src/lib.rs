@@ -68,6 +68,10 @@ pub enum CodecError {
     NeedKeyframe,
     #[error("codec backend: {0}")]
     Backend(String),
+    /// The GPU stopped finishing work and was given up: nothing more will
+    /// decode or encode on it.
+    #[error("the GPU stopped responding and was given up")]
+    GpuLost,
 }
 
 pub trait Encoder: Send {

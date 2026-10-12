@@ -30,7 +30,9 @@ Status as of 2026-10-10, commit `ed802fd`, CI and GPU runner green.
   2026-10-12). No PCIe errors (AER counters 0, x16). A red or hung NVIDIA run
   is worth a rerun before blaming the code; `journalctl -k | grep Xid` tells
   whether one came with it. Possible remedies: another 580 driver, another
-  card.
+  card. Fernsicht itself gives such a GPU up after its wait times out and
+  ends the session with `gpu-lost` instead of hanging
+  ([video](video.md#when-the-gpu-stops-responding)).
 
 ## What is done
 

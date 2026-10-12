@@ -290,6 +290,11 @@ impl Converter {
         Ok(())
     }
 
+    /// Whether its GPU was given up ([`Gpu::give_up`]).
+    pub fn gpu_lost(&self) -> bool {
+        self.gpu.is_lost()
+    }
+
     pub fn layout(&self) -> Nv12Layout {
         self.layout
     }
@@ -353,10 +358,13 @@ impl Converter {
         if result.is_err() {
             self.gpu.wait_idle();
         }
-        // SAFETY: the GPU is done with the buffer.
-        unsafe {
-            d.destroy_buffer(buffer, None);
-            d.free_memory(memory, None);
+        // SAFETY: the GPU is done with the buffer (or was given up, and
+        // the buffer is left to it).
+        if !self.gpu.is_lost() {
+            unsafe {
+                d.destroy_buffer(buffer, None);
+                d.free_memory(memory, None);
+            }
         }
         result
     }
@@ -554,6 +562,10 @@ impl Converter {
 
 impl Drop for Converter {
     fn drop(&mut self) {
+        if self.gpu.is_lost() {
+            // It may still use all of it (Gpu::give_up).
+            return;
+        }
         self.gpu.wait_idle();
         for (_, plane) in self.imports.drain(..) {
             import::destroy(&self.gpu, plane);

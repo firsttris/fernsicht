@@ -94,6 +94,7 @@ pub fn run_with(
     let socket = open_socket(&cfg.host)?;
     let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
     let need_keyframe = Arc::new(AtomicBool::new(true));
+    let gpu_lost = Arc::new(AtomicBool::new(false));
     let info = Arc::new(Mutex::new(StreamInfo::default()));
     let cursor = cfg.pointer.clone();
     let (free_tx, free_rx) = bounded(BUFFERS);
@@ -109,6 +110,7 @@ pub fn run_with(
             free_tx.clone(),
             need_keyframe.clone(),
             cursor.clone(),
+            gpu_lost.clone(),
         ),
     )?;
 
@@ -132,6 +134,7 @@ pub fn run_with(
         free_tx: &free_tx,
         need_keyframe: &need_keyframe,
         cursor: &cursor.tracker,
+        gpu_lost: &gpu_lost,
     };
     let net = network_loop(&cfg, &socket, &stop, &pipe, &info);
     // Closing the queue ends the present thread once it has drained.
@@ -169,12 +172,14 @@ fn open_socket(host: &str) -> anyhow::Result<UdpSocket> {
 }
 
 /// What the present thread shares with the network thread: the overlay's
-/// numbers, the free frame buffers, the keyframe flag and the pointer.
+/// numbers, the free frame buffers, the keyframe flag, the pointer and
+/// whether the GPU was given up.
 type Shared = (
     Arc<Mutex<StreamInfo>>,
     Sender<ReceivedFrame>,
     Arc<AtomicBool>,
     Arc<PointerShare>,
+    Arc<AtomicBool>,
 );
 
 /// Starts the decode/present thread; it ends when the queue closes.
@@ -182,7 +187,7 @@ fn spawn_present(
     cfg: &ClientConfig,
     make_presenter: PresenterFactory,
     queue: Receiver<ReceivedFrame>,
-    (info, free_tx, need_keyframe, cursor): Shared,
+    (info, free_tx, need_keyframe, cursor, gpu_lost): Shared,
 ) -> anyhow::Result<JoinHandle<PresentResult>> {
     let mut record = match &cfg.record {
         Some(path) => Some(std::io::BufWriter::new(
@@ -204,6 +209,7 @@ fn spawn_present(
             &info,
             &free_tx,
             &need_keyframe,
+            &gpu_lost,
             print,
             &hw,
             record.as_mut().map(|w| w as &mut dyn std::io::Write),

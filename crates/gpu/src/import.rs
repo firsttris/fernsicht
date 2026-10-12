@@ -18,6 +18,10 @@ pub struct Plane {
 }
 
 pub fn destroy(gpu: &Gpu, p: Plane) {
+    // A GPU given up may still use it: left alone (Gpu::give_up).
+    if gpu.is_lost() {
+        return;
+    }
     // SAFETY: the GPU no longer uses the plane; owned by the caller.
     unsafe {
         gpu.device.destroy_image_view(p.view, None);

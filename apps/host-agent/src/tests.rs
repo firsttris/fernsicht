@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::bounded;
 use fernsicht_capture::{Frame, FrameSource};
 use fernsicht_codec::synthetic::SyntheticEncoder;
-use fernsicht_codec::{EncodedFrame, Encoder};
+use fernsicht_codec::{CodecError, EncodedFrame, Encoder};
 use fernsicht_core::Slot;
 use fernsicht_proto::{Codec, CodecSet};
 use fernsicht_secure::{Identity, Peer, Trusted};
@@ -188,6 +188,63 @@ fn encoder_falls_back_and_says_what_it_tried() {
     // The synthetic encoder does not care what the client decodes.
     let synthetic = make_encoder(&EncoderKind::Synthetic, &params(CodecSet::EMPTY)).unwrap();
     assert_eq!(synthetic.codec(), Codec::Synthetic);
+}
+
+/// An encoder on a GPU that stopped responding.
+struct LostGpu;
+
+impl Encoder for LostGpu {
+    fn codec(&self) -> Codec {
+        Codec::H264
+    }
+
+    fn encode(&mut self, _: &Frame, _: &mut EncodedFrame) -> Result<(), CodecError> {
+        Err(CodecError::GpuLost)
+    }
+
+    fn request_keyframe(&mut self) {}
+
+    fn set_bitrate(&mut self, _: u32) -> Result<(), CodecError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_gpu_that_stops_responding_ends_the_encode_loop() {
+    let shared = Arc::new(shared());
+    let slot = Arc::new(Slot::new());
+    let (send_tx, send_rx) = bounded::<EncodedFrame>(16);
+    let (free_frames_tx, _free_frames) = bounded(16);
+    let (free_enc_tx, free_enc_rx) = bounded(16);
+    free_enc_tx.send(EncodedFrame::default()).unwrap();
+    let rebuild: Rebuild = Box::new(|_, _| Ok(Box::new(LostGpu) as Box<dyn Encoder>));
+    let (done_tx, done_rx) = bounded(1);
+    let encoder = {
+        let (shared, slot) = (shared.clone(), slot.clone());
+        std::thread::spawn(move || {
+            encode_loop(
+                Box::new(LostGpu),
+                rebuild,
+                2000,
+                ((1920, 1080), (1920, 1080)),
+                &shared,
+                &slot,
+                &send_tx,
+                &free_frames_tx,
+                &free_enc_rx,
+                &free_enc_tx,
+            );
+            done_tx.send(()).unwrap();
+        })
+    };
+    slot.put(Frame::new(1920, 1080, fernsicht_capture::PixelFormat::Nv12));
+    // The loop ends by itself (its guard then ends the session), with the
+    // slot still open: it does not wait for the next picture.
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the encode loop goes on without a GPU");
+    encoder.join().unwrap();
+    assert!(send_rx.try_recv().is_err(), "nothing was encoded");
 }
 
 #[test]

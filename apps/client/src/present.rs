@@ -200,6 +200,7 @@ pub(crate) fn present_loop(
     info: &Mutex<StreamInfo>,
     free_tx: &Sender<ReceivedFrame>,
     need_keyframe: &AtomicBool,
+    gpu_lost: &AtomicBool,
     print_overlay: OverlayOutput,
     hw: &Hw,
     mut record: Option<&mut dyn std::io::Write>,
@@ -260,11 +261,18 @@ pub(crate) fn present_loop(
                     // already queued, showing this one would only add latency.
                     if !queue.is_empty() {
                         r.skipped += 1;
-                    } else {
-                        r.presented +=
-                            u64::from(show(presenter, decoder.as_mut(), &decoded, cursor));
+                    } else if show(presenter, decoder.as_mut(), &decoded, cursor) {
+                        r.presented += 1;
                         r.stats.record(&timings(&rf, decoded_us, now_us()));
+                    } else if presenter.gpu_lost() {
+                        // Nothing will show any more: the session ends.
+                        gpu_lost.store(true, Ordering::Relaxed);
+                        break;
                     }
+                }
+                Err(CodecError::GpuLost) => {
+                    gpu_lost.store(true, Ordering::Relaxed);
+                    break;
                 }
                 Err(e) => {
                     chain.break_chain();

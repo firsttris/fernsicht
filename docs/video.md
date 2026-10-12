@@ -172,6 +172,21 @@ The window presents in mailbox mode: no tearing, and a new frame replaces one th
 yet. Presenting immediately (with tearing, for games) is a possible next step
 ([performance](performance.md)).
 
+## When the GPU stops responding
+
+A GPU can stop finishing work: a hung or faulted GPU (on NVIDIA the kernel log shows an Xid), or a
+lost device. Work given to it then never finishes, and whoever waits for it waits for ever; FFmpeg's
+own waits have no time limit. So every wait for the GPU in Fernsicht has one (1 s; 5 s for a
+decoded frame, as a new decoder session can be slow to start), and work that does not finish in it
+**gives the GPU up** (`Gpu::give_up`): from then on submissions fail at once, nothing waits for the
+GPU any more, and objects it may still use are left to the process's end instead of destroyed. The
+Vulkan codecs no longer call FFmpeg on it (which would wait for ever while freeing its frames).
+
+The session then ends with a reason instead of living on without a picture: the client's present
+thread stops and the session fails with `gpu-lost` ("Die Grafikkarte dieses Computers reagiert nicht
+mehr"); on the host the encode loop ends, and with it the session. Tested with a hang made on
+purpose (a submission that waits for a semaphore nobody signals), on llvmpipe as on the GPUs.
+
 ## Recording
 
 `fernsicht-client --record <file>` writes the received bitstream as it arrives: `ffplay file.h264`,

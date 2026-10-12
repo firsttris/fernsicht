@@ -176,6 +176,7 @@ const FAILURE_TEXT: Record<FailureCode, string | null> = {
     "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
   "no-answer": "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?",
   "host-silent": "Der Host antwortet nicht. Läuft er noch?",
+  "gpu-lost": "Die Grafikkarte dieses Computers reagiert nicht mehr; die Sitzung wurde beendet.",
   cancelled: "Abgebrochen.",
   "pkexec-missing": "Es fehlt pkexec (polkit), um als Administrator einzurichten.",
   other: null,

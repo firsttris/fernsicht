@@ -120,6 +120,8 @@ pub struct Gpu {
     pub instance_extensions: Vec<std::ffi::CString>,
     pub device_extensions: Vec<&'static CStr>,
     pub features: Features,
+    /// The GPU stopped finishing work ([`Gpu::give_up`]).
+    lost: std::sync::atomic::AtomicBool,
     memory: vk::PhysicalDeviceMemoryProperties,
     /// Present when the DMA-BUF import extensions are enabled.
     pub memory_fd: Option<ash::khr::external_memory_fd::Device>,
@@ -280,20 +282,33 @@ pub unsafe fn submit_timeline(
     if timeline.is_some() {
         submit = submit.push_next(&mut values);
     }
+    if gpu.is_lost() {
+        return Err(GIVEN_UP.into());
+    }
     // SAFETY: as the caller promises; submissions are serialized by the
     // queue lock.
-    unsafe {
+    let submitted = unsafe {
         let _queue = gpu.queue_lock.lock();
-        gpu.device
-            .queue_submit(gpu.queue, &[submit], fence)
-            .map_err(|e| format!("submit: {e}"))
+        gpu.device.queue_submit(gpu.queue, &[submit], fence)
+    };
+    match submitted {
+        Ok(()) => Ok(()),
+        Err(vk::Result::ERROR_DEVICE_LOST) => {
+            gpu.give_up("device lost");
+            Err(GIVEN_UP.into())
+        }
+        Err(e) => Err(format!("submit: {e}")),
     }
 }
 
-/// Waits for a submission's `fence`, at most [`GPU_TIMEOUT`]. The fence is
-/// unsignalled again afterwards, also after a timeout (the device is idled
-/// first), so the next submission can use it
-/// (VUID-vkQueueSubmit-fence-00063).
+/// What submissions to a GPU that was given up fail with.
+pub const GIVEN_UP: &str = "the GPU stopped responding and was given up";
+
+/// Waits for a submission's `fence`, at most [`GPU_TIMEOUT`], and
+/// unsignals it again for the next submission
+/// (VUID-vkQueueSubmit-fence-00063). Work that does not finish in time
+/// gives the GPU up ([`Gpu::give_up`]): the fence stays pending, and
+/// nothing waits for it.
 ///
 /// # Safety
 /// `fence` belongs to `gpu`'s device and was submitted.
@@ -301,19 +316,21 @@ pub unsafe fn wait_fence(gpu: &Gpu, fence: vk::Fence) -> Result<(), String> {
     let d = &gpu.device;
     // SAFETY: as the caller promises.
     unsafe {
-        let waited = d.wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64);
-        if waited == Err(vk::Result::TIMEOUT) {
-            // Let the work finish (or the device be lost), so the fence
-            // can be reset and nothing is freed under the GPU.
-            gpu.wait_idle();
-        }
-        d.reset_fences(&[fence])
-            .map_err(|e| format!("reset fence: {e}"))?;
-        match waited {
-            Err(vk::Result::TIMEOUT) => Err(format!(
-                "the GPU did not finish within {GPU_TIMEOUT:?} (hung?)"
-            )),
-            other => other.map_err(|e| format!("wait for the GPU: {e}")),
+        match d.wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64) {
+            Ok(()) => d
+                .reset_fences(&[fence])
+                .map_err(|e| format!("reset fence: {e}")),
+            Err(vk::Result::TIMEOUT) => {
+                gpu.give_up(&format!("work did not finish within {GPU_TIMEOUT:?}"));
+                Err(format!(
+                    "the GPU did not finish within {GPU_TIMEOUT:?} (hung?); {GIVEN_UP}"
+                ))
+            }
+            Err(vk::Result::ERROR_DEVICE_LOST) => {
+                gpu.give_up("device lost");
+                Err(GIVEN_UP.into())
+            }
+            Err(e) => Err(format!("wait for the GPU: {e}")),
         }
     }
 }
@@ -657,6 +674,7 @@ impl Gpu {
                 queue_lock: QueueLock::default(),
                 queue_family,
                 name,
+                lost: std::sync::atomic::AtomicBool::new(false),
             })
         }
     }
@@ -677,9 +695,31 @@ impl Gpu {
         self.memory_fd.is_some()
     }
 
-    /// Waits until the GPU is done with everything submitted. Holds the
-    /// queue lock: Vulkan requires the queues to be left alone meanwhile.
+    /// Whether the GPU stopped finishing work: nothing is submitted to it
+    /// or waited for any more.
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Gives the GPU up: work it was given did not finish in time (a hung
+    /// or faulted GPU; the NVIDIA driver reports such faults as Xid in the
+    /// kernel log, and the work then never finishes) or the device is
+    /// lost. From now on submissions fail at once, waiting for the GPU
+    /// returns at once, and objects it may still use are left alone
+    /// instead of destroyed: a stuck process would be worse than a leak.
+    pub fn give_up(&self, why: &str) {
+        if !self.lost.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::error!("{}: {why}; giving the GPU up", self.name);
+        }
+    }
+
+    /// Waits until the GPU is done with everything submitted (at once for
+    /// a GPU given up). Holds the queue lock: Vulkan requires the queues
+    /// to be left alone meanwhile.
     pub fn wait_idle(&self) {
+        if self.is_lost() {
+            return;
+        }
         let _queue = self.queue_lock.lock();
         let mut video: Vec<&QueueLock> = Vec::new();
         for q in [&self.decode, &self.encode].into_iter().flatten() {
@@ -692,7 +732,9 @@ impl Gpu {
         }
         let _video: Vec<QueueGuard<'_>> = video.into_iter().map(QueueLock::lock).collect();
         // SAFETY: valid device; the queues are not used concurrently.
-        let _ = unsafe { self.device.device_wait_idle() };
+        if unsafe { self.device.device_wait_idle() } == Err(vk::Result::ERROR_DEVICE_LOST) {
+            self.give_up("device lost");
+        }
     }
 
     /// The lock of the (first) queue of `family`; one queue of a family is
@@ -721,6 +763,11 @@ impl Gpu {
 
 impl Drop for Gpu {
     fn drop(&mut self) {
+        if self.is_lost() {
+            // Its work may never finish: leave the device to the process's
+            // end rather than wait for it.
+            return;
+        }
         // SAFETY: everything created from the device is destroyed by its
         // owners first (they hold an Arc<Gpu>).
         unsafe {
