@@ -1056,9 +1056,10 @@ feature reports the driver asks for at probe (the calibration chosen so that raw
 protocol's units, which the kernel and SDL both accept), the 64-byte input report per change, and
 rumble from the output report's motor bytes. Without uhid it stays an Xbox pad. Tests: the reports
 byte by byte against the kernel's layout, the calibration through the kernel's and SDL's formulas;
-a virtual PS5 pad in SDL sends motion, touch and click; in CI the DualSense is bound by the real
-hid-playstation, read back through its gamepad, motion and touchpad devices, and rumbled by a game's
-`EVIOCSFF` (`FERNSICHT_REQUIRE_DUALSENSE` where the driver loads). Not done: the adaptive triggers,
+a virtual PS5 pad in SDL sends motion, touch and click; in CI SDL's own PS5 driver reads the
+DualSense through hidraw (as Steam does), sees button, gyro and touch as sent and rumbles it. Where
+the kernel's hid-playstation loads (not CI's kernel), a test reads it back through its gamepad,
+motion and touchpad devices and rumbles it by a game's `EVIOCSFF`. Not done: the adaptive triggers,
 lightbar and player LEDs (the output report carries them; nothing on the client plays them yet).
 
 ## E. Clean code and consistency

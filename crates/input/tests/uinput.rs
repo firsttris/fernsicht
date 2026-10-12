@@ -442,3 +442,155 @@ fn a_dualsense_shows_buttons_motion_touch_and_rumbles() {
         "the DualSense goes with the sink"
     );
 }
+
+/// The DualSense as Steam and SDL games on the host see it: SDL's own PS5
+/// driver reads it through hidraw (the calibration and firmware reports,
+/// then the input reports) and writes rumble as an output report. The
+/// client's side is SDL too, so this is the chain end to end, minus the
+/// network: the pad's events as the client would send them go in, and
+/// SDL on the host reads the same button, gyro and touch back. Needs SDL3
+/// and a writable /dev/uhid and hidraw (CI: `FERNSICHT_REQUIRE_UHID`).
+#[cfg(feature = "gamepad")]
+#[test]
+fn sdl_reads_the_dualsense_as_a_ps5_pad_and_rumbles_it() {
+    use fernsicht_input::Rumble;
+    use fernsicht_input::gamepad::Gamepads;
+    use fernsicht_proto::{PadModel, PadSensor};
+    use std::sync::{Arc, Mutex, mpsc};
+    if !enabled() {
+        return;
+    }
+    let required = std::env::var_os("FERNSICHT_REQUIRE_UHID").is_some();
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/uhid")
+        .is_err()
+    {
+        assert!(!required, "/dev/uhid is not writable");
+        eprintln!("skipped: needs a writable /dev/uhid");
+        return;
+    }
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let mut u = Uinput::open(AbsArea::default()).expect("open /dev/uinput");
+    u.on_rumble(Arc::new(move |r| {
+        let _ = tx.lock().unwrap().send(r);
+    }));
+    u.inject(&InputEvent::PadModel {
+        pad: 0,
+        model: PadModel::DualSense,
+    })
+    .unwrap();
+    u.inject(&InputEvent::PadButton {
+        pad: 0,
+        code: 0x130,
+        pressed: false,
+    })
+    .unwrap();
+    // The host's SDL, which does not skip Fernsicht's own pads here.
+    let (etx, erx) = mpsc::channel();
+    let pads = Gamepads::start("/dev/input".into(), false, move |e| {
+        let _ = etx.send(e);
+    })
+    .unwrap();
+    if pads.backend() != "SDL" {
+        assert!(!required, "no SDL3");
+        eprintln!("skipped: no SDL3");
+        return;
+    }
+    let wait = |want: &mut dyn FnMut(&InputEvent) -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match erx.recv_timeout(left) {
+                Ok(e) if want(&e) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+        false
+    };
+    let mut slot = None;
+    assert!(
+        wait(&mut |e| match *e {
+            InputEvent::PadModel {
+                pad,
+                model: PadModel::DualSense,
+            } => {
+                slot = Some(pad);
+                true
+            }
+            _ => false,
+        }),
+        "SDL never took it for a PlayStation pad"
+    );
+    let slot = slot.unwrap();
+    u.inject(&InputEvent::PadButton {
+        pad: 0,
+        code: 0x130,
+        pressed: true,
+    })
+    .unwrap();
+    assert!(
+        wait(
+            &mut |e| matches!(*e, InputEvent::PadButton { pad, code: 0x130, pressed: true } if pad == slot)
+        ),
+        "cross"
+    );
+    u.inject(&InputEvent::PadMotion {
+        pad: 0,
+        sensor: PadSensor::Gyro,
+        x: 1440,
+        y: -160,
+        z: 0,
+    })
+    .unwrap();
+    assert!(
+        wait(
+            &mut |e| matches!(*e, InputEvent::PadMotion { pad, sensor: PadSensor::Gyro, x, y, z: 0 }
+            if pad == slot && (x - 1440).abs() <= 1 && (y + 160).abs() <= 1)
+        ),
+        "gyro: SDL reads the calibration as the protocol's units"
+    );
+    u.inject(&InputEvent::PadTouch {
+        pad: 0,
+        finger: 0,
+        down: true,
+        x: 65535,
+        y: 0,
+    })
+    .unwrap();
+    assert!(
+        wait(
+            &mut |e| matches!(*e, InputEvent::PadTouch { pad, finger: 0, down: true, x, y }
+            if pad == slot && x > 65000 && y < 100)
+        ),
+        "touch"
+    );
+    // SDL writes the motors' bytes (magnitude >> 8).
+    pads.rumble(Rumble {
+        pad: slot,
+        low: 0x8000,
+        high: 0x2000,
+        ms: 1000,
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut got = None;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(r) if r.low != 0 || r.high != 0 => {
+                got = Some(r);
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert_eq!(
+        got.map(|r| (r.pad, r.low, r.high)),
+        Some((0, 0x80 * 257, 0x20 * 257)),
+        "rumble from SDL's output report"
+    );
+    drop(pads);
+    u.release_all();
+}
