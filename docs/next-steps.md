@@ -41,8 +41,8 @@ From the [performance](performance.md) page, in its recommended order:
 ## 4. Features
 
 - **File transfer** between client and host, and pictures in the clipboard (text works).
-- **Gyro and touchpad** of PlayStation pads (a virtual DualSense on the host, through uhid), rumble
-  in the web viewer, and more than four controllers.
+- **Rumble in the web viewer**, more than four controllers, and the DualSense's adaptive triggers
+  and lightbar (gyro and touchpad work).
 - **A visible hint when the pointer is captured**, and how to release it.
 - **PipeWire portal capture** as a second capture backend: no root needed, works where KMS cannot
   (e.g. some multi-GPU setups), at the cost of a portal dialog and a little latency.

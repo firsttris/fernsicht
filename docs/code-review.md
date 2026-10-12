@@ -893,8 +893,9 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
-D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 has its first step, D4 its
-first two (10 bit, HDR tone-mapped; HDR displays are open); D9 has mapping and rumble (below).
+D6, D2, D1, D10, D3 and D9 are done; D8 was measured and set aside; D7 has its first step, D4 its
+first two (10 bit, HDR tone-mapped; HDR displays are open). D9 left for later: rumble in the web
+viewer, the DualSense's adaptive triggers and lightbar.
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the

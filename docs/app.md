@@ -80,7 +80,8 @@ The app's session page has the toolbar:
 - “Bildschirm wählen” (choose screen), with two or more monitors on the host: switch the monitor
   shown. The pointer follows.
 - Sound on and off; “Trennen” (disconnect).
-- “Zwischenablage” (clipboard) and “Dateien senden” (send files) are not built yet.
+- The clipboard needs no button: it is shared by itself ([below](#clipboard)). Sending files is not
+  built yet.
 
 Every key goes to the host, so the toolbar has its own way in: Ctrl+Alt+F shows and hides it,
 Ctrl+Alt+T moves the keyboard into it (Tab, arrows, Enter; menus open with the arrow keys), and Esc

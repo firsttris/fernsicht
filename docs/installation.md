@@ -132,7 +132,8 @@ In the app, choose **Gaming** for a device:
   moves relatively, as games need it. <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd>
   captures and releases the pointer, also in desktop mode.
 - **Controllers** on the client computer are passed through automatically,
-  up to four. On the host they appear as Xbox 360 controllers.
+  up to four. On the host they appear as Xbox 360 controllers, PlayStation
+  pads as DualSense pads with gyro and touchpad.
 - **Settings** (the “Einstellungen” (settings) page): resolution, frame
   rate (up to 144) and a bitrate limit. The host lowers the bitrate by
   itself when the network cannot keep up.

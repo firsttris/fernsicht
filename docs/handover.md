@@ -101,7 +101,8 @@ Added after that:
      runtime (`crates/input/src/sdl.rs`), else directly via evdev
      (`crates/input/src/gamepad.rs`). The browser uses the Gamepad API.
      The host creates one virtual Xbox 360 controller per player
-     (`crates/input/src/uinput.rs`). Buttons map by position (A at the
+     (`crates/input/src/uinput.rs`), for a PlayStation pad a DualSense
+     through uhid with gyro and touchpad (`crates/input/src/uhid.rs`). Buttons map by position (A at the
      bottom, Y at the top); the X/Y swap of the `xpad` driver is
      compensated on both sides.
    - Bitrate: `crates/net/src/rate.rs`. Down on frames that are lost
@@ -310,8 +311,8 @@ collected in [performance.md](performance.md).
    at 1080p over Wi-Fi not quite sharp). Bitrate and keyframe quality.
 4. **Reference measurement with Sunshine/Moonlight**
    ([latency-baseline.md](latency-baseline.md)).
-5. **Games, remaining:** gyro and touchpad (need a virtual DualSense on
-   the host), rumble in the browser, more than 4 controllers.
+5. **Games, remaining:** rumble in the browser, more than 4 controllers,
+   the DualSense's adaptive triggers and lightbar.
 6. **NVIDIA as host: check live.** Screen capture with NVENC is built.
    The path: KMS DMA-BUF → Vulkan compute (RGB → NV12, BT.709, scaled) →
    memory imported by CUDA → NVENC. Code: `crates/gpu/src/convert.rs`,

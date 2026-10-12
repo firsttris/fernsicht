@@ -132,7 +132,7 @@ host applies each sequence number once and acknowledges the highest. A lost pack
 next one. An event leaves the moment it happens, from the window's own thread (not on the network
 loop's next turn); what is not acknowledged goes again after three round trips (4–15 ms). Tested
 with 30 % loss. The host injects the events through `uinput` (a virtual mouse,
-keyboard and up to four Xbox 360 pads) and maps absolute positions onto the monitor shown.
+keyboard and up to four Xbox 360 pads; a PlayStation pad becomes a DualSense through `uhid`) and maps absolute positions onto the monitor shown.
 
 ## Sound
 
