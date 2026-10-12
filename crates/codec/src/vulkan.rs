@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ash::vk;
 use ash::vk::Handle;
 use fernsicht_capture::{DmaBuf, Frame, PixelFormat};
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_core::now_us;
 use fernsicht_gpu::convert::Converter;
 use fernsicht_gpu::{Gpu, Prefer, Timeline};
@@ -31,8 +32,8 @@ use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
 use crate::ff::{
-    self, check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame,
-    signal_bt709_limited,
+    self, check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_colour,
+    yuv_format,
 };
 use crate::{
     CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind, VkAccess,
@@ -72,6 +73,60 @@ pub fn decodes(gpu: &Gpu, codec: Codec) -> bool {
         .is_some_and(|q| q.operations.contains(op))
 }
 
+/// [`decodes`] at `depth`: at 10 bit the driver's capabilities for the
+/// profile (HEVC Main 10, AV1 Main at 10 bit) decide; a GPU that decodes
+/// a codec need not decode it deeper.
+pub fn decodes_in(gpu: &Gpu, codec: Codec, depth: Depth) -> bool {
+    decodes(gpu, codec) && (depth == Depth::Eight || decodes_ten_bit(gpu, codec))
+}
+
+/// Whether the driver has a 10-bit 4:2:0 decode profile for `codec`
+/// (vkGetPhysicalDeviceVideoCapabilitiesKHR: success, not
+/// VK_ERROR_VIDEO_PROFILE_*_NOT_SUPPORTED).
+fn decodes_ten_bit(gpu: &Gpu, codec: Codec) -> bool {
+    use ash::vk::native;
+    let video = ash::khr::video_queue::Instance::new(&gpu.entry, &gpu.instance);
+    let profile = vk::VideoProfileInfoKHR::default()
+        .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+        .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_10)
+        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_10);
+    let mut decode = vk::VideoDecodeCapabilitiesKHR::default();
+    let caps = vk::VideoCapabilitiesKHR::default().push_next(&mut decode);
+    let query = |profile: &vk::VideoProfileInfoKHR, caps: &mut vk::VideoCapabilitiesKHR| {
+        // SAFETY: valid physical device; the structs are chained as the
+        // profile's codec asks.
+        unsafe {
+            (video.fp().get_physical_device_video_capabilities_khr)(gpu.physical, profile, caps)
+                == vk::Result::SUCCESS
+        }
+    };
+    match codec {
+        Codec::Hevc => {
+            let mut h265 = vk::VideoDecodeH265ProfileInfoKHR::default()
+                .std_profile_idc(native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10);
+            let mut h265_caps = vk::VideoDecodeH265CapabilitiesKHR::default();
+            query(
+                &profile
+                    .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
+                    .push_next(&mut h265),
+                &mut caps.push_next(&mut h265_caps),
+            )
+        }
+        Codec::Av1 => {
+            let mut av1 = vk::VideoDecodeAV1ProfileInfoKHR::default()
+                .std_profile(native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN);
+            let mut av1_caps = vk::VideoDecodeAV1CapabilitiesKHR::default();
+            query(
+                &profile
+                    .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
+                    .push_next(&mut av1),
+                &mut caps.push_next(&mut av1_caps),
+            )
+        }
+        Codec::H264 | Codec::Synthetic => false,
+    }
+}
+
 /// Whether `gpu` encodes `codec` with Vulkan Video, as far as the driver
 /// says (an encode queue with the codec) and the FFmpeg loaded is
 /// [ready](ffmpeg_is_ready). H.264 and HEVC; not AV1 (see below).
@@ -96,6 +151,11 @@ pub fn gpu_encodes(gpu: &Gpu, codec: Codec) -> bool {
 /// Whether the GPU behind `render_node` encodes `codec` with Vulkan Video:
 /// an encoder for a small picture opens.
 pub fn encodes(render_node: &str, codec: Codec) -> bool {
+    encodes_in(render_node, codec, Depth::Eight)
+}
+
+/// [`encodes`] at `depth` (10 bit: HEVC Main 10).
+pub fn encodes_in(render_node: &str, codec: Codec, depth: Depth) -> bool {
     codec != Codec::Synthetic
         && VulkanEncoder::new(&VulkanEncoderConfig {
             render_node: render_node.into(),
@@ -104,6 +164,7 @@ pub fn encodes(render_node: &str, codec: Codec) -> bool {
             height: 256,
             fps: 30,
             bitrate_kbps: 1_000,
+            colour: Colour::SDR.with_depth(depth),
         })
         .is_ok()
 }
@@ -414,7 +475,7 @@ impl VulkanDecoder {
                 gpu.name()
             )));
         }
-        let names = ff::names(codec, ff::Backend::Vulkan)?;
+        let names = ff::names(codec, ff::Backend::Vulkan, Depth::Eight)?;
         let device = VulkanDevice::new(gpu)?;
         // SAFETY: everything allocated here is owned by the decoder and
         // freed in Drop (null pointers included).
@@ -499,7 +560,7 @@ impl VulkanDecoder {
         // in which case the transfer fails cleanly).
         unsafe {
             ffi::av_frame_unref(self.sw);
-            (*self.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*self.sw).format = ff::sw_format(self.frame) as c_int;
             check(
                 "download frame",
                 ffi::av_hwframe_transfer_data(self.sw, self.frame, 0),
@@ -571,7 +632,7 @@ impl Decoder for VulkanDecoder {
     fn picture(&mut self, prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
         // SAFETY: frame is a valid AVFrame; a Vulkan one carries its pool
         // and an AVVkFrame.
-        let (width, height, image, coded) = unsafe {
+        let (width, height, image, coded, colour) = unsafe {
             let f = &*self.frame;
             if f.format != ffi::AVPixelFormat::AV_PIX_FMT_VULKAN as c_int {
                 return Ok(None);
@@ -590,6 +651,7 @@ impl Decoder for VulkanDecoder {
                 f.height as u32,
                 vkf.img[0],
                 (fc.width as u32, fc.height as u32),
+                ff::colour_of(self.frame, fc.sw_format),
             )
         };
         if prefer == PictureKind::Gpu {
@@ -599,6 +661,7 @@ impl Decoder for VulkanDecoder {
                 width,
                 height,
                 pool: self.pool.1,
+                colour,
                 sync: &self.sync,
             })));
         }
@@ -607,6 +670,7 @@ impl Decoder for VulkanDecoder {
             width,
             height,
             data: &self.nv12,
+            colour,
         }))
     }
 }
@@ -658,6 +722,9 @@ pub struct VulkanEncoderConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// The stream's colour: 10 bit takes the screen (DMA-BUF) only, CPU
+    /// input is 8-bit NV12.
+    pub colour: Colour,
 }
 
 /// Encodes with Vulkan Video. Settings as for the other hardware encoders:
@@ -676,6 +743,7 @@ pub struct VulkanEncoder {
     width: u32,
     height: u32,
     fps: u32,
+    colour: Colour,
     /// Made on the first DMA-BUF frame.
     converter: Option<Converter>,
     force_keyframe: bool,
@@ -721,6 +789,7 @@ impl VulkanEncoder {
                 width: cfg.width,
                 height: cfg.height,
                 fps: cfg.fps,
+                colour: cfg.colour,
                 converter: None,
                 force_keyframe: true,
                 next_pts: 0,
@@ -736,7 +805,7 @@ impl VulkanEncoder {
             }
             let fc = (*enc.frames).data.cast::<ffi::AVHWFramesContext>();
             (*fc).format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN;
-            (*fc).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            (*fc).sw_format = yuv_format(cfg.colour.depth);
             (*fc).width = cfg.width as c_int;
             (*fc).height = cfg.height as c_int;
             // One multi-planar image per frame: the copy below writes both
@@ -749,7 +818,7 @@ impl VulkanEncoder {
             )?;
             enc.ctx = enc.open_codec(cfg.bitrate_kbps)?;
 
-            (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*enc.sw).format = yuv_format(cfg.colour.depth) as c_int;
             (*enc.sw).width = cfg.width as c_int;
             (*enc.sw).height = cfg.height as c_int;
             check("allocate upload frame", ffi::av_frame_get_buffer(enc.sw, 0))?;
@@ -792,7 +861,7 @@ impl VulkanEncoder {
         kbps: u32,
         tune: Tune,
     ) -> Result<*mut ffi::AVCodecContext, CodecError> {
-        let names = ff::names(self.codec, ff::Backend::Vulkan)?;
+        let names = ff::names(self.codec, ff::Backend::Vulkan, self.colour.depth)?;
         let mut opts = vec![
             (c"async_depth", c"1"),
             (c"rc_mode", c"cbr"),
@@ -803,6 +872,7 @@ impl VulkanEncoder {
             opts.push((c"profile", profile));
         }
         let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        let colour = self.colour;
         // SAFETY: open_encoder hands over a fresh context; frames is valid
         // per the contract.
         unsafe {
@@ -820,7 +890,7 @@ impl VulkanEncoder {
                 (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN;
                 // The video profile (chroma subsampling, bit depth) comes
                 // from it (vulkan_encode.c, init_profile).
-                (*c).sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+                (*c).sw_pix_fmt = yuv_format(colour.depth);
                 (*c).hw_frames_ctx = ffi::av_buffer_ref(frames);
                 (*c).max_b_frames = 0;
                 (*c).gop_size = GOP;
@@ -831,7 +901,7 @@ impl VulkanEncoder {
                 (*c).thread_count = 1;
                 // The way the converter makes YCbCr, written into the
                 // stream.
-                signal_bt709_limited(c);
+                signal_colour(c, colour);
             })
         }
     }
@@ -841,6 +911,11 @@ impl VulkanEncoder {
     /// # Safety
     /// `self.hw` is an empty frame.
     unsafe fn upload(&mut self, frame: &Frame) -> Result<(), CodecError> {
+        if self.colour.depth != Depth::Eight {
+            return Err(CodecError::Backend(
+                "a 10-bit stream takes the screen (DMA-BUF), not CPU pictures".into(),
+            ));
+        }
         if frame.format != PixelFormat::Nv12
             || frame.width != self.width
             || frame.height != self.height
@@ -883,8 +958,9 @@ impl VulkanEncoder {
         if self.converter.is_none() {
             let gpu = self.device.gpu.clone();
             let name = gpu.name().to_string();
-            self.converter =
-                Some(Converter::on_device(gpu, self.width, self.height).map_err(backend)?);
+            self.converter = Some(
+                Converter::on_device(gpu, self.width, self.height, self.colour).map_err(backend)?,
+            );
             log::info!("Vulkan Video takes the screen on {name} without leaving the GPU");
         }
         let converter = self.converter.as_mut().expect("made above");
@@ -952,13 +1028,15 @@ impl VulkanEncoder {
                                 depth: 1,
                             })
                     };
-                    // Row lengths count texels: one byte for Y, two for UV.
+                    // Row lengths count texels: one sample for Y, two for
+                    // UV (a sample is a byte, or a 16-bit word at 10 bit).
+                    let texel = layout.depth.sample_bytes();
                     let copies = [
-                        plane(vk::ImageAspectFlags::PLANE_0, 0, layout.pitch, w, h),
+                        plane(vk::ImageAspectFlags::PLANE_0, 0, layout.pitch / texel, w, h),
                         plane(
                             vk::ImageAspectFlags::PLANE_1,
                             layout.uv_offset,
-                            layout.pitch / 2,
+                            layout.pitch / (2 * texel),
                             w / 2,
                             h / 2,
                         ),
@@ -997,6 +1075,10 @@ impl VulkanEncoder {
 impl Encoder for VulkanEncoder {
     fn codec(&self) -> Codec {
         self.codec
+    }
+
+    fn colour(&self) -> Colour {
+        self.colour
     }
 
     fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {

@@ -1,5 +1,6 @@
-// NV12 (BT.709, limited range) to RGB, drawn as a quad that keeps the
-// picture's aspect ratio inside the target (black bars around it).
+// 4:2:0 YCbCr (NV12 or P010, limited range, the matrix of the picture's
+// primaries) to RGB, drawn as a quad that keeps the picture's aspect ratio
+// inside the target (black bars around it).
 
 struct Push {
     // Size of the quad in normalized device coordinates (1 = full width).
@@ -8,6 +9,15 @@ struct Push {
     // The part of the picture's image shown (a decoder's images may be
     // larger than the picture: 1088 rows for 1080).
     crop: vec2<f32>,
+    // A sample (UNORM) times this is its code value: 255, or 65535 / 64
+    // for 16-bit words with the 10 bits on top.
+    code: f32,
+    // The transfer: 0 SDR.
+    transfer: u32,
+    // Limited range: luma black and span, chroma midpoint and span.
+    range: vec4<f32>,
+    // R = Y + x·Cr, G = Y − y·Cb − z·Cr, B = Y + w·Cb.
+    matrix: vec4<f32>,
 };
 
 var<immediate> pc: Push;
@@ -39,13 +49,14 @@ fn fs(in: VertexOut) -> @location(0) vec4<f32> {
     // it): a quarter chroma texel right of the luma position.
     let chroma = vec2<f32>(textureDimensions(uv_plane));
     let c = textureSample(uv_plane, samp, in.uv + vec2<f32>(0.25 / chroma.x, 0.0)).rg;
-    let luma = (y * 255.0 - 16.0) / 219.0;
-    let cb = (c.r * 255.0 - 128.0) / 224.0;
-    let cr = (c.g * 255.0 - 128.0) / 224.0;
+    let luma = (y * pc.code - pc.range.x) / pc.range.y;
+    let cb = (c.r * pc.code - pc.range.z) / pc.range.w;
+    let cr = (c.g * pc.code - pc.range.z) / pc.range.w;
+    let m = pc.matrix;
     let rgb = vec3<f32>(
-        luma + 1.5748 * cr,
-        luma - 0.1873 * cb - 0.4681 * cr,
-        luma + 1.8556 * cb,
+        luma + m.x * cr,
+        luma - m.y * cb - m.z * cr,
+        luma + m.w * cb,
     );
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }

@@ -6,6 +6,8 @@
 //! /dev/dri/renderD128). Measurements are appended to the CI job summary.
 #![cfg(feature = "vaapi")]
 
+mod common;
+
 use std::io::Write;
 use std::time::Instant;
 
@@ -19,6 +21,7 @@ use fernsicht_codec::vaapi::{
 use fernsicht_codec::{
     CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind,
 };
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_proto::Codec;
 
 fn render_node() -> Option<String> {
@@ -41,6 +44,7 @@ fn config(node: &str, width: u32, height: u32, fps: u32, kbps: u32) -> VaapiEnco
         height,
         fps,
         bitrate_kbps: kbps,
+        colour: Colour::SDR,
     }
 }
 
@@ -266,7 +270,7 @@ fn a_new_stream_size_gives_new_pictures() {
         }
         assert_eq!((d.width, d.height), (w, h));
         match dec.picture(PictureKind::Gpu).unwrap() {
-            Some(Picture::DmaBuf { image, key }) => {
+            Some(Picture::DmaBuf { image, key, .. }) => {
                 assert_eq!((image.width, image.height), (w, h));
                 shown.push(key >> 32);
             }
@@ -997,4 +1001,62 @@ fn av1_from_a_dmabuf_keeps_its_colours() {
         percentile(ms[1..].to_vec(), 0.5)
     ));
     assert!(p95 < 16.0);
+}
+
+#[test]
+fn a_ten_bit_desktop_comes_through_in_ten_bit() {
+    let Some(node) = render_node() else { return };
+    let (w, h) = (1280u32, 720u32);
+    // KDE on AMD scans out AB30.
+    let image = upload_as_dmabuf(
+        &node,
+        w,
+        h,
+        formats::ABGR2101010,
+        &rgb_image(w as usize, h as usize, 0, formats::ABGR2101010),
+    )
+    .unwrap();
+    for codec in [Codec::Hevc, Codec::Av1] {
+        use fernsicht_codec::vaapi::{decodes_in, encodes_in};
+        if !(encodes_in(&node, codec, Depth::Ten) && decodes_in(&node, codec, Depth::Ten)) {
+            eprintln!("skipped: no 10-bit {codec:?} on this GPU");
+            continue;
+        }
+        for colour in [Colour::SDR.with_depth(Depth::Ten), Colour::HDR10] {
+            let mut enc = VaapiEncoder::new(&VaapiEncoderConfig {
+                codec,
+                colour,
+                ..config(&node, w, h, 60, 8_000)
+            })
+            .unwrap();
+            let mut dec = VaapiDecoder::for_codec(&node, codec).unwrap();
+            let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+            for i in 0..3 {
+                enc.encode(&dmabuf_frame(&image, i), &mut out).unwrap();
+                dec.decode(&out.data, &mut d).unwrap();
+            }
+            match dec.picture(PictureKind::Gpu).unwrap() {
+                Some(Picture::DmaBuf {
+                    image, colour: got, ..
+                }) => {
+                    assert_eq!(got, colour, "{codec:?}");
+                    assert_eq!(image.fourcc, formats::P010, "{codec:?}");
+                }
+                other => panic!("{codec:?}: no DMA-BUF picture: {other:?}"),
+            }
+            let p010 = dec.last_frame_nv12().unwrap();
+            assert_eq!(p010.len(), (w * h * 3) as usize, "{codec:?}: P010");
+            common::assert_patches(
+                &p010,
+                (w as usize, h as usize),
+                &PATCHES,
+                colour,
+                4.0,
+                &format!("AB30 → {codec:?} 10 bit, {colour:?}"),
+            );
+            summary(&format!(
+                "- VAAPI {codec:?} 10 bit aus AB30, {colour:?}: Farben ok"
+            ));
+        }
+    }
 }

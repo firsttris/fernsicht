@@ -8,6 +8,7 @@ use fernsicht_capture::{Frame, FrameSource};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 use fernsicht_codec::{CodecError, EncodedFrame, Encoder};
 use fernsicht_core::Slot;
+use fernsicht_core::colour::Colour;
 use fernsicht_proto::{Codec, CodecSet};
 use fernsicht_secure::{Identity, Peer, Trusted};
 
@@ -162,6 +163,27 @@ fn long_names_are_clipped_and_lists_capped() {
     assert!(monitor_list(&far).is_none());
 }
 
+#[test]
+fn ten_bit_where_the_screen_and_the_client_have_it() {
+    use crate::backends::stream_colour;
+    use fernsicht_core::colour::Depth;
+    let ten = Colour::SDR.with_depth(Depth::Ten);
+    // KDE on AMD scans out 10 bit even in SDR.
+    assert_eq!(stream_colour(ten, true), ten);
+    assert_eq!(stream_colour(ten, false), Colour::SDR, "the client cannot");
+    assert_eq!(
+        stream_colour(Colour::SDR, true),
+        Colour::SDR,
+        "nothing to gain"
+    );
+    assert_eq!(stream_colour(Colour::HDR10, true), Colour::HDR10);
+    // Without 10 bit HDR stays HDR (its primaries and PQ), in 8 bit.
+    assert_eq!(
+        stream_colour(Colour::HDR10, false),
+        Colour::HDR10.with_depth(Depth::Eight)
+    );
+}
+
 fn params(codecs: CodecSet) -> SessionParams {
     SessionParams {
         session_id: 1,
@@ -171,6 +193,8 @@ fn params(codecs: CodecSet) -> SessionParams {
         bitrate_kbps: 1_000,
         codecs,
         refresh: false,
+        ten_bit: CodecSet::EMPTY,
+        screen: Colour::SDR,
     }
 }
 
@@ -219,7 +243,7 @@ fn a_gpu_that_stops_responding_ends_the_encode_loop() {
     let (free_frames_tx, _free_frames) = bounded(16);
     let (free_enc_tx, free_enc_rx) = bounded(16);
     free_enc_tx.send(EncodedFrame::default()).unwrap();
-    let rebuild: Rebuild = Box::new(|_, _| Ok(Box::new(LostGpu) as Box<dyn Encoder>));
+    let rebuild: Rebuild = Box::new(|_, _, _| Ok(Box::new(LostGpu) as Box<dyn Encoder>));
     let (done_tx, done_rx) = bounded(1);
     let encoder = {
         let (shared, slot) = (shared.clone(), slot.clone());
@@ -229,6 +253,7 @@ fn a_gpu_that_stops_responding_ends_the_encode_loop() {
                 rebuild,
                 2000,
                 ((1920, 1080), (1920, 1080)),
+                Colour::SDR,
                 &shared,
                 &slot,
                 &send_tx,
@@ -262,8 +287,8 @@ fn the_stream_takes_the_shape_of_the_monitor_shown() {
     let rebuilt = Arc::new(Mutex::new(Vec::new()));
     let rebuild: Rebuild = {
         let rebuilt = rebuilt.clone();
-        Box::new(move |kbps, size| {
-            rebuilt.lock().unwrap().push(size);
+        Box::new(move |kbps, size, screen| {
+            rebuilt.lock().unwrap().push((size, screen));
             Ok(Box::new(SyntheticEncoder::new(kbps, 60)) as Box<dyn Encoder>)
         })
     };
@@ -275,6 +300,7 @@ fn the_stream_takes_the_shape_of_the_monitor_shown() {
                 rebuild,
                 2000,
                 ((1920, 1080), (1920, 1080)),
+                Colour::SDR,
                 &shared,
                 &slot,
                 &send_tx,
@@ -284,10 +310,20 @@ fn the_stream_takes_the_shape_of_the_monitor_shown() {
             );
         })
     };
-    // A 16:9 monitor, a 21:9 one, and back.
+    // A 16:9 monitor, a 21:9 one, and back; then HDR switched on.
+    let hdr = Colour::HDR10;
     let mut sizes = Vec::new();
-    for (w, h) in [(2560, 1440), (3440, 1440), (3440, 1440), (2560, 1440)] {
-        slot.put(Frame::new(w, h, fernsicht_capture::PixelFormat::Nv12));
+    for (w, h, colour) in [
+        (2560, 1440, Colour::SDR),
+        (3440, 1440, Colour::SDR),
+        (3440, 1440, Colour::SDR),
+        (2560, 1440, Colour::SDR),
+        (2560, 1440, hdr),
+        (2560, 1440, hdr),
+    ] {
+        let mut frame = Frame::new(w, h, fernsicht_capture::PixelFormat::Nv12);
+        frame.colour = colour;
+        slot.put(frame);
         let out: EncodedFrame = send_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         sizes.push((out.width, out.height));
     }
@@ -295,10 +331,25 @@ fn the_stream_takes_the_shape_of_the_monitor_shown() {
     encoder.join().unwrap();
     assert_eq!(
         sizes,
-        [(1920, 1080), (1920, 804), (1920, 804), (1920, 1080)]
+        [
+            (1920, 1080),
+            (1920, 804),
+            (1920, 804),
+            (1920, 1080),
+            (1920, 1080),
+            (1920, 1080)
+        ]
     );
-    // Rebuilt only when the shape changed (each with a keyframe).
-    assert_eq!(*rebuilt.lock().unwrap(), [(1920, 804), (1920, 1080)]);
+    // Rebuilt only when the shape or the screen's colour changed (each
+    // with a keyframe).
+    assert_eq!(
+        *rebuilt.lock().unwrap(),
+        [
+            ((1920, 804), Colour::SDR),
+            ((1920, 1080), Colour::SDR),
+            ((1920, 1080), hdr)
+        ]
+    );
 }
 
 #[test]
@@ -566,6 +617,7 @@ fn intra_refresh_is_agreed_only_with_nvenc() {
         bitrate_kbps: 0,
         codecs: CodecSet::H264,
         refresh: true,
+        ten_bit: CodecSet::EMPTY,
     };
     let agent = |encoder| {
         HostAgent::bind(HostConfig {

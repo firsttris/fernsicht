@@ -14,7 +14,7 @@ the monitor's own delay ([performance](performance.md)).
 | 0 – Foundation | Workspace, CI, latency measured per stage, clock sync, overlay, Distrobox | ✅ Done. The reference measurement against Sunshine is still to do ([method](latency-baseline.md)) |
 | 1 – Hot path in the LAN | Packet format, FEC, pacing, UDP, slots, threads | ✅ Transport done and tested (1 % loss without a lost frame) |
 | | VAAPI encode and decode | ✅ Through the whole pipeline on the AMD runner: glass-to-glass without the monitor ≈ 10 ms (1080p60, debug build) |
-| | KMS capture → DMA-BUF → VAAPI without a copy | ✅ Implemented; import and GPU colour conversion tested in CI (all eight desktop formats, 8 and 10 bit), KMS itself by hand ([guide](kms-capture.md)) |
+| | KMS capture → DMA-BUF → VAAPI without a copy | ✅ Implemented; import and GPU colour conversion tested in CI (all eight desktop formats, 8 and 10 bit; 10-bit desktops stream in 10 bit, HEVC Main 10 or AV1), KMS itself by hand ([guide](kms-capture.md)) |
 | | Client window (Vulkan, winit) | ✅ The VAAPI picture without a copy in Vulkan (0.15 ms to convert and draw at 1080p), mailbox present, CPU fallback; render tests in CI on llvmpipe with the validation layers |
 | | NVIDIA: NVENC/NVDEC | ✅ Encoder and decoder through FFmpeg/CUDA, tested on the NVIDIA runner. Screen capture for NVENC without a CPU copy: KMS DMA-BUF → Vulkan compute (RGB → NV12, BT.709, scaled) → memory CUDA imports, which NVENC reads as its input, 2.3 ms per 1080p frame on the GTX 1080. Decoded NVDEC pictures go from CUDA to Vulkan on the GPU (exported CUDA memory), 0.3 ms at 1080p |
 | | Codecs | ✅ AV1, HEVC and H.264; each session takes the best codec both sides do in hardware; the web viewer AV1 or H.264 ([video path](video.md#codecs)) |

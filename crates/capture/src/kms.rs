@@ -27,8 +27,9 @@ use drm::control::{self, Device as _, ResourceHandles, framebuffer, plane};
 use drm::{ClientCapability, Device as _, VblankWaitFlags, VblankWaitTarget};
 use fernsicht_core::{clock, now_us};
 
-use crate::dmabuf::{DmaBuf, DmaBufPlane, formats};
+use crate::dmabuf::{DmaBuf, DmaBufPlane, depth_of, formats};
 use crate::{CaptureError, CursorImage, CursorState, Frame, FrameSource, PixelFormat, ScreenInfo};
+use fernsicht_core::colour::Colour;
 
 /// Part of the error message when the process lacks the capability.
 pub const NEEDS_CAP_SYS_ADMIN: &str = "KMS capture needs CAP_SYS_ADMIN";
@@ -753,6 +754,11 @@ fn monotonic_to_instant(t: Duration) -> Instant {
     Instant::now().checked_sub(age).unwrap_or_else(Instant::now)
 }
 
+/// How the framebuffer's values are to be read: its depth.
+fn colour_of(image: &DmaBuf) -> Colour {
+    Colour::SDR.with_depth(depth_of(image.fourcc))
+}
+
 impl FrameSource for KmsCapture {
     fn width(&self) -> u32 {
         self.width
@@ -768,6 +774,11 @@ impl FrameSource for KmsCapture {
 
     fn refresh_hz(&self) -> Option<u32> {
         Some(self.hz)
+    }
+
+    fn colour(&self) -> Colour {
+        self.export()
+            .map_or(Colour::SDR, |(image, _)| colour_of(&image))
     }
 
     fn screen(&self) -> Option<ScreenInfo> {
@@ -822,6 +833,7 @@ impl FrameSource for KmsCapture {
         frame.width = image.width;
         frame.height = image.height;
         frame.format = PixelFormat::Bgrx;
+        frame.colour = colour_of(&image);
         frame.data.clear();
         frame.dmabuf = Some(image);
         frame.seq = self.seq;

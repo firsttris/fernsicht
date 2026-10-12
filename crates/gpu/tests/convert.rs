@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use fernsicht_capture::dmabuf::{formats, fourcc_name};
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_gpu::Gpu;
 use fernsicht_gpu::convert::Converter;
 use fernsicht_gpu::testimage::upload_as_dmabuf;
@@ -77,24 +78,44 @@ fn picture(w: usize, h: usize, format: u32) -> Vec<u8> {
     img
 }
 
-fn bt709(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+/// What a patch becomes in `colour` (its depth's limited range and its
+/// matrix), in code values of that depth.
+fn expected(r: u8, g: u8, b: u8, colour: Colour) -> (f64, f64, f64) {
     let (r, g, b) = (
         f64::from(r) / 255.0,
         f64::from(g) / 255.0,
         f64::from(b) / 255.0,
     );
-    let (kr, kb) = (0.2126, 0.0722);
+    let (kr, kb) = colour.kr_kb();
+    let (kr, kb) = (f64::from(kr), f64::from(kb));
+    let (black, span, mid, cspan) = colour.depth.limited_range();
+    let (black, span, mid, cspan) = (
+        f64::from(black),
+        f64::from(span),
+        f64::from(mid),
+        f64::from(cspan),
+    );
     let y = kr * r + (1.0 - kr - kb) * g + kb * b;
     (
-        16.0 + 219.0 * y,
-        128.0 + 224.0 * (b - y) / (2.0 * (1.0 - kb)),
-        128.0 + 224.0 * (r - y) / (2.0 * (1.0 - kr)),
+        black + span * y,
+        mid + cspan * (b - y) / (2.0 * (1.0 - kb)),
+        mid + cspan * (r - y) / (2.0 * (1.0 - kr)),
     )
 }
 
-/// Mean Y, Cb, Cr in the middle of each patch, against BT.709. Exact
+/// Sample `i` of a tightly packed NV12 (a byte) or P010 (a little-endian
+/// word, the 10 bits on top) picture.
+fn sample(buf: &[u8], depth: Depth, i: usize) -> f64 {
+    match depth {
+        Depth::Eight => f64::from(buf[i]),
+        Depth::Ten => f64::from(u16::from_le_bytes([buf[2 * i], buf[2 * i + 1]]) >> 6),
+    }
+}
+
+/// Mean Y, Cb, Cr in the middle of each patch, against `colour`. Exact
 /// conversion, so tight bounds (10 bit sources round a little apart).
-fn check_patches(nv12: &[u8], w: usize, h: usize, what: &str) {
+fn check_patches_in(yuv: &[u8], w: usize, h: usize, colour: Colour, what: &str) {
+    let tolerance = 1.5 * f64::from(1u32 << (colour.depth.bits() - 8));
     let pw = w / PATCHES.len();
     for (i, &(r, g, b)) in PATCHES.iter().enumerate() {
         let (x0, x1) = (i * pw + pw / 4, (i + 1) * pw - pw / 4);
@@ -102,32 +123,36 @@ fn check_patches(nv12: &[u8], w: usize, h: usize, what: &str) {
         let (mut ys, mut cbs, mut crs, mut n, mut nc) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for y in y0..y1 {
             for x in x0..x1 {
-                ys += f64::from(nv12[y * w + x]);
+                ys += sample(yuv, colour.depth, y * w + x);
                 n += 1.0;
                 if y % 2 == 0 && x % 2 == 0 {
                     let uv = w * h + (y / 2) * w + x;
-                    cbs += f64::from(nv12[uv]);
-                    crs += f64::from(nv12[uv + 1]);
+                    cbs += sample(yuv, colour.depth, uv);
+                    crs += sample(yuv, colour.depth, uv + 1);
                     nc += 1.0;
                 }
             }
         }
         let got = (ys / n, cbs / nc, crs / nc);
-        let want = bt709(r, g, b);
+        let want = expected(r, g, b, colour);
         assert!(
-            (got.0 - want.0).abs() < 1.5
-                && (got.1 - want.1).abs() < 1.5
-                && (got.2 - want.2).abs() < 1.5,
-            "{what}, patch {i} RGB({r},{g},{b}): got YCbCr {got:.1?}, BT.709 wants {want:.1?}"
+            (got.0 - want.0).abs() < tolerance
+                && (got.1 - want.1).abs() < tolerance
+                && (got.2 - want.2).abs() < tolerance,
+            "{what}, patch {i} RGB({r},{g},{b}): got YCbCr {got:.1?}, {colour:?} wants {want:.1?}"
         );
     }
+}
+
+fn check_patches(nv12: &[u8], w: usize, h: usize, what: &str) {
+    check_patches_in(nv12, w, h, Colour::SDR, what);
 }
 
 #[test]
 fn every_desktop_format_converts_to_bt709() {
     let Some(gpu) = gpu() else { return };
     let (w, h) = (1280usize, 720usize);
-    let mut conv = Converter::new(gpu.clone(), w as u32, h as u32).unwrap();
+    let mut conv = Converter::new(gpu.clone(), w as u32, h as u32, Colour::SDR).unwrap();
     for format in [
         formats::XRGB8888,
         formats::ARGB8888,
@@ -156,6 +181,30 @@ fn every_desktop_format_converts_to_bt709() {
 }
 
 #[test]
+fn ten_bit_desktops_convert_to_p010_in_either_matrix() {
+    let Some(gpu) = gpu() else { return };
+    let (w, h) = (1280usize, 720usize);
+    let ten_bit_sdr = Colour::SDR.with_depth(Depth::Ten);
+    for colour in [ten_bit_sdr, Colour::HDR10] {
+        let mut conv = Converter::new(gpu.clone(), w as u32, h as u32, colour).unwrap();
+        for format in [
+            formats::XRGB2101010,
+            formats::ABGR2101010,
+            formats::XRGB8888,
+        ] {
+            let name = fourcc_name(format);
+            let image = upload_as_dmabuf(&gpu, w as u32, h as u32, format, &picture(w, h, format))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            conv.convert(&image)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let p010 = conv.download().unwrap();
+            assert_eq!(p010.len(), w * h * 3, "two bytes a sample");
+            check_patches_in(&p010, w, h, colour, &format!("{name} → {colour:?}"));
+        }
+    }
+}
+
+#[test]
 fn chroma_is_sited_left() {
     let Some(gpu) = gpu() else { return };
     let (w, h) = (16usize, 2usize);
@@ -167,7 +216,7 @@ fn chroma_is_sited_left() {
             img[(y * w + x) * 4..][..4].copy_from_slice(&pack(formats::XRGB8888, r, g, b));
         }
     }
-    let mut conv = Converter::new(gpu.clone(), w as u32, h as u32).unwrap();
+    let mut conv = Converter::new(gpu.clone(), w as u32, h as u32, Colour::SDR).unwrap();
     let image = upload_as_dmabuf(&gpu, w as u32, h as u32, formats::XRGB8888, &img).unwrap();
     conv.convert(&image).unwrap();
     let nv12 = conv.download().unwrap();
@@ -192,7 +241,7 @@ fn pictures_are_scaled_to_the_output_size() {
     )
     .unwrap();
     for (w, h) in [(1920usize, 1080usize), (1366, 768), (640, 360)] {
-        let mut conv = Converter::new(gpu.clone(), w as u32, h as u32).unwrap();
+        let mut conv = Converter::new(gpu.clone(), w as u32, h as u32, Colour::SDR).unwrap();
         conv.convert(&src).unwrap();
         check_patches(&conv.download().unwrap(), w, h, &format!("{w}×{h}"));
     }
@@ -201,7 +250,7 @@ fn pictures_are_scaled_to_the_output_size() {
 #[test]
 fn the_output_memory_can_be_exported() {
     let Some(gpu) = gpu() else { return };
-    let conv = Converter::new(gpu, 1920, 1080).unwrap();
+    let conv = Converter::new(gpu, 1920, 1080, Colour::SDR).unwrap();
     assert!(conv.allocation_size() >= conv.layout().len());
     let a = conv.export_output().unwrap();
     let b = conv.export_output().unwrap();
@@ -216,7 +265,7 @@ fn the_output_memory_can_be_exported() {
 #[test]
 fn bad_input_is_an_error_and_the_converter_keeps_working() {
     let Some(gpu) = gpu() else { return };
-    let mut conv = Converter::new(gpu.clone(), 640, 360).unwrap();
+    let mut conv = Converter::new(gpu.clone(), 640, 360, Colour::SDR).unwrap();
     let good = upload_as_dmabuf(
         &gpu,
         640,
@@ -237,13 +286,13 @@ fn bad_input_is_an_error_and_the_converter_keeps_working() {
     assert!(conv.convert(&not_a_dmabuf).is_err());
     conv.convert(&good).unwrap();
     check_patches(&conv.download().unwrap(), 640, 360, "after errors");
-    assert!(Converter::new(gpu, 641, 360).is_err());
+    assert!(Converter::new(gpu, 641, 360, Colour::SDR).is_err());
 }
 
 #[test]
 fn buffers_are_imported_once_even_with_new_descriptors() {
     let Some(gpu) = gpu() else { return };
-    let mut conv = Converter::new(gpu.clone(), 640, 360).unwrap();
+    let mut conv = Converter::new(gpu.clone(), 640, 360, Colour::SDR).unwrap();
     let pics: Vec<_> = (0..6)
         .map(|_| {
             upload_as_dmabuf(

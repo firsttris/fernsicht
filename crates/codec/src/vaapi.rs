@@ -21,13 +21,15 @@ use std::sync::Arc;
 
 use fernsicht_capture::dmabuf::{BufferIdentity, DmaBuf, DmaBufPlane, formats, fourcc_name};
 use fernsicht_capture::{Frame, PixelFormat};
+use fernsicht_core::colour::{Colour, Depth, Primaries, Transfer};
 use fernsicht_core::now_us;
 use fernsicht_proto::Codec;
 use ffmpeg_next::ffi;
 
 use crate::ff;
 use crate::ff::{
-    check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_bt709_limited,
+    check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_colour,
+    yuv_format,
 };
 use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
 
@@ -62,7 +64,26 @@ unsafe extern "C" {
         surfaces: *mut ffi::VASurfaceID,
         num_surfaces: c_int,
     ) -> c_int;
+    fn vaGetConfigAttributes(
+        dpy: ffi::VADisplay,
+        profile: c_int,
+        entrypoint: c_int,
+        attrib_list: *mut VaConfigAttrib,
+        num_attribs: c_int,
+    ) -> c_int;
 }
+
+/// `VAConfigAttrib` (va.h).
+#[repr(C)]
+struct VaConfigAttrib {
+    kind: c_int,
+    value: u32,
+}
+
+/// `VAConfigAttribRTFormat` and its 10-bit 4:2:0 bit (va.h).
+const VA_CONFIG_ATTRIB_RT_FORMAT: c_int = 0;
+const VA_RT_FORMAT_YUV420_10: u32 = 0x100;
+const VA_ATTRIB_NOT_SUPPORTED: u32 = 0x8000_0000;
 
 // libva types FFmpeg's bindings leave opaque (va.h, va_drmcommon.h).
 #[repr(C)]
@@ -132,6 +153,7 @@ const VA_FOURCC_X2B10G10R10: u32 = 0x3033_4258;
 
 const VA_PROFILE_H264_HIGH: c_int = 7;
 const VA_PROFILE_HEVC_MAIN: c_int = 17;
+const VA_PROFILE_HEVC_MAIN10: c_int = 18;
 const VA_PROFILE_AV1_PROFILE0: c_int = 32;
 const VA_ENTRYPOINT_VLD: c_int = 1;
 const VA_ENTRYPOINT_ENC_SLICE: c_int = 6;
@@ -140,26 +162,48 @@ const VA_ENTRYPOINT_ENC_SLICE_LP: c_int = 8;
 /// Whether the GPU behind `render_node` decodes `codec` (H.264 High, HEVC
 /// Main or AV1 Main) in hardware. False if the node cannot be opened.
 pub fn decodes(render_node: &str, codec: Codec) -> bool {
-    supports(render_node, codec, &[VA_ENTRYPOINT_VLD])
+    decodes_in(render_node, codec, Depth::Eight)
+}
+
+/// [`decodes`] at `depth` (10 bit: HEVC Main 10, AV1 Main in 10 bit).
+pub fn decodes_in(render_node: &str, codec: Codec, depth: Depth) -> bool {
+    supports(render_node, codec, depth, &[VA_ENTRYPOINT_VLD])
 }
 
 /// Whether the GPU behind `render_node` encodes `codec` in hardware (full
 /// or low-power entry point). False if the node cannot be opened.
 pub fn encodes(render_node: &str, codec: Codec) -> bool {
+    encodes_in(render_node, codec, Depth::Eight)
+}
+
+/// [`encodes`] at `depth`.
+pub fn encodes_in(render_node: &str, codec: Codec, depth: Depth) -> bool {
     supports(
         render_node,
         codec,
+        depth,
         &[VA_ENTRYPOINT_ENC_SLICE, VA_ENTRYPOINT_ENC_SLICE_LP],
     )
 }
 
-/// Whether the driver offers `codec`'s profile with one of `entrypoints`.
-fn supports(render_node: &str, codec: Codec, entrypoints: &[c_int]) -> bool {
-    let profile = match codec {
-        Codec::H264 => VA_PROFILE_H264_HIGH,
-        Codec::Hevc => VA_PROFILE_HEVC_MAIN,
-        Codec::Av1 => VA_PROFILE_AV1_PROFILE0,
-        Codec::Synthetic => return false,
+/// The VA profile for `codec` at `depth`; `None` where none is (H.264 in
+/// 10 bit: no hardware has High 10).
+fn va_profile(codec: Codec, depth: Depth) -> Option<c_int> {
+    Some(match (codec, depth) {
+        (Codec::H264, Depth::Eight) => VA_PROFILE_H264_HIGH,
+        (Codec::Hevc, Depth::Eight) => VA_PROFILE_HEVC_MAIN,
+        (Codec::Hevc, Depth::Ten) => VA_PROFILE_HEVC_MAIN10,
+        // AV1 Main covers 8 and 10 bit; the surface formats tell.
+        (Codec::Av1, _) => VA_PROFILE_AV1_PROFILE0,
+        _ => return None,
+    })
+}
+
+/// Whether the driver offers `codec`'s profile with one of `entrypoints`,
+/// and at 10 bit with 10-bit 4:2:0 surfaces.
+fn supports(render_node: &str, codec: Codec, depth: Depth, entrypoints: &[c_int]) -> bool {
+    let Some(profile) = va_profile(codec, depth) else {
+        return false;
     };
     let Ok(device) = VaapiDevice::open(render_node) else {
         return false;
@@ -182,7 +226,20 @@ fn supports(render_node: &str, codec: Codec, entrypoints: &[c_int]) -> bool {
             return false;
         }
         offered.truncate(n.max(0) as usize);
-        entrypoints.iter().any(|e| offered.contains(e))
+        entrypoints
+            .iter()
+            .filter(|e| offered.contains(e))
+            .any(|&e| {
+                depth == Depth::Eight || {
+                    let mut attrib = VaConfigAttrib {
+                        kind: VA_CONFIG_ATTRIB_RT_FORMAT,
+                        value: 0,
+                    };
+                    vaGetConfigAttributes(dpy, profile, e, &mut attrib, 1) == 0
+                        && attrib.value != VA_ATTRIB_NOT_SUPPORTED
+                        && attrib.value & VA_RT_FORMAT_YUV420_10 != 0
+                }
+            })
     }
 }
 
@@ -245,6 +302,9 @@ pub struct VaapiEncoderConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// The stream's colour: 10 bit takes the screen (DMA-BUF) only, CPU
+    /// input is 8-bit NV12.
+    pub colour: Colour,
 }
 
 pub struct VaapiEncoder {
@@ -258,6 +318,7 @@ pub struct VaapiEncoder {
     width: u32,
     height: u32,
     fps: u32,
+    colour: Colour,
     /// Built on the first DMA-BUF frame, rebuilt when its geometry changes.
     converter: Option<GpuConverter>,
     force_keyframe: bool,
@@ -291,6 +352,7 @@ impl VaapiEncoder {
                 width: cfg.width,
                 height: cfg.height,
                 fps: cfg.fps,
+                colour: cfg.colour,
                 converter: None,
                 force_keyframe: true,
                 next_pts: 0,
@@ -306,7 +368,7 @@ impl VaapiEncoder {
             }
             let fc = (*enc.frames).data as *mut ffi::AVHWFramesContext;
             (*fc).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
-            (*fc).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            (*fc).sw_format = yuv_format(cfg.colour.depth);
             (*fc).width = cfg.width as c_int;
             (*fc).height = cfg.height as c_int;
             (*fc).initial_pool_size = 4;
@@ -316,7 +378,7 @@ impl VaapiEncoder {
             )?;
             enc.ctx = enc.open_codec(cfg.bitrate_kbps)?;
 
-            (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*enc.sw).format = yuv_format(cfg.colour.depth) as c_int;
             (*enc.sw).width = cfg.width as c_int;
             (*enc.sw).height = cfg.height as c_int;
             check("allocate upload frame", ffi::av_frame_get_buffer(enc.sw, 0))?;
@@ -329,12 +391,13 @@ impl VaapiEncoder {
     /// # Safety
     /// `self.frames` is an initialised VAAPI frame pool.
     unsafe fn open_codec(&self, kbps: u32) -> Result<*mut ffi::AVCodecContext, CodecError> {
-        let names = ff::names(self.codec, ff::Backend::Vaapi)?;
+        let names = ff::names(self.codec, ff::Backend::Vaapi, self.colour.depth)?;
         let mut opts = vec![(c"rc_mode", c"CBR"), (c"async_depth", c"1")];
         if let Some(profile) = names.profile {
             opts.push((c"profile", profile));
         }
         let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        let colour = self.colour;
         // SAFETY: open_encoder hands over a fresh context; frames is valid
         // per the contract.
         unsafe {
@@ -360,7 +423,7 @@ impl VaapiEncoder {
                 (*c).thread_count = 1;
                 // The way scale_vaapi converts to YCbCr, written into the
                 // stream.
-                signal_bt709_limited(c);
+                signal_colour(c, colour);
             })
         }
     }
@@ -389,6 +452,11 @@ impl VaapiEncoder {
 impl VaapiEncoder {
     /// CPU NV12 → `self.hw`.
     unsafe fn upload(&mut self, frame: &Frame) -> Result<(), CodecError> {
+        if self.colour.depth != Depth::Eight {
+            return Err(CodecError::Backend(
+                "a 10-bit stream takes the screen (DMA-BUF), not CPU pictures".into(),
+            ));
+        }
         if frame.format != PixelFormat::Nv12
             || frame.width != self.width
             || frame.height != self.height
@@ -426,6 +494,7 @@ impl VaapiEncoder {
                 key,
                 (self.width, self.height),
                 self.fps,
+                self.colour,
             )?);
         }
         let conv = self.converter.as_mut().expect("just built");
@@ -437,6 +506,10 @@ impl VaapiEncoder {
 impl Encoder for VaapiEncoder {
     fn codec(&self) -> Codec {
         self.codec
+    }
+
+    fn colour(&self) -> Colour {
+        self.colour
     }
 
     fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
@@ -589,8 +662,30 @@ unsafe extern "C" fn release_surface(_opaque: *mut std::ffi::c_void, data: *mut 
     unsafe { vaDestroySurfaces(s.display, &mut s.id, 1) };
 }
 
-/// Imports RGB DMA-BUFs as VAAPI surfaces and converts them to NV12 at the
-/// stream size with the video processor: `buffer → scale_vaapi → sink`.
+/// `scale_vaapi`'s settings: the stream size, NV12 or P010, the matrix of
+/// `colour`, limited range, chroma on the even columns; at HDR the
+/// primaries and PQ, as they come in.
+fn scale_args(w: u32, h: u32, colour: Colour) -> String {
+    let format = match colour.depth {
+        Depth::Eight => "nv12",
+        Depth::Ten => "p010",
+    };
+    let colours = match (colour.primaries, colour.transfer) {
+        (Primaries::Bt709, _) => "out_color_matrix=bt709".to_string(),
+        (Primaries::Bt2020, transfer) => format!(
+            "out_color_matrix=bt2020nc:out_color_primaries=bt2020:out_color_transfer={}",
+            match transfer {
+                Transfer::Sdr => "bt2020-10",
+                Transfer::Pq => "smpte2084",
+            }
+        ),
+    };
+    format!("w={w}:h={h}:format={format}:{colours}:out_range=tv:out_chroma_location=left")
+}
+
+/// Imports RGB DMA-BUFs as VAAPI surfaces and converts them to NV12 (P010)
+/// at the stream size with the video processor: `buffer → scale_vaapi →
+/// sink`.
 struct GpuConverter {
     /// (fourcc, width, height) of the input this was built for.
     key: (u32, u32, u32),
@@ -601,6 +696,8 @@ struct GpuConverter {
     sink: *mut ffi::AVFilterContext,
     display: ffi::VADisplay,
     format: ImportFormat,
+    /// What the screen holds, and so the stream (its depth aside).
+    colour: Colour,
     input: *mut ffi::AVFrame,
     next_pts: i64,
     /// Surfaces of recently seen buffers, the most recent last; each
@@ -617,6 +714,7 @@ impl GpuConverter {
         key: (u32, u32, u32),
         (out_w, out_h): (u32, u32),
         fps: u32,
+        colour: Colour,
     ) -> Result<Self, CodecError> {
         let (fourcc, w, h) = key;
         let format = import_format(fourcc)?;
@@ -631,6 +729,7 @@ impl GpuConverter {
                 sink: ptr::null_mut(),
                 display: device.display(),
                 format,
+                colour,
                 input: ffi::av_frame_alloc(),
                 next_pts: 0,
                 imports: Vec::new(),
@@ -691,10 +790,7 @@ impl GpuConverter {
                 ffi::avfilter_init_str(conv.src, ptr::null()),
             )?;
 
-            let args = CString::new(format!(
-                "w={out_w}:h={out_h}:format=nv12:out_color_matrix=bt709:out_range=tv:out_chroma_location=left"
-            ))
-            .expect("no NUL");
+            let args = CString::new(scale_args(out_w, out_h, colour)).expect("no NUL");
             check(
                 "init scale_vaapi",
                 ffi::avfilter_init_str(scale, args.as_ptr()),
@@ -760,11 +856,17 @@ impl GpuConverter {
             f.width = image.width as c_int;
             f.height = image.height as c_int;
             f.hw_frames_ctx = ffi::av_buffer_ref(self.import_frames);
-            // A desktop: full-range sRGB.
+            // A desktop: full-range RGB, sRGB or (HDR) PQ BT.2020: the
+            // same primaries and transfer out as in, so the video
+            // processor applies the matrix only.
             f.color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
             f.colorspace = ffi::AVColorSpace::AVCOL_SPC_RGB;
-            f.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-            f.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
+            let (_, primaries, trc) = ff::tags(self.colour);
+            f.color_primaries = primaries;
+            f.color_trc = match self.colour.transfer {
+                Transfer::Sdr => ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1,
+                Transfer::Pq => trc,
+            };
             f.pts = self.next_pts;
         }
         self.next_pts += 1;
@@ -1093,7 +1195,7 @@ impl VaapiDecoder {
 
     /// A decoder for `codec` (H.264, HEVC or AV1).
     pub fn for_codec(render_node: &str, codec: Codec) -> Result<Self, CodecError> {
-        let names = ff::names(codec, ff::Backend::Vaapi)?;
+        let names = ff::names(codec, ff::Backend::Vaapi, Depth::Eight)?;
         let device = VaapiDevice::open(render_node)?;
         // SAFETY: see VaapiEncoder::new.
         unsafe {
@@ -1168,7 +1270,7 @@ impl VaapiDecoder {
         // in which case the transfer fails cleanly).
         unsafe {
             ffi::av_frame_unref(self.sw);
-            (*self.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*self.sw).format = ff::sw_format(self.frame) as c_int;
             check(
                 "download surface",
                 ffi::av_hwframe_transfer_data(self.sw, self.frame, 0),
@@ -1237,7 +1339,7 @@ impl Decoder for VaapiDecoder {
     fn picture(&mut self, prefer: PictureKind) -> Result<Option<Picture<'_>>, CodecError> {
         // SAFETY: frame is a valid AVFrame; data[3] is its surface id when
         // it holds a decoded VAAPI frame.
-        let (surface, width, height, frames) = unsafe {
+        let (surface, width, height, frames, colour) = unsafe {
             let f = &*self.frame;
             if f.format != ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as c_int {
                 return Ok(None);
@@ -1247,7 +1349,12 @@ impl Decoder for VaapiDecoder {
                 f.width as u32,
                 f.height as u32,
                 f.hw_frames_ctx,
+                ff::colour_of(self.frame, ff::sw_format(self.frame)),
             )
+        };
+        let fourcc = match colour.depth {
+            Depth::Eight => formats::NV12,
+            Depth::Ten => formats::P010,
         };
         let prefer = if self.no_export {
             PictureKind::Nv12
@@ -1275,7 +1382,7 @@ impl Decoder for VaapiDecoder {
                 }
                 if !self.exported.contains_key(&surface) {
                     // SAFETY: frame holds a VAAPI surface, drm is ours.
-                    match unsafe { export_surface(self.frame, self.drm, formats::NV12) } {
+                    match unsafe { export_surface(self.frame, self.drm, fourcc) } {
                         Ok(image) => {
                             self.exported.insert(surface, image);
                         }
@@ -1290,6 +1397,7 @@ impl Decoder for VaapiDecoder {
                 Ok(Some(Picture::DmaBuf {
                     image,
                     key: self.id << 32 | u64::from(surface),
+                    colour,
                 }))
             }
             PictureKind::Nv12 => {
@@ -1301,6 +1409,7 @@ impl Decoder for VaapiDecoder {
                     width,
                     height,
                     data: &self.nv12,
+                    colour,
                 }))
             }
         }

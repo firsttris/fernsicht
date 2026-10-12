@@ -483,3 +483,20 @@ fn a_frames_queue_sample_spans_encoder_to_first_packet() {
     // here the client's clock is behind, the sample negative.
     assert_eq!(crate::congestion::queue_sample(&h, 3_000), 3_000 - 12_500);
 }
+
+#[test]
+fn ten_bit_is_offered_for_what_the_chosen_decoder_takes() {
+    use crate::network::ten_bit_codecs;
+    let offered = CodecSet::of(&[Codec::H264, Codec::Hevc, Codec::Av1]);
+    // A GTX 1080: HEVC Main 10, no AV1 at all.
+    let gtx = ten_bit_codecs(CodecSet::of(&[Codec::H264, Codec::Hevc]), |c| {
+        c == Codec::Hevc
+    });
+    assert_eq!(gtx, CodecSet::of(&[Codec::Hevc]));
+    // H.264 never, whatever the decoder says; nothing not offered.
+    assert_eq!(
+        ten_bit_codecs(offered, |_| true),
+        CodecSet::of(&[Codec::Hevc, Codec::Av1])
+    );
+    assert_eq!(ten_bit_codecs(CodecSet::H264, |_| true), CodecSet::EMPTY);
+}

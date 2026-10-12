@@ -81,6 +81,7 @@ impl Peer {
                 bitrate_kbps,
                 codecs: CodecSet::H264,
                 refresh: false,
+                ten_bit: CodecSet::EMPTY,
             }
             .encode(b)
         });
@@ -1091,6 +1092,7 @@ mod secure {
             bitrate_kbps: 500,
             codecs: CodecSet::H264,
             refresh: false,
+            ten_bit: CodecSet::EMPTY,
         };
         let (init, m1) = Initiator::start(client, host, &hello.encode_with_time(ms)).unwrap();
         peer.send(|b| {
@@ -1250,6 +1252,7 @@ mod secure {
             bitrate_kbps: 0,
             codecs: CodecSet::H264,
             refresh: false,
+            ten_bit: CodecSet::EMPTY,
         };
         let (_, m1) =
             Initiator::start(&stranger, &sec.public_key(), &hello.encode_with_time(1)).unwrap();

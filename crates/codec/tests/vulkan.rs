@@ -5,6 +5,8 @@
 //! appended to the CI job summary.
 #![cfg(feature = "vulkan")]
 
+mod common;
+
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,9 +14,11 @@ use std::time::Instant;
 use fernsicht_capture::dmabuf::{DmaBuf, formats};
 use fernsicht_capture::{Frame, FrameSource, TestPattern};
 use fernsicht_codec::vulkan::{
-    VulkanDecoder, VulkanEncoder, VulkanEncoderConfig, decodes, ffmpeg_is_ready, gpu_encodes,
+    VulkanDecoder, VulkanEncoder, VulkanEncoderConfig, decodes, decodes_in, encodes_in,
+    ffmpeg_is_ready, gpu_encodes,
 };
 use fernsicht_codec::{DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_gpu::testimage::upload_as_dmabuf;
 use fernsicht_gpu::{Gpu, Prefer};
 use fernsicht_proto::Codec;
@@ -58,6 +62,7 @@ fn config(codec: Codec, width: u32, height: u32, kbps: u32) -> VulkanEncoderConf
         height,
         fps: 60,
         bitrate_kbps: kbps,
+        colour: Colour::SDR,
     }
 }
 
@@ -395,5 +400,55 @@ fn the_screen_goes_to_the_encoder_without_leaving_the_gpu() {
             percentile(steady.clone(), 0.95)
         ));
         assert!(percentile(steady, 0.95) < 16.0);
+    }
+}
+
+#[test]
+fn a_ten_bit_screen_goes_through_vulkan_video_in_hevc_main_10() {
+    if !ready(Codec::Hevc) {
+        return;
+    }
+    let gpu = gpu();
+    if !(encodes_in(&render_node(), Codec::Hevc, Depth::Ten)
+        && decodes_in(&gpu, Codec::Hevc, Depth::Ten))
+    {
+        eprintln!("skipped: {} has no Vulkan Video HEVC Main 10", gpu.name());
+        return;
+    }
+    let (w, h) = (1280u32, 720u32);
+    let img = common::xr30_patches(w as usize, h as usize, &PATCHES);
+    let image = upload_as_dmabuf(&gpu, w, h, formats::XRGB2101010, &img).unwrap();
+    for colour in [Colour::SDR.with_depth(Depth::Ten), Colour::HDR10] {
+        let mut enc = VulkanEncoder::new(&VulkanEncoderConfig {
+            colour,
+            ..config(Codec::Hevc, w, h, 8_000)
+        })
+        .unwrap();
+        let mut dec = decoder(Codec::Hevc);
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        for i in 0..3 {
+            let mut frame = Frame::from_dmabuf(image.clone());
+            frame.seq = i;
+            enc.encode(&frame, &mut out).unwrap();
+            dec.decode(&out.data, &mut d).unwrap();
+        }
+        match dec.picture(PictureKind::Gpu).unwrap() {
+            Some(Picture::Vulkan(p)) => assert_eq!(p.colour, colour),
+            other => panic!("no Vulkan picture: {other:?}"),
+        }
+        let p010 = download(&mut dec);
+        assert_eq!(p010.len(), (w * h * 3) as usize, "P010");
+        common::assert_patches(
+            &p010,
+            (w as usize, h as usize),
+            &PATCHES,
+            colour,
+            4.0,
+            &format!("XR30 → Vulkan Video HEVC Main 10, {colour:?}"),
+        );
+        summary(&format!(
+            "- Vulkan Video HEVC Main 10 aus XR30, {colour:?} ({}): Farben ok",
+            gpu.name()
+        ));
     }
 }

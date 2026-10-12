@@ -67,6 +67,9 @@ impl HostAgent {
             // Firefox (they decode it on the CPU if need be).
             codecs: setup.browser_codecs(),
             refresh: false,
+            // Browsers get 8 bit: WebRTC has no say on bit depth.
+            ten_bit: fernsicht_proto::CodecSet::EMPTY,
+            screen: fernsicht_core::colour::Colour::SDR,
         };
         let who = format!("Browser {}", req.browser.ip());
         match self.start_session(params, req.browser, None, Some(setup)) {

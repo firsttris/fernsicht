@@ -1,11 +1,11 @@
-//! NV12 → RGB on the GPU.
+//! 4:2:0 YCbCr (NV12, P010) → RGB on the GPU.
 //!
 //! A picture comes either from CPU memory (copied into two plane images
 //! through a staging buffer), as a DMA-BUF from the decoder, imported
 //! once per decoder surface and sampled in place, or as an image of
 //! FFmpeg's Vulkan decoder on this very device, sampled in place too. Either way the fragment
-//! shader converts BT.709 limited range to RGB while drawing a quad that
-//! keeps the aspect ratio.
+//! shader converts the picture's limited range and matrix to RGB
+//! ([`crate::colour`]) while drawing a quad that keeps the aspect ratio.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,18 +13,16 @@ use std::sync::Arc;
 use ash::vk;
 use ash::vk::Handle;
 use fernsicht_codec::{Picture, VkSync};
+use fernsicht_core::colour::{Colour, Depth};
 
 use crate::CursorOverlay;
+use crate::colour::{PUSH_SIZE, cursor_push, video_push};
 
 use super::Gpu;
 use super::import;
 
 /// The shaders (`shader.wgsl`), compiled by the build script.
 const SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.spv"));
-
-/// Push constants: the quad's scale and offset, and the part of the
-/// picture's image shown (all `vec2<f32>`).
-const PUSH_SIZE: u32 = 24;
 
 /// Imported decoder surfaces kept at most; a decoder cycles through far
 /// fewer, more means surfaces of an old decoder are still cached.
@@ -94,6 +92,7 @@ struct CpuPlanes {
     planes: Planes,
     width: u32,
     height: u32,
+    depth: Depth,
     staging: Option<Staging>,
 }
 
@@ -175,6 +174,8 @@ enum Source {
 /// an acquired image behind.
 pub(crate) struct Prepared<'c> {
     source: Source,
+    /// How the picture's samples are read.
+    colour: Colour,
     /// How the submission keeps step with the decoder ([`Source::Decoded`]).
     sync: Option<&'c dyn VkSync>,
     size: (u32, u32),
@@ -268,7 +269,7 @@ impl Renderer {
                 )
                 .map_err(e("descriptor layout"))?;
             let push = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(PUSH_SIZE)];
             let layouts = [r.set_layout];
             r.pipeline_layout = d
@@ -473,38 +474,38 @@ impl Renderer {
         }
     }
 
-    /// The plane images for a `width`×`height` picture, (re)created when
-    /// the size changes.
-    fn copy_planes(&mut self, width: u32, height: u32) -> Result<&mut CpuPlanes, RenderError> {
+    /// The plane images for a `width`×`height` picture at `depth`,
+    /// (re)created when either changes.
+    fn copy_planes(
+        &mut self,
+        width: u32,
+        height: u32,
+        depth: Depth,
+    ) -> Result<&mut CpuPlanes, RenderError> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(RenderError::Other(format!(
-                "NV12 needs even sizes, got {width}×{height}"
+                "4:2:0 needs even sizes, got {width}×{height}"
             )));
         }
         if self
             .cpu
             .as_ref()
-            .is_none_or(|c| (c.width, c.height) != (width, height))
+            .is_none_or(|c| (c.width, c.height, c.depth) != (width, height, depth))
         {
             if let Some(old) = self.cpu.take() {
                 self.destroy_staging(old.staging);
                 self.destroy_planes(old.planes);
             }
             let usage = vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED;
-            let (y, y_mem) =
-                import::device_image(&self.gpu, vk::Format::R8_UNORM, width, height, usage)
+            let [y_format, uv_format] = import::yuv_plane_formats(depth);
+            let (y, y_mem) = import::device_image(&self.gpu, y_format, width, height, usage)
+                .map_err(RenderError::Other)?;
+            let (uv, uv_mem) =
+                import::device_image(&self.gpu, uv_format, width / 2, height / 2, usage)
                     .map_err(RenderError::Other)?;
-            let (uv, uv_mem) = import::device_image(
-                &self.gpu,
-                vk::Format::R8G8_UNORM,
-                width / 2,
-                height / 2,
-                usage,
-            )
-            .map_err(RenderError::Other)?;
             let views = [
-                import::view(&self.gpu, y, vk::Format::R8_UNORM).map_err(RenderError::Other)?,
-                import::view(&self.gpu, uv, vk::Format::R8G8_UNORM).map_err(RenderError::Other)?,
+                import::view(&self.gpu, y, y_format).map_err(RenderError::Other)?,
+                import::view(&self.gpu, uv, uv_format).map_err(RenderError::Other)?,
             ];
             let set = self.descriptor_set(views)?;
             self.cpu = Some(CpuPlanes {
@@ -516,20 +517,27 @@ impl Renderer {
                 },
                 width,
                 height,
+                depth,
                 staging: None,
             });
         }
         Ok(self.cpu.as_mut().expect("just created"))
     }
 
-    /// Copies a CPU NV12 picture into the staging buffer.
-    fn stage_cpu(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), RenderError> {
-        let len = width as usize * height as usize * 3 / 2;
+    /// Copies a CPU NV12 (P010) picture into the staging buffer.
+    fn stage_cpu(
+        &mut self,
+        width: u32,
+        height: u32,
+        depth: Depth,
+        data: &[u8],
+    ) -> Result<(), RenderError> {
+        let len = width as usize * height as usize * 3 / 2 * depth.sample_bytes() as usize;
         if data.len() < len {
-            return Err(RenderError::Other("NV12 picture too short".into()));
+            return Err(RenderError::Other("4:2:0 picture too short".into()));
         }
         let gpu = self.gpu.clone();
-        let planes = self.copy_planes(width, height)?;
+        let planes = self.copy_planes(width, height, depth)?;
         if planes.staging.is_none() {
             let (buffer, memory, mapped) =
                 import::host_buffer(&gpu, len as u64, vk::BufferUsageFlags::TRANSFER_SRC)
@@ -671,10 +679,19 @@ impl Renderer {
         // The last frame's commands, staging and imports are free again.
         self.settle()?;
         let mut sync = None;
+        let colour = match picture {
+            None => Colour::SDR,
+            Some(Picture::Vulkan(p)) => p.colour,
+            Some(
+                Picture::Nv12 { colour, .. }
+                | Picture::DmaBuf { colour, .. }
+                | Picture::Exported { colour, .. },
+            ) => *colour,
+        };
         let (source, size) = match picture {
             None => (Source::None, (1, 1)),
             Some(Picture::Vulkan(p)) => {
-                self.decoded_views(p.image, p.pool)?;
+                self.decoded_views(p.image, p.pool, p.colour.depth)?;
                 sync = Some(p.sync);
                 let crop = [
                     p.width as f32 / p.coded.0.max(1) as f32,
@@ -692,11 +709,12 @@ impl Renderer {
                 width,
                 height,
                 data,
+                colour,
             }) => {
-                self.stage_cpu(*width, *height, data)?;
+                self.stage_cpu(*width, *height, colour.depth, data)?;
                 (Source::Cpu, (*width, *height))
             }
-            Some(Picture::DmaBuf { image, key }) => {
+            Some(Picture::DmaBuf { image, key, .. }) => {
                 self.import(image, *key)?;
                 (Source::Foreign(*key), (image.width, image.height))
             }
@@ -708,9 +726,10 @@ impl Renderer {
                 width,
                 height,
                 planes,
+                colour,
             }) => {
                 self.import_shared(*memory, *size, *id, *device_uuid)?;
-                self.copy_planes(*width, *height)?;
+                self.copy_planes(*width, *height, colour.depth)?;
                 (Source::Shared(*planes), (*width, *height))
             }
         };
@@ -729,6 +748,7 @@ impl Renderer {
         };
         Ok(Prepared {
             source,
+            colour,
             sync,
             size,
             pipeline,
@@ -748,6 +768,7 @@ impl Renderer {
     ) -> Result<(), RenderError> {
         let Prepared {
             source,
+            colour,
             sync,
             size,
             pipeline,
@@ -758,7 +779,7 @@ impl Renderer {
         let result = self.record_and_submit(
             &source,
             decoded.map(|(_, a)| a),
-            size,
+            (size, colour),
             pipeline,
             pointer,
             target,
@@ -783,7 +804,7 @@ impl Renderer {
         &self,
         source: &Source,
         decoded: Option<fernsicht_codec::VkAccess>,
-        size: (u32, u32),
+        (size, colour): ((u32, u32), Colour),
         pipeline: vk::Pipeline,
         pointer: Option<(&CursorOverlay, bool, vk::Pipeline)>,
         target: &Target,
@@ -804,7 +825,7 @@ impl Renderer {
         // offset and row pitch, and whether another API hands it over.
         let copy_from = match *source {
             Source::Cpu => self.cpu.as_ref().and_then(|c| {
-                let w = c.width;
+                let w = c.width * c.depth.sample_bytes();
                 let packed = [(0, w), (u64::from(w) * u64::from(c.height), w)];
                 c.staging.as_ref().map(|s| (s.buffer, packed, false))
             }),
@@ -906,11 +927,13 @@ impl Renderer {
                     let layer = vk::ImageSubresourceLayers::default()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
                         .layer_count(1);
-                    // Row lengths count texels: one byte for Y, two for UV.
+                    // Row lengths count texels: one sample for Y, two for
+                    // UV (a byte each, or a 16-bit word at 10 bit).
                     let [(y_offset, y_pitch), (uv_offset, uv_pitch)] = layout;
+                    let texel = self.cpu.as_ref().map_or(1, |c| c.depth.sample_bytes());
                     let y = vk::BufferImageCopy::default()
                         .buffer_offset(y_offset)
-                        .buffer_row_length(y_pitch)
+                        .buffer_row_length(y_pitch / texel)
                         .image_subresource(layer)
                         .image_extent(vk::Extent3D {
                             width: w,
@@ -919,7 +942,7 @@ impl Renderer {
                         });
                     let uv = vk::BufferImageCopy::default()
                         .buffer_offset(uv_offset)
-                        .buffer_row_length(uv_pitch / 2)
+                        .buffer_row_length(uv_pitch / (2 * texel))
                         .image_subresource(layer)
                         .image_extent(vk::Extent3D {
                             width: w / 2,
@@ -1100,16 +1123,12 @@ impl Renderer {
                     &[],
                 );
                 let [sx, sy] = letterbox(size, (target.extent.width, target.extent.height));
-                let push: Vec<u8> = [sx, sy, 0.0f32, 0.0, crop[0], crop[1]]
-                    .iter()
-                    .flat_map(|v| v.to_ne_bytes())
-                    .collect();
                 d.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    &push,
+                    &video_push([sx, sy], crop, &colour),
                 );
                 d.cmd_draw(cmd, 4, 1, 0, 0);
 
@@ -1129,17 +1148,12 @@ impl Renderer {
                         &[tex.set],
                         &[],
                     );
-                    let push: Vec<u8> = rect
-                        .iter()
-                        .chain(&[1.0, 1.0])
-                        .flat_map(|v| v.to_ne_bytes())
-                        .collect();
                     d.cmd_push_constants(
                         cmd,
                         self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
-                        &push,
+                        &cursor_push(rect),
                     );
                     d.cmd_draw(cmd, 4, 1, 0, 0);
                 }
@@ -1212,7 +1226,7 @@ impl Renderer {
 
     /// Views of an image of the Vulkan decoder, made once per image of a
     /// pool.
-    fn decoded_views(&mut self, image: u64, pool: u64) -> Result<(), RenderError> {
+    fn decoded_views(&mut self, image: u64, pool: u64, depth: Depth) -> Result<(), RenderError> {
         if pool != self.decoded_pool || self.decoded.len() >= MAX_IMPORTED {
             self.forget_decoded();
             self.decoded_pool = pool;
@@ -1244,8 +1258,12 @@ impl Renderer {
             }
             .map_err(|e| RenderError::Import(format!("view of a decoded plane: {e}")))
         };
-        let y = view(vk::Format::R8_UNORM, vk::ImageAspectFlags::PLANE_0)?;
-        let uv = match view(vk::Format::R8G8_UNORM, vk::ImageAspectFlags::PLANE_1) {
+        // At 10 bit (G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16) 16-bit
+        // views: the same size class as the planes' R10X6 formats
+        // (VUID-VkImageViewCreateInfo-image-01586), the 10 bits on top.
+        let [y_format, uv_format] = import::yuv_plane_formats(depth);
+        let y = view(y_format, vk::ImageAspectFlags::PLANE_0)?;
+        let uv = match view(uv_format, vk::ImageAspectFlags::PLANE_1) {
             Ok(uv) => uv,
             Err(e) => {
                 // SAFETY: just made, unused.

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use fernsicht_core::colour::Colour;
 use fernsicht_input::Recorder;
 use fernsicht_proto::{Codec, CodecSet};
 use serde::{Deserialize, Serialize};
@@ -275,4 +276,9 @@ pub struct SessionParams {
     /// The encoder heals losses by intra refresh instead of keyframes (the
     /// client asked, and the encoder is NVENC).
     pub refresh: bool,
+    /// The codecs of `codecs` the client decodes in 10 bit (D4).
+    pub ten_bit: CodecSet,
+    /// What the screen holds (its depth, HDR or not); the stream takes it
+    /// in 10 bit where the client decodes that.
+    pub screen: Colour,
 }

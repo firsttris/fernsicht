@@ -7,6 +7,7 @@
 //! - [`HeadlessPresenter`]: discards frames, so the pipeline and the
 //!   latency overlay run anywhere (CI, `--headless`).
 
+pub mod colour;
 pub mod overlay;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;

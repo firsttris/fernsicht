@@ -21,7 +21,7 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 | Video (1) | host → client | one shard of an encoded frame: session, frame ID, frame length, capture time and stage offsets, FEC group position, keyframe flag, retransmission flag |
 | Feedback (2) | client → host | every 100 ms: frames completed and dropped, packets received, lost and recovered, the queue delay, packets marked CE, the delivery rate; asks for a keyframe or the pointer image |
 | ClockPing (3) / ClockPong (4) | both | clock sync: the client's send time, the host's receive and send times |
-| Hello (5) / HelloAck (6) | client → host / back | the session request (size, fps, bitrate, the codecs the client decodes, whether it wants intra refresh) and the answer (session ID, size, fps, codec, whether the stream refreshes) |
+| Hello (5) / HelloAck (6) | client → host / back | the session request (size, fps, bitrate, the codecs the client decodes and which of them in 10 bit, whether it wants intra refresh) and the answer (session ID, size, fps, codec, whether the stream refreshes) |
 | Bye (7) | both | the session ends |
 | Cursor (8) / CursorShape (9) | host → client | pointer position and visibility per frame, and the image's hotspot once the host learnt it (where input put the pointer against where its image appears: KMS does not tell); the pointer image in 1 KiB pieces when it changes |
 | Input (10) / InputAck (11) | client → host / back | mouse, keyboard and gamepad events with sequence numbers; the host's acknowledgement |

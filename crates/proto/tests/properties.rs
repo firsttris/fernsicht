@@ -94,13 +94,18 @@ proptest! {
     #[test]
     fn session_roundtrip(width: u16, height: u16, fps in 1u16.., bitrate_kbps: u32,
                          session_id: u32, codec in 0u8..4, codec_bits in 0u8..8,
-                         refresh: bool) {
+                         refresh: bool, ten_bits in 0u8..8) {
         let mut buf = [0u8; MAX_DATAGRAM];
         let all = [Codec::H264, Codec::Hevc, Codec::Av1];
         let listed: Vec<Codec> = all.iter().enumerate()
             .filter(|(i, _)| codec_bits & (1 << i) != 0).map(|(_, &c)| c).collect();
         let codecs = CodecSet::of(&listed);
-        let hello = Hello { width, height, fps, bitrate_kbps, codecs, refresh };
+        // Only what the client decodes at all, and never H.264, can be
+        // decoded in 10 bit.
+        let ten: Vec<Codec> = all.iter().enumerate()
+            .filter(|(i, _)| ten_bits & (1 << i) != 0).map(|(_, &c)| c).collect();
+        let ten_bit = CodecSet::of(&ten).and(codecs).and(CodecSet::of(&[Codec::Hevc, Codec::Av1]));
+        let hello = Hello { width, height, fps, bitrate_kbps, codecs, refresh, ten_bit };
         let n = hello.encode(&mut buf);
         prop_assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Hello(hello)));
         let codec = [Codec::Synthetic, Codec::H264, Codec::Hevc, Codec::Av1][codec as usize];

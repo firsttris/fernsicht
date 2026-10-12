@@ -890,7 +890,8 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
-D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 has its first step (below).
+D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 and D4 have their first step
+(below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -989,6 +990,21 @@ Keyboard Lock and `pointerrawupdate` to secure pages, but treat an origin listed
 real HTTPS, which needs a certificate the browser trusts for a LAN address, so a server of ours
 (or the user's own CA); with it the PIN no longer crosses the LAN in clear either (B1's active
 attacker).
+
+D4, first step (2026-10-12): 10 bit. A colour type (`fernsicht_core::colour`: depth, primaries,
+transfer) goes from the capture (the framebuffer's fourcc) through the encoders into the stream's
+VUI and back out of every decoded frame to the renderer. A 10-bit desktop comes in 10 bit where the
+client's decoder takes HEVC Main 10 or AV1 at 10 bit (the Hello's options byte names those codecs;
+VAAPI: the Main 10 profile and 10-bit 4:2:0 surfaces, NVDEC: `cuvidGetDecoderCaps` at 10 bit, Vulkan
+Video: the driver's capabilities for the profile): the converters write P010 (the compute shader
+two words per luma row of a block, `scale_vaapi` `format=p010`), NVENC, VAAPI and Vulkan Video encode
+it, and the decoders hand it on as P010 DMA-BUFs, CUDA exports with 16-bit rows or `10X6` images,
+which the renderer samples as 16-bit words. The shader takes range and matrix as push constants
+(BT.709 or BT.2020). Tests: the converter writes P010 in either matrix (GTX 1080); NVENC and Vulkan
+Video HEVC Main 10 from an XR30 buffer decode to the right colours through NVDEC and the Vulkan
+decoder, in 10-bit SDR and HDR10; the renderer shows P010 from the CPU, from NVDEC and from the
+Vulkan decoder right; VAAPI's HEVC and AV1 at 10 bit from AB30 (on the AMD runner). Open: HDR
+itself (reading HDR from KMS, PQ on the client), and the web viewer stays 8 bit.
 
 ## E. Clean code and consistency
 

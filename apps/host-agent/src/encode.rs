@@ -1,5 +1,6 @@
 //! The encode thread: frames from the slot to the send queue, a new
-//! encoder for a new size, a new bitrate on the running one.
+//! encoder for a new size or a screen that changed its colour (HDR on or
+//! off, another depth), a new bitrate on the running one.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -8,14 +9,16 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use fernsicht_capture::Frame;
 use fernsicht_codec::{CodecError, EncodedFrame, Encoder};
 use fernsicht_core::Slot;
+use fernsicht_core::colour::Colour;
 
 use crate::backends::fit;
 use crate::health::RepeatedError;
 use crate::shared::{HostStats, Shared};
 
-/// Makes an encoder for another stream size (at a bitrate, kbit/s).
+/// Makes an encoder for another stream size or screen colour (at a
+/// bitrate, kbit/s).
 pub(crate) type Rebuild =
-    Box<dyn FnMut(u32, (u16, u16)) -> anyhow::Result<Box<dyn Encoder>> + Send>;
+    Box<dyn FnMut(u32, (u16, u16), Colour) -> anyhow::Result<Box<dyn Encoder>> + Send>;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_loop(
@@ -24,6 +27,8 @@ pub(crate) fn encode_loop(
     mut kbps: u32,
     // The stream's size now, and the box it is fitted into.
     (mut size, bounds): ((u16, u16), (u16, u16)),
+    // What the screen held when the encoder was made.
+    mut screen: Colour,
     shared: &Shared,
     in_slot: &Slot<Frame>,
     send_tx: &Sender<EncodedFrame>,
@@ -36,25 +41,38 @@ pub(crate) fn encode_loop(
     // A bitrate the encoder could not take or a size it could not be
     // rebuilt for; tried again only when the wish changes, not on every
     // frame.
-    let (mut failed_kbps, mut failed_size) = (0, (0, 0));
+    let (mut failed_kbps, mut failed) = (0, None);
     while let Some(frame) = in_slot.take() {
         if !shared.running.load(Ordering::Acquire) {
             break;
         }
         // Another monitor (switched to) has its own size: the stream takes
-        // its shape instead of squeezing it into the old one. The new
-        // encoder starts with a keyframe that carries the new size.
-        let wanted = fit((frame.width, frame.height), bounds);
-        if wanted != size && wanted != failed_size {
-            match rebuild(kbps, wanted) {
+        // its shape instead of squeezing it into the old one. A screen
+        // switched to HDR, or to another depth, gets a stream in its
+        // colour. The new encoder starts with a keyframe that carries both.
+        let wanted = (fit((frame.width, frame.height), bounds), frame.colour);
+        if wanted != (size, screen) && Some(wanted) != failed {
+            match rebuild(kbps, wanted.0, wanted.1) {
                 Ok(e) => {
-                    log::info!("stream now {}×{}", wanted.0, wanted.1);
+                    let c = e.colour();
+                    log::info!(
+                        "stream now {}×{}, {} bit{}",
+                        wanted.0.0,
+                        wanted.0.1,
+                        c.depth.bits(),
+                        if c.is_hdr() { ", HDR" } else { "" }
+                    );
                     encoder = e;
-                    size = wanted;
+                    (size, screen) = wanted;
                 }
                 Err(e) => {
-                    log::warn!("stream size {}×{}: {e:#}", wanted.0, wanted.1);
-                    failed_size = wanted;
+                    log::warn!(
+                        "stream {}×{} in {:?}: {e:#}",
+                        wanted.0.0,
+                        wanted.0.1,
+                        wanted.1
+                    );
+                    failed = Some(wanted);
                 }
             }
         }

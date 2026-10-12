@@ -29,6 +29,7 @@ pub mod vulkan;
 use std::os::fd::BorrowedFd;
 
 use fernsicht_capture::{DmaBuf, Frame};
+use fernsicht_core::colour::Colour;
 use fernsicht_proto::Codec;
 use thiserror::Error;
 
@@ -86,24 +87,39 @@ pub trait Encoder: Send {
     /// (device, frame pool, screen input); the hardware encoders restart
     /// their rate control with a keyframe. On an error the old rate stays.
     fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError>;
+
+    /// The stream's colour (written into it): its depth, primaries and
+    /// transfer.
+    fn colour(&self) -> fernsicht_core::colour::Colour {
+        fernsicht_core::colour::Colour::SDR
+    }
 }
 
-/// The picture of the last decoded frame, for the presenter.
+/// The picture of the last decoded frame, for the presenter. Each says
+/// how its values are to be read ([`Colour`]): limited range, the matrix
+/// of its primaries; at 10 bit the samples are P010's (16 bits, the 10 on
+/// top).
 #[derive(Debug)]
 pub enum Picture<'a> {
-    /// Tightly packed NV12 in CPU memory (BT.709, limited range).
+    /// Tightly packed NV12 in CPU memory, or P010 at 10 bit.
     Nv12 {
         width: u32,
         height: u32,
         data: &'a [u8],
+        colour: Colour,
     },
-    /// NV12 on the GPU (fourcc `NV12`, plane 0 Y, plane 1 interleaved UV).
+    /// 4:2:0 on the GPU (fourcc `NV12` or `P010`, plane 0 Y, plane 1
+    /// interleaved UV).
     /// `key` stays the same for the same underlying surface, so presenters
     /// can keep the import instead of repeating it every frame. Its upper
     /// 32 bits name the surface pool: a new value means the pool was
     /// replaced (a new decoder, a new stream size), and imports of older
     /// pools are stale.
-    DmaBuf { image: &'a DmaBuf, key: u64 },
+    DmaBuf {
+        image: &'a DmaBuf,
+        key: u64,
+        colour: Colour,
+    },
     /// NV12 in GPU memory CUDA exported (NVDEC's pictures): import `memory`
     /// as Vulkan memory (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`,
     /// `size` bytes, on the GPU with `device_uuid`) and copy the planes
@@ -119,11 +135,13 @@ pub enum Picture<'a> {
         height: u32,
         /// Byte offset and row pitch of the Y and the interleaved UV plane.
         planes: [(u64, u32); 2],
+        colour: Colour,
     },
     /// A Vulkan image on the presenter's own device (FFmpeg's Vulkan
-    /// decoder): multi-planar NV12 (`G8_B8R8_2PLANE_420_UNORM`, created
-    /// with `MUTABLE_FORMAT`, so each plane can be viewed on its own),
-    /// sampled where it was decoded.
+    /// decoder): multi-planar 4:2:0 (`G8_B8R8_2PLANE_420_UNORM`, or
+    /// `G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16` at 10 bit, created with
+    /// `MUTABLE_FORMAT`, so each plane can be viewed on its own), sampled
+    /// where it was decoded.
     Vulkan(VkPicture<'a>),
 }
 
@@ -139,6 +157,7 @@ pub struct VkPicture<'a> {
     /// Changes when the decoder's images do (a new decoder, a new size):
     /// views of images of another pool are stale.
     pub pool: u64,
+    pub colour: Colour,
     pub sync: &'a dyn VkSync,
 }
 
@@ -149,6 +168,7 @@ impl std::fmt::Debug for VkPicture<'_> {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("pool", &self.pool)
+            .field("colour", &self.colour)
             .finish_non_exhaustive()
     }
 }

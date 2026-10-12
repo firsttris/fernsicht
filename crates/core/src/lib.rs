@@ -4,6 +4,7 @@
 //! construction.
 
 pub mod clock;
+pub mod colour;
 pub mod desktop;
 pub mod latency;
 pub mod signal;

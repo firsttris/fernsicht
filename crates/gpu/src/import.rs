@@ -6,6 +6,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use ash::vk;
 use fernsicht_capture::DmaBuf;
 use fernsicht_capture::dmabuf::{formats, fourcc_name};
+use fernsicht_core::colour::Depth;
 
 use crate::Gpu;
 use crate::device::err;
@@ -235,21 +236,36 @@ pub fn opaque_buffer(
     }
 }
 
-/// Imports an NV12 DMA-BUF as two images, Y (`R8`) and UV (`R8G8`).
-pub fn nv12(gpu: &Gpu, image: &DmaBuf) -> Result<[Plane; 2], String> {
-    if image.fourcc != formats::NV12 {
-        return Err(format!("expected NV12, got {}", fourcc_name(image.fourcc)));
+/// The formats a 4:2:0 picture's Y and UV planes are sampled as: bytes for
+/// 8 bit, 16-bit words (the 10 bits on top, P010's and the 10X6 formats'
+/// layout) for 10 bit.
+pub fn yuv_plane_formats(depth: Depth) -> [vk::Format; 2] {
+    match depth {
+        Depth::Eight => [vk::Format::R8_UNORM, vk::Format::R8G8_UNORM],
+        Depth::Ten => [vk::Format::R16_UNORM, vk::Format::R16G16_UNORM],
     }
+}
+
+/// Imports an NV12 or P010 DMA-BUF as two images, Y and UV
+/// ([`yuv_plane_formats`]).
+pub fn nv12(gpu: &Gpu, image: &DmaBuf) -> Result<[Plane; 2], String> {
+    let depth = match image.fourcc {
+        formats::NV12 => Depth::Eight,
+        formats::P010 => Depth::Ten,
+        other => return Err(format!("expected NV12 or P010, got {}", fourcc_name(other))),
+    };
     if image.planes.len() != 2 {
         return Err(format!(
-            "NV12 in {} planes (compressed layout?) is not supported",
+            "{} in {} planes (compressed layout?) is not supported",
+            fourcc_name(image.fourcc),
             image.planes.len()
         ));
     }
     image.validate().map_err(|e| e.to_string())?;
     let (w, h) = (image.width, image.height);
-    let y = plane(gpu, image, &[0], vk::Format::R8_UNORM, w, h)?;
-    match plane(gpu, image, &[1], vk::Format::R8G8_UNORM, w / 2, h / 2) {
+    let [y_format, uv_format] = yuv_plane_formats(depth);
+    let y = plane(gpu, image, &[0], y_format, w, h)?;
+    match plane(gpu, image, &[1], uv_format, w / 2, h / 2) {
         Ok(uv) => Ok([y, uv]),
         Err(e) => {
             destroy(gpu, y);

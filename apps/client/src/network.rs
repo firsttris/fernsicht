@@ -206,6 +206,18 @@ pub(crate) fn network_loop(
     })
 }
 
+/// The offered codecs that come in 10 bit where the screen has it: those
+/// the decoder taking them decodes in 10 bit (HEVC Main 10, AV1).
+pub(crate) fn ten_bit_codecs(
+    codecs: fernsicht_proto::CodecSet,
+    decodes_ten_bit: impl Fn(Codec) -> bool,
+) -> fernsicht_proto::CodecSet {
+    [Codec::Hevc, Codec::Av1]
+        .into_iter()
+        .filter(|&c| codecs.contains(c) && decodes_ten_bit(c))
+        .fold(fernsicht_proto::CodecSet::EMPTY, |s, c| s.with(c))
+}
+
 /// The hello for `cfg` (the codecs this machine decodes) and, for a secure
 /// session, the handshake that carries it.
 fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
@@ -230,6 +242,7 @@ fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
         bitrate_kbps: cfg.bitrate_kbps,
         codecs,
         refresh: cfg.refresh,
+        ten_bit: ten_bit_codecs(codecs, |c| hw.decodes_ten_bit(c)),
     };
     let handshake = match &cfg.security {
         Some(sec) => {

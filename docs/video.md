@@ -15,6 +15,15 @@ options and limits: [KMS capture](kms-capture.md).
 Desktops scan out in one of eight RGB formats: 8 or 10 bit, RGB or BGR order, with or without alpha
 (KDE on AMD uses the 10-bit `AB30`). All eight are supported on every path below.
 
+**10 bit:** a 10-bit desktop is streamed in 10 bit where the client decodes the codec in 10 bit
+(HEVC Main 10, AV1 Main at 10 bit; the Hello says which, for the decoder the client would pick):
+the conversions write P010 instead of NV12, the encoders take it as it is, and gradients keep
+their 1,024 steps instead of banding at 256. H.264 stays 8 bit (no hardware decodes High 10), and so
+does a client whose decoder cannot; the web viewer always gets 8 bit. Each frame carries the
+screen's colour, and a screen that changes it (another depth, HDR switched on) gets a new encoder
+and a keyframe, like a new size. The stream says its colour (depth, primaries, transfer) in its
+VUI or sequence header; the client reads it from every decoded frame.
+
 With several monitors the host lists them to the client; a switch opens the other monitor on the same
 card, and the stream takes that monitor's shape (a new encoder at the fitted size, starting with a
 keyframe; see [protocol](protocol.md#monitors)).
@@ -41,8 +50,8 @@ display or no root, e.g. in CI.
     ```
 
     The DMA-BUF is imported as a VA surface with `vaCreateSurfaces` (DRM PRIME), without a copy. The
-    GPU's video processor (`scale_vaapi`) converts RGB to NV12 in BT.709 limited range and scales to
-    the stream size. Imports are cached for the last four buffers, keyed by the buffer's inode and
+    GPU's video processor (`scale_vaapi`) converts RGB to NV12 (P010 for a 10-bit stream) in limited
+    range with the stream's matrix and scales to the stream size. Imports are cached for the last four buffers, keyed by the buffer's inode and
     layout (as on the NVIDIA path). Measured on the RX 7800 XT: import, conversion and encode of a
     1080p frame in about 2 ms.
 
@@ -53,8 +62,8 @@ display or no root, e.g. in CI.
     ```
 
     NVENC takes neither foreign DMA-BUFs nor RGB in the format KMS hands out. The `gpu` crate imports
-    the DMA-BUF into Vulkan (with its tiling modifier), a compute shader converts RGB to NV12
-    (BT.709, scaled to the stream size) into a buffer whose memory is exported as an opaque fd (rows
+    the DMA-BUF into Vulkan (with its tiling modifier), a compute shader converts RGB to NV12 or
+    P010 (the stream's matrix, scaled to the stream size) into a buffer whose memory is exported as an opaque fd (rows
     on 256 bytes); CUDA imports that memory once, and NVENC reads it as its input frame, without a
     copy. Measured on the GTX 1080: 2.26 ms per 1080p frame for import, conversion and encode.
 
@@ -153,8 +162,10 @@ With several GPUs, Vulkan runs on the one that holds the pictures: the client's 
 decoder's GPU (matched by render node, `VK_EXT_physical_device_drm`), the host's NVENC converter on
 the CUDA device (matched by UUID). `FERNSICHT_VULKAN_DEVICE` (part of a device name) overrides it.
 
-The **renderer** (`render`, Vulkan) draws NV12 as RGB with a shader (BT.709), letterboxed into the
-window, and the host's pointer over it:
+The **renderer** (`render`, Vulkan) draws NV12 or P010 as RGB with a shader (the picture's
+limited range and matrix, BT.709 or BT.2020), letterboxed into the window, and the host's pointer
+over it. 10-bit planes are sampled as 16-bit words, which fits P010 and the Vulkan decoder's
+`10X6` images alike (the 10 bits on top):
 
 - VAAPI surfaces are exported as DMA-BUFs and imported into Vulkan without a copy (0.15 ms to convert
   and draw at 1080p).

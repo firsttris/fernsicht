@@ -3,6 +3,7 @@
 use std::ffi::{CStr, c_int};
 use std::ptr;
 
+use fernsicht_core::colour::{Colour, Depth, Primaries, Transfer};
 use ffmpeg_next::ffi;
 
 use crate::CodecError;
@@ -29,6 +30,15 @@ pub(crate) fn eagain(code: c_int) -> bool {
     code == -libc::EAGAIN
 }
 
+/// Bytes a sample of a 4:2:0 frame in `format` takes: 2 for P010, else 1.
+fn sample_bytes(format: c_int) -> usize {
+    if format == ffi::AVPixelFormat::AV_PIX_FMT_P010LE as c_int {
+        2
+    } else {
+        1
+    }
+}
+
 /// Copies tightly packed NV12 (`w`×`h`) into an allocated NV12 frame.
 ///
 /// # Safety
@@ -50,15 +60,15 @@ pub(crate) unsafe fn nv12_into_frame(nv12: &[u8], frame: *mut ffi::AVFrame, w: u
     }
 }
 
-/// Appends an NV12 CPU frame to `out` as tightly packed NV12.
+/// Writes an NV12 or P010 CPU frame to `out`, tightly packed.
 ///
 /// # Safety
-/// `frame` is a valid NV12 frame with data.
+/// `frame` is a valid NV12 or P010 frame with data.
 pub(crate) unsafe fn nv12_from_frame(frame: *const ffi::AVFrame, out: &mut Vec<u8>) {
     // SAFETY: per the contract.
     unsafe {
         let f = &*frame;
-        let (w, h) = (f.width as usize, f.height as usize);
+        let (w, h) = (f.width as usize * sample_bytes(f.format), f.height as usize);
         out.clear();
         out.reserve(w * h * 3 / 2);
         for row in 0..h {
@@ -72,20 +82,110 @@ pub(crate) unsafe fn nv12_from_frame(frame: *const ffi::AVFrame, out: &mut Vec<u
     }
 }
 
-/// Writes BT.709 limited range into the stream (VUI), so decoders convert
-/// back to RGB the way the encoder's input was produced, and the chroma's
-/// siting: left (on the even columns), as both converters produce it.
+/// FFmpeg's pixel format of a 4:2:0 picture at `depth`: NV12 or P010.
+pub(crate) fn yuv_format(depth: Depth) -> ffi::AVPixelFormat {
+    match depth {
+        Depth::Eight => ffi::AVPixelFormat::AV_PIX_FMT_NV12,
+        Depth::Ten => ffi::AVPixelFormat::AV_PIX_FMT_P010LE,
+    }
+}
+
+/// FFmpeg's tags for `colour`: matrix, primaries, transfer.
+pub(crate) fn tags(
+    colour: Colour,
+) -> (
+    ffi::AVColorSpace,
+    ffi::AVColorPrimaries,
+    ffi::AVColorTransferCharacteristic,
+) {
+    use ffi::AVColorTransferCharacteristic as Trc;
+    let (space, primaries) = match colour.primaries {
+        Primaries::Bt709 => (
+            ffi::AVColorSpace::AVCOL_SPC_BT709,
+            ffi::AVColorPrimaries::AVCOL_PRI_BT709,
+        ),
+        Primaries::Bt2020 => (
+            ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL,
+            ffi::AVColorPrimaries::AVCOL_PRI_BT2020,
+        ),
+    };
+    let trc = match colour.transfer {
+        Transfer::Sdr => Trc::AVCOL_TRC_BT709,
+        Transfer::Pq => Trc::AVCOL_TRC_SMPTE2084,
+    };
+    (space, primaries, trc)
+}
+
+/// Writes `colour` in limited range into the stream (VUI or sequence
+/// header), so decoders convert back to RGB the way the encoder's input
+/// was produced, and the chroma's siting: left (on the even columns), as
+/// both converters produce it.
 ///
 /// # Safety
 /// `ctx` is a valid, not yet opened encoder context.
-pub(crate) unsafe fn signal_bt709_limited(ctx: *mut ffi::AVCodecContext) {
+pub(crate) unsafe fn signal_colour(ctx: *mut ffi::AVCodecContext, colour: Colour) {
+    let (space, primaries, trc) = tags(colour);
     // SAFETY: per the contract.
     unsafe {
         (*ctx).color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
-        (*ctx).colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
-        (*ctx).color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-        (*ctx).color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+        (*ctx).colorspace = space;
+        (*ctx).color_primaries = primaries;
+        (*ctx).color_trc = trc;
         (*ctx).chroma_sample_location = ffi::AVChromaLocation::AVCHROMA_LOC_LEFT;
+    }
+}
+
+/// The software format of a hardware frame's pool (NV12, P010), or the
+/// frame's own format for a CPU frame.
+///
+/// # Safety
+/// `frame` is a valid AVFrame.
+pub(crate) unsafe fn sw_format(frame: *const ffi::AVFrame) -> ffi::AVPixelFormat {
+    // SAFETY: per the contract; hw_frames_ctx holds an AVHWFramesContext.
+    unsafe {
+        let f = &*frame;
+        if f.hw_frames_ctx.is_null() {
+            return if f.format == ffi::AVPixelFormat::AV_PIX_FMT_P010LE as c_int {
+                ffi::AVPixelFormat::AV_PIX_FMT_P010LE
+            } else {
+                ffi::AVPixelFormat::AV_PIX_FMT_NV12
+            };
+        }
+        (*((*f.hw_frames_ctx).data as *const ffi::AVHWFramesContext)).sw_format
+    }
+}
+
+/// How a decoded frame is to be read: its depth (from its software format,
+/// `sw`) and the colour its stream says (anything not BT.2020 or PQ reads
+/// as BT.709 SDR, as before D4).
+///
+/// # Safety
+/// `frame` is a valid AVFrame.
+pub(crate) unsafe fn colour_of(frame: *const ffi::AVFrame, sw: ffi::AVPixelFormat) -> Colour {
+    // SAFETY: per the contract.
+    let f = unsafe { &*frame };
+    let depth = if matches!(
+        sw,
+        ffi::AVPixelFormat::AV_PIX_FMT_P010LE | ffi::AVPixelFormat::AV_PIX_FMT_P016LE
+    ) {
+        Depth::Ten
+    } else {
+        Depth::Eight
+    };
+    let primaries = if f.color_primaries == ffi::AVColorPrimaries::AVCOL_PRI_BT2020 {
+        Primaries::Bt2020
+    } else {
+        Primaries::Bt709
+    };
+    let transfer = if f.color_trc == ffi::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 {
+        Transfer::Pq
+    } else {
+        Transfer::Sdr
+    };
+    Colour {
+        depth,
+        primaries,
+        transfer,
     }
 }
 
@@ -160,9 +260,9 @@ pub(crate) struct CodecNames {
     /// libdav1d first.
     pub decoder: &'static CStr,
     pub encoder: &'static CStr,
-    /// The profile every hardware decoder takes: H.264 High, HEVC Main,
-    /// AV1 Main (8 bit 4:2:0). `None` where the encoder has no such option
-    /// (av1_nvenc: Main is all it makes).
+    /// The profile every hardware decoder takes: H.264 High, HEVC Main
+    /// (Main 10 at 10 bit), AV1 Main (8 or 10 bit 4:2:0). `None` where the
+    /// encoder has no such option (av1_nvenc: Main is all it makes).
     pub profile: Option<&'static CStr>,
     pub label: &'static str,
 }
@@ -181,8 +281,14 @@ pub(crate) enum Backend {
 pub(crate) fn names(
     codec: fernsicht_proto::Codec,
     backend: Backend,
+    depth: Depth,
 ) -> Result<CodecNames, CodecError> {
     use fernsicht_proto::Codec;
+    if depth == Depth::Ten && !matches!(codec, Codec::Hevc | Codec::Av1) {
+        return Err(CodecError::Backend(format!(
+            "{codec:?} in 10 bit: hardware decoders have no High 10"
+        )));
+    }
     Ok(match (codec, backend) {
         (Codec::H264, b) => CodecNames {
             decoder: c"h264",
@@ -201,7 +307,10 @@ pub(crate) fn names(
                 Backend::Nvenc => c"hevc_nvenc",
                 Backend::Vulkan => c"hevc_vulkan",
             },
-            profile: Some(c"main"),
+            profile: Some(match depth {
+                Depth::Eight => c"main",
+                Depth::Ten => c"main10",
+            }),
             label: "HEVC",
         },
         (Codec::Av1, b) => CodecNames {

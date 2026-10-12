@@ -12,6 +12,7 @@ use std::sync::{Arc, OnceLock};
 
 use fernsicht_capture::CursorImage;
 use fernsicht_codec::Picture;
+use fernsicht_core::colour::{Colour, Depth, Primaries, Transfer};
 use fernsicht_render::CursorOverlay;
 use fernsicht_render::vulkan::{Gpu, Renderer};
 
@@ -117,6 +118,7 @@ fn cpu_nv12_becomes_the_right_rgb() {
         width: w as u32,
         height: h as u32,
         data: &data,
+        colour: Colour::SDR,
     };
     let rgba = r
         .render_to_rgba(Some(&pic), None, w as u32, h as u32)
@@ -124,6 +126,87 @@ fn cpu_nv12_becomes_the_right_rgb() {
     assert_stripes(&rgba, w, h, 3);
     // Top-left is the first stripe: no flip in either direction.
     assert!(pixel(&rgba, w, 2, 2).0 > 200, "red must be top left");
+}
+
+/// The stripes in `colour` (its limited range and matrix), tightly packed:
+/// NV12, or P010 (16-bit little-endian words, the 10 bits on top).
+fn stripes_in(w: usize, h: usize, colour: Colour) -> Vec<u8> {
+    let (kr, kb) = colour.kr_kb();
+    let (kr, kb) = (f64::from(kr), f64::from(kb));
+    let (black, span, mid, cspan) = colour.depth.limited_range();
+    let top = f64::from((1u32 << colour.depth.bits()) - 1);
+    let code = |v: f64| v.round().clamp(0.0, top) as u16;
+    let ycc = |(r, g, b): (u8, u8, u8)| {
+        let (r, g, b) = (
+            f64::from(r) / 255.0,
+            f64::from(g) / 255.0,
+            f64::from(b) / 255.0,
+        );
+        let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+        (
+            code(f64::from(black) + f64::from(span) * y),
+            code(f64::from(mid) + f64::from(cspan) * (b - y) / (2.0 * (1.0 - kb))),
+            code(f64::from(mid) + f64::from(cspan) * (r - y) / (2.0 * (1.0 - kr))),
+        )
+    };
+    let stripe = |x: usize| STRIPES[x * STRIPES.len() / w];
+    let mut samples = vec![0u16; w * h * 3 / 2];
+    for y in 0..h {
+        for x in 0..w {
+            samples[y * w + x] = ycc(stripe(x)).0;
+        }
+    }
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            let (_, cb, cr) = ycc(stripe(x * 2));
+            samples[w * h + y * w + x * 2] = cb;
+            samples[w * h + y * w + x * 2 + 1] = cr;
+        }
+    }
+    match colour.depth {
+        Depth::Eight => samples.iter().map(|&v| v as u8).collect(),
+        Depth::Ten => samples
+            .iter()
+            .flat_map(|&v| (v << 6).to_le_bytes())
+            .collect(),
+    }
+}
+
+#[test]
+fn p010_in_either_matrix_becomes_the_right_rgb() {
+    let Some(mut r) = renderer() else { return };
+    let (w, h) = (640, 360);
+    let wide = Colour {
+        depth: Depth::Ten,
+        primaries: Primaries::Bt2020,
+        transfer: Transfer::Sdr,
+    };
+    for colour in [Colour::SDR.with_depth(Depth::Ten), wide] {
+        let data = stripes_in(w, h, colour);
+        assert_eq!(data.len(), w * h * 3);
+        let pic = Picture::Nv12 {
+            width: w as u32,
+            height: h as u32,
+            data: &data,
+            colour,
+        };
+        let rgba = r
+            .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+            .unwrap();
+        assert_stripes(&rgba, w, h, 2);
+    }
+    // And back to 8 bit: the plane images follow the depth.
+    let data = stripes_in(w, h, Colour::SDR);
+    let pic = Picture::Nv12 {
+        width: w as u32,
+        height: h as u32,
+        data: &data,
+        colour: Colour::SDR,
+    };
+    let rgba = r
+        .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+        .unwrap();
+    assert_stripes(&rgba, w, h, 3);
 }
 
 #[test]
@@ -139,6 +222,7 @@ fn chroma_is_read_sited_left() {
         width: w as u32,
         height: h as u32,
         data: &nv12,
+        colour: Colour::SDR,
     };
     let rgba = r
         .render_to_rgba(Some(&pic), None, w as u32, h as u32)
@@ -158,6 +242,7 @@ fn other_aspect_ratios_get_black_bars() {
         width: 640,
         height: 360,
         data: &data,
+        colour: Colour::SDR,
     };
     // 16:9 in a square: picture 400×225 in the middle, bars above and below.
     let rgba = r.render_to_rgba(Some(&pic), None, 400, 400).unwrap();
@@ -182,6 +267,7 @@ fn size_changes_and_no_picture() {
             width: w as u32,
             height: h as u32,
             data: &data,
+            colour: Colour::SDR,
         };
         let rgba = r
             .render_to_rgba(Some(&pic), None, w as u32, h as u32)
@@ -200,12 +286,14 @@ fn bad_pictures_are_errors_not_crashes() {
         width: 64,
         height: 64,
         data: &[0; 10],
+        colour: Colour::SDR,
     };
     assert!(r.render_to_rgba(Some(&short), None, 64, 64).is_err());
     let odd = Picture::Nv12 {
         width: 63,
         height: 64,
         data: &[0; 63 * 96],
+        colour: Colour::SDR,
     };
     assert!(r.render_to_rgba(Some(&odd), None, 64, 64).is_err());
     let not_nv12 = fernsicht_capture::DmaBuf {
@@ -225,6 +313,7 @@ fn bad_pictures_are_errors_not_crashes() {
             Some(&Picture::DmaBuf {
                 image: &not_nv12,
                 key: 1,
+                colour: Colour::SDR,
             }),
             None,
             64,
@@ -241,6 +330,7 @@ fn bad_pictures_are_errors_not_crashes() {
         width: 64,
         height: 64,
         data: &data,
+        colour: Colour::SDR,
     };
     r.render_to_rgba(Some(&ok), None, 64, 64).unwrap();
 }
@@ -263,6 +353,7 @@ fn the_pointer_is_drawn_where_the_host_says() {
         width: w as u32,
         height: h as u32,
         data: &data,
+        colour: Colour::SDR,
     };
     // A magenta 16×16 pointer at (100, 50) on a screen twice the video
     // size: it shows as 8×8 at (50, 25).
@@ -309,6 +400,7 @@ fn pointer_transparency_is_premultiplied_alpha() {
         width: w as u32,
         height: h as u32,
         data: &data,
+        colour: Colour::SDR,
     };
     // Half-transparent white, premultiplied: (128, 128, 128, 128).
     // Fully transparent pixels leave the video alone.
@@ -395,6 +487,7 @@ mod vaapi {
             height: h,
             fps: 60,
             bitrate_kbps: 20_000,
+            colour: Colour::SDR,
         })
         .unwrap();
         let mut dec = VaapiDecoder::new(&node).unwrap();
@@ -500,6 +593,7 @@ mod nvidia {
             fps: 60,
             bitrate_kbps: 20_000,
             intra_refresh: false,
+            colour: Colour::SDR,
         })
         .unwrap();
         let mut dec = NvdecDecoder::new(0).unwrap();
@@ -611,6 +705,7 @@ mod vulkan_video {
             fps: 60,
             bitrate_kbps: 20_000,
             intra_refresh: false,
+            colour: Colour::SDR,
         })
         .unwrap();
         let mut dec = VulkanDecoder::for_codec(r.gpu().clone(), codec).unwrap();
@@ -693,5 +788,71 @@ mod vulkan_video {
     #[test]
     fn vulkan_decoded_hevc_is_sampled_in_place() {
         decode_and_show(Codec::Hevc);
+    }
+
+    /// The stripes as a 10-bit screen buffer (XRGB2101010).
+    fn stripes_xr30(w: usize, h: usize) -> Vec<u8> {
+        let ten = |v: u8| (u32::from(v) * 1023 + 127) / 255;
+        (0..w * h)
+            .flat_map(|i| {
+                let (r, g, b) = STRIPES[(i % w) * STRIPES.len() / w];
+                (3 << 30 | ten(r) << 20 | ten(g) << 10 | ten(b)).to_le_bytes()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ten_bit_pictures_from_nvdec_and_vulkan_video_show_right() {
+        use fernsicht_capture::dmabuf::formats;
+        use fernsicht_codec::nvidia::NvdecDecoder;
+        if std::env::var("FERNSICHT_GPU").as_deref() != Ok("nvidia") {
+            eprintln!("skipped: set FERNSICHT_GPU=nvidia");
+            return;
+        }
+        let Some(mut r) = renderer() else { return };
+        let (w, h) = (1280u32, 720u32);
+        let image = fernsicht_gpu::testimage::upload_as_dmabuf(
+            r.gpu(),
+            w,
+            h,
+            formats::XRGB2101010,
+            &stripes_xr30(w as usize, h as usize),
+        )
+        .unwrap();
+        let colour = Colour::SDR.with_depth(Depth::Ten);
+        let mut enc = NvencEncoder::new(&NvencConfig {
+            gpu: 0,
+            codec: Codec::Hevc,
+            width: w,
+            height: h,
+            fps: 60,
+            bitrate_kbps: 8_000,
+            intra_refresh: false,
+            colour,
+        })
+        .unwrap();
+        let mut nvdec = NvdecDecoder::for_codec(0, Codec::Hevc).unwrap();
+        let mut vulkan = VulkanDecoder::for_codec(r.gpu().clone(), Codec::Hevc).unwrap();
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        for i in 0..3 {
+            let mut frame = Frame::from_dmabuf(image.clone());
+            frame.seq = i;
+            enc.encode(&frame, &mut out).unwrap();
+            nvdec.decode(&out.data, &mut d).unwrap();
+            vulkan.decode(&out.data, &mut d).unwrap();
+        }
+        let (w, h) = (w as usize, h as usize);
+        let pic = nvdec.picture(PictureKind::Gpu).unwrap().unwrap();
+        assert!(matches!(pic, Picture::Exported { colour: c, .. } if c == colour));
+        let rgba = r
+            .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+            .unwrap();
+        assert_stripes(&rgba, w, h, 6);
+        let pic = vulkan.picture(PictureKind::Gpu).unwrap().unwrap();
+        assert!(matches!(&pic, Picture::Vulkan(p) if p.colour == colour));
+        let rgba = r
+            .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+            .unwrap();
+        assert_stripes(&rgba, w, h, 6);
     }
 }

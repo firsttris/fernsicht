@@ -2,7 +2,8 @@
 //! foreign DMA-BUFs directly (NVENC, Vulkan Video).
 //!
 //! A compute shader samples the imported picture (scaling it to the stream
-//! size) and writes NV12, BT.709 limited range, into a linear buffer. For
+//! size) and writes NV12 or P010 (limited range, the matrix of the
+//! stream's [`Colour`]) into a linear buffer. For
 //! NVENC its memory is exported as an opaque file descriptor: CUDA imports
 //! that buffer once and copies each frame into the encoder's input on the
 //! GPU. For Vulkan Video the buffer stays on the device and the caller
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use ash::vk;
 use fernsicht_capture::DmaBuf;
 use fernsicht_capture::dmabuf::BufferIdentity;
+use fernsicht_core::colour::{Colour, Depth};
 
 use crate::Gpu;
 use crate::device::{Timeline, err, submit_and_wait, submit_timeline, wait_fence};
@@ -23,11 +25,12 @@ use crate::import;
 /// The conversion shader (`convert.wgsl`), compiled by the build script.
 const SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/convert.spv"));
 
-/// Where the planes are in the output buffer.
+/// Where the planes are in the output buffer (NV12, or P010 at 10 bit).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Nv12Layout {
     pub width: u32,
     pub height: u32,
+    pub depth: Depth,
     /// Bytes per row of both planes.
     pub pitch: u32,
     /// Byte offset of the UV plane.
@@ -35,19 +38,30 @@ pub struct Nv12Layout {
 }
 
 impl Nv12Layout {
-    /// Even sizes only (NV12 subsamples 2×2). Rows start on 256 bytes, as
-    /// in FFmpeg's CUDA frames: NVENC reads the buffer as its input.
+    /// 8-bit NV12.
     pub fn new(width: u32, height: u32) -> Result<Self, String> {
+        Self::with_depth(width, height, Depth::Eight)
+    }
+
+    /// Even sizes only (4:2:0 subsamples 2×2). Rows start on 256 bytes, as
+    /// in FFmpeg's CUDA frames: NVENC reads the buffer as its input.
+    pub fn with_depth(width: u32, height: u32, depth: Depth) -> Result<Self, String> {
         if width < 2 || height < 2 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-            return Err(format!("NV12 needs an even size, not {width}×{height}"));
+            return Err(format!("4:2:0 needs an even size, not {width}×{height}"));
         }
-        let pitch = width.next_multiple_of(256);
+        let pitch = (width * depth.sample_bytes()).next_multiple_of(256);
         Ok(Self {
             width,
             height,
+            depth,
             pitch,
             uv_offset: u64::from(pitch) * u64::from(height),
         })
+    }
+
+    /// Bytes of one row's samples (without the padding to `pitch`).
+    pub fn row_bytes(&self) -> u32 {
+        self.width * self.depth.sample_bytes()
     }
 
     /// Bytes of both planes.
@@ -68,6 +82,7 @@ pub fn spirv() -> Vec<u32> {
 pub struct Converter {
     gpu: Arc<Gpu>,
     layout: Nv12Layout,
+    colour: Colour,
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
@@ -96,20 +111,32 @@ const MAX_IMPORTS: usize = 4;
 unsafe impl Send for Converter {}
 
 impl Converter {
-    /// Converts to `width`×`height` into memory CUDA can import
-    /// ([`Self::export_output`]). The GPU must have DMA-BUF import.
-    pub fn new(gpu: Arc<Gpu>, width: u32, height: u32) -> Result<Self, String> {
-        Self::create(gpu, width, height, true)
+    /// Converts to `width`×`height` in `colour` (its depth and matrix)
+    /// into memory CUDA can import ([`Self::export_output`]). The GPU must
+    /// have DMA-BUF import.
+    pub fn new(gpu: Arc<Gpu>, width: u32, height: u32, colour: Colour) -> Result<Self, String> {
+        Self::create(gpu, width, height, colour, true)
     }
 
-    /// Converts to `width`×`height` into a buffer that stays on the device,
-    /// for a copy recorded with [`Self::convert_with`].
-    pub fn on_device(gpu: Arc<Gpu>, width: u32, height: u32) -> Result<Self, String> {
-        Self::create(gpu, width, height, false)
+    /// Converts to `width`×`height` in `colour` into a buffer that stays on
+    /// the device, for a copy recorded with [`Self::convert_with`].
+    pub fn on_device(
+        gpu: Arc<Gpu>,
+        width: u32,
+        height: u32,
+        colour: Colour,
+    ) -> Result<Self, String> {
+        Self::create(gpu, width, height, colour, false)
     }
 
-    fn create(gpu: Arc<Gpu>, width: u32, height: u32, exported: bool) -> Result<Self, String> {
-        let layout = Nv12Layout::new(width, height)?;
+    fn create(
+        gpu: Arc<Gpu>,
+        width: u32,
+        height: u32,
+        colour: Colour,
+        exported: bool,
+    ) -> Result<Self, String> {
+        let layout = Nv12Layout::with_depth(width, height, colour.depth)?;
         if !gpu.can_import_dmabuf() {
             return Err(format!("{} cannot import DMA-BUFs", gpu.name()));
         }
@@ -118,6 +145,7 @@ impl Converter {
         let mut c = Self {
             gpu: gpu.clone(),
             layout,
+            colour,
             set_layout: vk::DescriptorSetLayout::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
@@ -156,7 +184,7 @@ impl Converter {
                 .map_err(err("descriptor layout"))?;
             let push = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .size(16)];
+                .size(PUSH_BYTES)];
             let layouts = [c.set_layout];
             c.pipeline_layout = d
                 .create_pipeline_layout(
@@ -299,6 +327,10 @@ impl Converter {
         self.layout
     }
 
+    pub fn colour(&self) -> Colour {
+        self.colour
+    }
+
     /// Size of the output allocation (what an importer must be told).
     pub fn allocation_size(&self) -> u64 {
         self.output_allocation
@@ -321,8 +353,8 @@ impl Converter {
         }
     }
 
-    /// Reads the output buffer back into tightly packed NV12 (tests and
-    /// diagnostics; the encoder reads it on the GPU).
+    /// Reads the output buffer back into tightly packed NV12 or P010
+    /// (tests and diagnostics; the encoder reads it on the GPU).
     pub fn download(&mut self) -> Result<Vec<u8>, String> {
         let l = self.layout;
         let (buffer, memory, mapped) =
@@ -347,7 +379,7 @@ impl Converter {
                     .map_err(err("end command buffer"))?;
                 submit_and_wait(&self.gpu, &[cmd], self.fence)?;
                 let raw = std::slice::from_raw_parts(mapped, l.len() as usize);
-                let (w, pitch) = (l.width as usize, l.pitch as usize);
+                let (w, pitch) = (l.row_bytes() as usize, l.pitch as usize);
                 let mut out = Vec::with_capacity(w * l.height as usize * 3 / 2);
                 for row in raw.chunks(pitch).take(l.height as usize * 3 / 2) {
                     out.extend_from_slice(&row[..w]);
@@ -502,16 +534,12 @@ impl Converter {
                 &[],
             );
             let l = self.layout;
-            let params: Vec<u8> = [l.width, l.height, l.pitch, 0]
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
             d.cmd_push_constants(
                 cmd,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
-                &params,
+                &push_constants(&l, &self.colour),
             );
             // 8×8 invocations per group, each a 4×2 block.
             d.cmd_dispatch(cmd, l.width.div_ceil(32), l.height.div_ceil(16), 1);
@@ -558,6 +586,31 @@ impl Converter {
             wait_fence(&self.gpu, self.fence)
         }
     }
+}
+
+/// Bytes of the shader's `Params`.
+const PUSH_BYTES: u32 = 32;
+
+/// The shader's `Params`: size, pitch, depth flag and the matrix's luma
+/// weights.
+pub fn push_constants(l: &Nv12Layout, colour: &Colour) -> [u8; PUSH_BYTES as usize] {
+    let (kr, kb) = colour.kr_kb();
+    let deep = u32::from(l.depth == Depth::Ten);
+    let words = [
+        l.width,
+        l.height,
+        l.pitch,
+        deep,
+        kr.to_bits(),
+        kb.to_bits(),
+        0,
+        0,
+    ];
+    let mut out = [0u8; PUSH_BYTES as usize];
+    for (chunk, w) in out.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+        chunk.copy_from_slice(&w.to_le_bytes());
+    }
+    out
 }
 
 impl Drop for Converter {
@@ -607,5 +660,26 @@ mod tests {
         assert_eq!(Nv12Layout::new(2560, 1440).unwrap().pitch, 2560);
         assert!(Nv12Layout::new(1365, 768).is_err());
         assert!(Nv12Layout::new(0, 0).is_err());
+    }
+
+    #[test]
+    fn p010_rows_hold_two_bytes_a_sample() {
+        let l = Nv12Layout::with_depth(1920, 1080, Depth::Ten).unwrap();
+        assert_eq!((l.pitch, l.row_bytes()), (3840, 3840));
+        assert_eq!(l.len(), 3840 * 1620);
+        let l = Nv12Layout::with_depth(1366, 768, Depth::Ten).unwrap();
+        assert_eq!(l.pitch, 2816);
+    }
+
+    #[test]
+    fn the_shader_gets_the_depth_and_the_matrix() {
+        let l = Nv12Layout::with_depth(64, 32, Depth::Ten).unwrap();
+        let p = push_constants(&l, &Colour::HDR10);
+        let word = |i: usize| u32::from_le_bytes(p[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!([word(0), word(1), word(2), word(3)], [64, 32, 256, 1]);
+        assert_eq!(f32::from_bits(word(4)), 0.2627);
+        assert_eq!(f32::from_bits(word(5)), 0.0593);
+        let sdr = push_constants(&Nv12Layout::new(64, 32).unwrap(), &Colour::SDR);
+        assert_eq!(sdr[12..16], [0, 0, 0, 0], "8 bit");
     }
 }

@@ -8,6 +8,7 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender};
 use fernsicht_codec::synthetic::SyntheticDecoder;
 use fernsicht_codec::{CodecError, DecodedFrame, Decoder};
+use fernsicht_core::colour::Depth;
 use fernsicht_core::latency::{FrameTimings, LatencyStats};
 use fernsicht_core::now_us;
 use fernsicht_net::keyframe::RefChain;
@@ -59,29 +60,45 @@ impl Hw {
     }
 
     /// Whether one of the allowed hardware decoders reports `codec`.
-    #[allow(unused_variables)]
     pub(crate) fn decodes(&self, codec: Codec) -> bool {
+        self.chosen_decodes(codec, Depth::Eight).is_some()
+    }
+
+    /// Whether the decoder that would take `codec` (the first allowed one
+    /// that decodes it, in the order [`make_hw_decoder`] tries them) also
+    /// decodes it in 10 bit: only then may the host send 10 bit.
+    pub(crate) fn decodes_ten_bit(&self, codec: Codec) -> bool {
+        self.chosen_decodes(codec, Depth::Ten) == Some(true)
+    }
+
+    /// For the first allowed decoder that decodes `codec`: whether it does
+    /// at `depth`. `None` if none decodes it.
+    #[allow(unused_variables)]
+    fn chosen_decodes(&self, codec: Codec, depth: Depth) -> Option<bool> {
         #[cfg(feature = "vulkan")]
         if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Vulkan)
-            && self
-                .own_gpu()
-                .is_some_and(|g| fernsicht_codec::vulkan::decodes(&g, codec))
+            && let Some(g) = self.own_gpu()
+            && fernsicht_codec::vulkan::decodes(&g, codec)
         {
-            return true;
+            return Some(fernsicht_codec::vulkan::decodes_in(&g, codec, depth));
         }
         #[cfg(feature = "vaapi")]
         if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Vaapi)
             && fernsicht_codec::vaapi::decodes(&self.render_node, codec)
         {
-            return true;
+            return Some(fernsicht_codec::vaapi::decodes_in(
+                &self.render_node,
+                codec,
+                depth,
+            ));
         }
         #[cfg(feature = "nvidia")]
         if matches!(self.decoder, DecoderChoice::Auto | DecoderChoice::Nvdec)
             && fernsicht_codec::nvidia::decodes(0, codec)
         {
-            return true;
+            return Some(fernsicht_codec::nvidia::decodes_in(0, codec, depth));
         }
-        false
+        None
     }
 }
 

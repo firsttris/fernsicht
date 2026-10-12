@@ -28,6 +28,8 @@ pub mod formats {
     pub const NV12: u32 = fourcc(b"NV12");
     /// What KDE Plasma scans out on AMD by default.
     pub const ABGR2101010: u32 = fourcc(b"AB30");
+    /// 4:2:0 in 16-bit samples, 10 bits on top: decoded 10-bit video.
+    pub const P010: u32 = fourcc(b"P010");
 
     /// `DRM_FORMAT_MOD_LINEAR`.
     pub const MOD_LINEAR: u64 = 0;
@@ -36,6 +38,19 @@ pub mod formats {
 }
 
 /// Renders a fourcc for log messages, e.g. `XR24`.
+/// Bits per channel of an RGB scanout format: the 2:10:10:10 ones are
+/// 10 bit (KDE on AMD scans out `AB30` even in SDR), the rest 8.
+pub fn depth_of(fourcc: u32) -> fernsicht_core::colour::Depth {
+    use fernsicht_core::colour::Depth;
+    match fourcc {
+        formats::XRGB2101010
+        | formats::ARGB2101010
+        | formats::XBGR2101010
+        | formats::ABGR2101010 => Depth::Ten,
+        _ => Depth::Eight,
+    }
+}
+
 pub fn fourcc_name(code: u32) -> String {
     code.to_le_bytes()
         .iter()
@@ -172,6 +187,17 @@ mod tests {
         assert_eq!(formats::XRGB2101010, 0x3033_5258);
         assert_eq!(fourcc_name(formats::XRGB8888), "XR24");
         assert_eq!(fourcc_name(0x0000_4142), "BA??");
+    }
+
+    #[test]
+    fn the_2_10_10_10_formats_are_ten_bit() {
+        use fernsicht_core::colour::Depth;
+        for f in [formats::ABGR2101010, formats::XRGB2101010] {
+            assert_eq!(depth_of(f), Depth::Ten);
+        }
+        for f in [formats::XRGB8888, formats::ABGR8888, formats::NV12] {
+            assert_eq!(depth_of(f), Depth::Eight);
+        }
     }
 
     #[test]

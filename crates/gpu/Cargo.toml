@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 ash.workspace = true
 fernsicht-capture.workspace = true
+fernsicht-core.workspace = true
 log.workspace = true
 
 [build-dependencies]

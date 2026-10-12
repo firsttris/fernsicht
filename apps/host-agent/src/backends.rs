@@ -8,6 +8,7 @@ use fernsicht_codec::Encoder;
 use fernsicht_codec::synthetic::SyntheticEncoder;
 #[cfg(feature = "vaapi")]
 use fernsicht_codec::vaapi::{VaapiEncoder, VaapiEncoderConfig};
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_proto::{Codec, CodecSet};
 
 use crate::config::{CaptureKind, EncoderKind, SessionParams};
@@ -186,15 +187,36 @@ pub(crate) fn make_encoder(
     }
     let mut errors = Vec::new();
     for codec in candidates {
-        match make_hardware_encoder(kind, p, codec) {
-            Ok(e) => return Ok(e),
-            Err(e) => {
-                log::info!("no {codec:?} encoder: {e:#}");
-                errors.push(format!("{codec:?}: {e:#}"));
+        let colour = stream_colour(p.screen, p.ten_bit.contains(codec));
+        // In 10 bit where the screen and the client have it, else (or if
+        // the GPU does not encode it) in 8.
+        let colours = [colour, colour.with_depth(Depth::Eight)];
+        for colour in colours
+            .iter()
+            .take(if colour.depth == Depth::Ten { 2 } else { 1 })
+        {
+            match make_hardware_encoder(kind, p, codec, *colour) {
+                Ok(e) => return Ok(e),
+                Err(e) => {
+                    log::info!("no {codec:?} encoder in {} bit: {e:#}", colour.depth.bits());
+                    errors.push(format!("{codec:?}: {e:#}"));
+                }
             }
         }
     }
     anyhow::bail!("no encoder ({})", errors.join("; "))
+}
+
+/// The stream's colour for a screen in `screen`: 10 bit where the screen
+/// has more than 8 bits (or is HDR) and the client decodes the codec in
+/// 10 bit; its primaries and transfer as the screen's.
+pub fn stream_colour(screen: Colour, ten_bit: bool) -> Colour {
+    let deep = screen.depth == Depth::Ten || screen.is_hdr();
+    screen.with_depth(if deep && ten_bit {
+        Depth::Ten
+    } else {
+        Depth::Eight
+    })
 }
 
 #[allow(unused_variables)]
@@ -202,6 +224,7 @@ fn make_hardware_encoder(
     kind: &EncoderKind,
     p: &SessionParams,
     codec: Codec,
+    colour: Colour,
 ) -> anyhow::Result<Box<dyn Encoder>> {
     match kind {
         EncoderKind::Synthetic => unreachable!("handled by make_encoder"),
@@ -214,6 +237,7 @@ fn make_hardware_encoder(
                 height: u32::from(p.height),
                 fps: u32::from(p.fps),
                 bitrate_kbps: p.bitrate_kbps,
+                colour,
             })?))
         }
         #[cfg(not(feature = "vaapi"))]
@@ -230,6 +254,7 @@ fn make_hardware_encoder(
                 fps: u32::from(p.fps),
                 bitrate_kbps: p.bitrate_kbps,
                 intra_refresh: p.refresh,
+                colour,
             },
         )?)),
         #[cfg(not(feature = "nvidia"))]
@@ -246,6 +271,7 @@ fn make_hardware_encoder(
                     height: u32::from(p.height),
                     fps: u32::from(p.fps),
                     bitrate_kbps: p.bitrate_kbps,
+                    colour,
                 },
             )?))
         }

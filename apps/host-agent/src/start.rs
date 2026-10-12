@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use fernsicht_capture::{Frame, FrameSource};
 use fernsicht_codec::EncodedFrame;
 use fernsicht_codec::Encoder;
+use fernsicht_core::colour::Colour;
 use fernsicht_core::thread::spawn_hot;
 use fernsicht_core::{Slot, clock};
 use fernsicht_input::{Dedup, InputSink};
@@ -56,6 +57,9 @@ impl HostAgent {
             codecs: hello.codecs,
             // Only NVENC refreshes in this build of the encoders.
             refresh: hello.refresh && matches!(self.cfg.encoder, EncoderKind::Nvenc { .. }),
+            ten_bit: hello.ten_bit.and(hello.codecs),
+            // Known once the screen is opened.
+            screen: Colour::SDR,
         }
     }
 
@@ -213,6 +217,7 @@ impl HostAgent {
         // Before the default bitrate is worked out per frame.
         let params = SessionParams {
             fps: frame_rate(params.fps, source.refresh_hz()),
+            screen: source.colour(),
             ..params
         };
         let params = self.resolve(params, (source.width(), source.height()));
@@ -359,13 +364,14 @@ fn new_shared(stats: &Arc<HostStats>, params: &SessionParams, loss: &LossEstimat
 /// A new encoder at another bitrate (for encoders that cannot change it
 /// while running) or size (another monitor).
 fn rebuild_for(kind: EncoderKind, params: SessionParams) -> Rebuild {
-    Box::new(move |kbps, (width, height)| {
+    Box::new(move |kbps, (width, height), screen| {
         make_encoder(
             &kind,
             &SessionParams {
                 bitrate_kbps: kbps,
                 width,
                 height,
+                screen,
                 ..params
             },
         )
@@ -415,6 +421,7 @@ fn spawn_encode(
             rebuild,
             params.bitrate_kbps,
             ((params.width, params.height), bounds),
+            params.screen,
             &shared,
             &slot,
             &send_tx,

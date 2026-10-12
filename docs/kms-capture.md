@@ -186,7 +186,8 @@ streamed monitor. The output shows `pointer input mapped to DP-1: …`.
   only meant for testing on the LAN. Later, a small privileged helper will
   take over only the capture.
 - **HDR** is not transferred faithfully yet. 10-bit desktops (KDE on AMD
-  uses `AB30`) work, but are converted down to 8-bit H.264.
+  uses `AB30`) go through in 10 bit where the client decodes HEVC Main 10
+  or AV1 in 10 bit ([video](video.md)), else in 8 bit.
 - Minimal **tearing** is possible if the compositor writes into the buffer
   that is being read (as with Sunshine).
 

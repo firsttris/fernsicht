@@ -4,11 +4,14 @@
 //! appended to the CI job summary.
 #![cfg(feature = "nvidia")]
 
+mod common;
+
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
 use fernsicht_capture::dmabuf::{DmaBuf, formats, fourcc, fourcc_name};
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_gpu::Gpu;
 use fernsicht_gpu::testimage::upload_as_dmabuf;
 
@@ -36,6 +39,7 @@ fn config(width: u32, height: u32, fps: u32, kbps: u32) -> NvencConfig {
         fps,
         bitrate_kbps: kbps,
         intra_refresh: false,
+        colour: Colour::SDR,
     }
 }
 
@@ -542,6 +546,74 @@ fn every_desktop_format_keeps_its_colours_through_nvenc() {
         );
         summary(&format!("- NVENC aus DMA-BUF {name}: Farben ok"));
     }
+}
+
+#[test]
+fn a_ten_bit_screen_comes_through_hevc_main_10() {
+    if !nvidia() {
+        return;
+    }
+    let ten = fernsicht_codec::nvidia::encodes_in(0, Codec::Hevc, Depth::Ten)
+        && fernsicht_codec::nvidia::decodes_in(0, Codec::Hevc, Depth::Ten);
+    assert!(ten, "Pascal and later encode and decode HEVC Main 10");
+    let gpu = vulkan();
+    let (w, h) = (1280u32, 720u32);
+    let image = upload(&gpu, w, h, 0, formats::XRGB2101010);
+    // A 10-bit SDR desktop (KDE on AMD), and an HDR one (its values are PQ
+    // BT.2020 already; the converter applies the BT.2020 matrix only).
+    for colour in [Colour::SDR.with_depth(Depth::Ten), Colour::HDR10] {
+        let mut enc = NvencEncoder::new(&NvencConfig {
+            codec: Codec::Hevc,
+            colour,
+            ..config(w, h, 60, 8_000)
+        })
+        .unwrap();
+        let mut dec = NvdecDecoder::for_codec(0, Codec::Hevc).unwrap();
+        let (mut out, mut d) = (EncodedFrame::default(), DecodedFrame::default());
+        for i in 0..3 {
+            enc.encode(&dmabuf_frame(&image, i), &mut out).unwrap();
+            dec.decode(&out.data, &mut d).unwrap();
+        }
+        let Some(Picture::Nv12 {
+            data, colour: got, ..
+        }) = dec.picture(PictureKind::Nv12).unwrap()
+        else {
+            panic!("asked for a CPU picture")
+        };
+        assert_eq!(got, colour, "the stream says what it carries");
+        assert_eq!(data.len(), (w * h * 3) as usize, "P010");
+        common::assert_patches(
+            data,
+            (w as usize, h as usize),
+            &PATCHES,
+            colour,
+            4.0,
+            &format!("XR30 → HEVC Main 10, {colour:?}"),
+        );
+        match dec.picture(PictureKind::Gpu).unwrap() {
+            Some(Picture::Exported {
+                colour: got,
+                planes,
+                ..
+            }) => {
+                assert_eq!(got, colour);
+                assert!(planes[0].1 >= w * 2, "rows of 16-bit samples");
+            }
+            other => panic!("no GPU picture: {other:?}"),
+        }
+        summary(&format!(
+            "- NVENC HEVC Main 10 aus XR30, {colour:?}: Farben ok"
+        ));
+    }
+    // CPU pictures are 8 bit: a 10-bit encoder refuses them.
+    let mut enc = NvencEncoder::new(&NvencConfig {
+        codec: Codec::Hevc,
+        colour: Colour::SDR.with_depth(Depth::Ten),
+        ..config(w, h, 60, 8_000)
+    })
+    .unwrap();
+    let cpu = frames(w, h, 1).remove(0);
+    assert!(enc.encode(&cpu, &mut EncodedFrame::default()).is_err());
 }
 
 #[test]

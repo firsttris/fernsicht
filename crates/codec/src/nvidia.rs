@@ -8,8 +8,9 @@
 //! request.
 //!
 //! Encoder input is NV12 in CPU memory (uploaded by FFmpeg) or the screen
-//! as an RGB DMA-BUF (KMS capture): Vulkan converts it to NV12 (BT.709,
-//! scaled to the stream size) into memory CUDA imported, and CUDA copies it
+//! as an RGB DMA-BUF (KMS capture): Vulkan converts it to NV12, or P010 for
+//! a 10-bit stream (in the stream's colour, scaled to the stream size),
+//! into memory CUDA imported, and CUDA copies it
 //! into NVENC's input, so the picture never leaves the GPU. Decoder output
 //! is downloaded to CPU memory for now.
 //!
@@ -22,6 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fernsicht_capture::{DmaBuf, Frame, PixelFormat};
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_core::now_us;
 use fernsicht_gpu::convert::Converter;
 use fernsicht_gpu::{Gpu, Prefer};
@@ -31,7 +33,8 @@ use ffmpeg_next::ffi;
 use crate::cuda;
 use crate::ff;
 use crate::ff::{
-    check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_bt709_limited,
+    check, eagain, ff_err, is_bt709_limited, nv12_from_frame, nv12_into_frame, signal_colour,
+    yuv_format,
 };
 use crate::{CodecError, DecodedFrame, Decoder, EncodedFrame, Encoder, Picture, PictureKind};
 
@@ -50,6 +53,9 @@ pub struct NvencConfig {
     /// picture is refreshed column by column, so no keyframe is needed
     /// after a loss (the first frame and forced ones still are).
     pub intra_refresh: bool,
+    /// The stream's colour: 10 bit (HEVC Main 10, AV1) takes the screen
+    /// (DMA-BUF) only, CPU input is 8-bit NV12.
+    pub colour: Colour,
 }
 
 /// How long an intra refresh wave takes to cross the picture.
@@ -69,6 +75,7 @@ pub struct NvencEncoder {
     height: u32,
     fps: u32,
     intra_refresh: bool,
+    colour: Colour,
     /// Vulkan conversion of DMA-BUF input, set up on the first such frame.
     gpu_input: Option<Result<GpuInput, String>>,
     force_keyframe: bool,
@@ -127,6 +134,7 @@ impl NvencEncoder {
                 height: cfg.height,
                 fps: cfg.fps,
                 intra_refresh: cfg.intra_refresh,
+                colour: cfg.colour,
                 gpu_input: None,
                 force_keyframe: true,
                 rate_change: None,
@@ -152,14 +160,14 @@ impl NvencEncoder {
             }
             let fc = (*enc.frames).data as *mut ffi::AVHWFramesContext;
             (*fc).format = ffi::AVPixelFormat::AV_PIX_FMT_CUDA;
-            (*fc).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            (*fc).sw_format = yuv_format(cfg.colour.depth);
             (*fc).width = cfg.width as c_int;
             (*fc).height = cfg.height as c_int;
             (*fc).initial_pool_size = 4;
             check("init CUDA frame pool", ffi::av_hwframe_ctx_init(enc.frames))?;
             enc.ctx = enc.open_codec(cfg.bitrate_kbps)?;
 
-            (*enc.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*enc.sw).format = yuv_format(cfg.colour.depth) as c_int;
             (*enc.sw).width = cfg.width as c_int;
             (*enc.sw).height = cfg.height as c_int;
             check("allocate upload frame", ffi::av_frame_get_buffer(enc.sw, 0))?;
@@ -172,7 +180,7 @@ impl NvencEncoder {
     /// # Safety
     /// `self.frames` is an initialised CUDA frame pool.
     unsafe fn open_codec(&self, kbps: u32) -> Result<*mut ffi::AVCodecContext, CodecError> {
-        let names = ff::names(self.codec, ff::Backend::Nvenc)?;
+        let names = ff::names(self.codec, ff::Backend::Nvenc, self.colour.depth)?;
         let mut opts = vec![
             (c"preset", c"p1"),
             (c"tune", c"ull"),
@@ -192,6 +200,7 @@ impl NvencEncoder {
             opts.push((c"profile", profile));
         }
         let (width, height, fps, frames) = (self.width, self.height, self.fps, self.frames);
+        let colour = self.colour;
         // With intra refresh FFmpeg takes the GOP length as the refresh
         // period (and makes the GOP endless itself).
         let gop = if self.intra_refresh {
@@ -214,13 +223,13 @@ impl NvencEncoder {
                     den: 1,
                 };
                 (*c).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_CUDA;
-                (*c).sw_pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+                (*c).sw_pix_fmt = yuv_format(colour.depth);
                 (*c).hw_frames_ctx = ffi::av_buffer_ref(frames);
                 (*c).max_b_frames = 0;
                 (*c).gop_size = gop;
                 ff::set_cbr(c, kbps, fps);
                 (*c).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as c_int;
-                signal_bt709_limited(c);
+                signal_colour(c, colour);
             })
         }
     }
@@ -260,7 +269,8 @@ impl NvencEncoder {
             )));
         }
         let name = gpu.name().to_string();
-        let converter = Converter::new(gpu, self.width, self.height).map_err(backend)?;
+        let converter =
+            Converter::new(gpu, self.width, self.height, self.colour).map_err(backend)?;
         let fd = converter.export_output().map_err(backend)?;
         let buffer = cuda::ImportedBuffer::import(
             ctx,
@@ -336,6 +346,11 @@ impl NvencEncoder {
 
     /// CPU NV12 → `self.hw`.
     unsafe fn upload(&mut self, frame: &Frame) -> Result<(), CodecError> {
+        if self.colour.depth != Depth::Eight {
+            return Err(CodecError::Backend(
+                "a 10-bit stream takes the screen (DMA-BUF), not CPU pictures".into(),
+            ));
+        }
         if frame.format != PixelFormat::Nv12
             || frame.width != self.width
             || frame.height != self.height
@@ -374,6 +389,10 @@ impl NvencEncoder {
 impl Encoder for NvencEncoder {
     fn codec(&self) -> Codec {
         self.codec
+    }
+
+    fn colour(&self) -> Colour {
+        self.colour
     }
 
     fn encode(&mut self, frame: &Frame, out: &mut EncodedFrame) -> Result<(), CodecError> {
@@ -478,6 +497,12 @@ impl Drop for NvencEncoder {
 /// opened and closed again (some GPUs lack AV1 or HEVC). False without the
 /// NVIDIA driver.
 pub fn encodes(gpu: u32, codec: Codec) -> bool {
+    encodes_in(gpu, codec, Depth::Eight)
+}
+
+/// [`encodes`] at `depth` (10 bit: HEVC Main 10 from Pascal, AV1 where
+/// AV1 is).
+pub fn encodes_in(gpu: u32, codec: Codec, depth: Depth) -> bool {
     codec != Codec::Synthetic
         && NvencEncoder::new(&NvencConfig {
             gpu,
@@ -487,6 +512,7 @@ pub fn encodes(gpu: u32, codec: Codec) -> bool {
             fps: 30,
             bitrate_kbps: 1_000,
             intra_refresh: false,
+            colour: Colour::SDR.with_depth(depth),
         })
         .is_ok()
 }
@@ -494,6 +520,12 @@ pub fn encodes(gpu: u32, codec: Codec) -> bool {
 /// Whether NVDEC on CUDA device `gpu` decodes `codec` (H.264, HEVC or AV1,
 /// 8 bit, up to at least 1080p). False without the NVIDIA driver.
 pub fn decodes(gpu: u32, codec: Codec) -> bool {
+    decodes_in(gpu, codec, Depth::Eight)
+}
+
+/// [`decodes`] at `depth` (10 bit: HEVC Main 10 from Pascal, AV1 where
+/// AV1 is).
+pub fn decodes_in(gpu: u32, codec: Codec, depth: Depth) -> bool {
     let cuvid = match codec {
         Codec::H264 => cuda::CUVID_H264,
         Codec::Hevc => cuda::CUVID_HEVC,
@@ -517,7 +549,7 @@ pub fn decodes(gpu: u32, codec: Codec) -> bool {
         let dc = (*device).data as *mut ffi::AVHWDeviceContext;
         let ctx = (*((*dc).hwctx as *const ffi::AVCUDADeviceContext)).cuda_ctx;
         let ok = cuda::Current::push(ctx.cast())
-            .and_then(|c| cuda::nvdec_supports(&c, cuvid))
+            .and_then(|c| cuda::nvdec_supports(&c, cuvid, depth.bits()))
             .unwrap_or_else(|e| {
                 log::debug!("NVDEC capability query: {e}");
                 false
@@ -566,15 +598,21 @@ struct Export {
     id: u64,
     width: u32,
     height: u32,
+    depth: Depth,
     /// Row pitch of both planes, bytes.
     pitch: u32,
 }
 
 impl Export {
-    fn new(ctx: cuda::CuContext, width: u32, height: u32) -> Result<Self, CodecError> {
+    fn new(
+        ctx: cuda::CuContext,
+        width: u32,
+        height: u32,
+        depth: Depth,
+    ) -> Result<Self, CodecError> {
         static IDS: AtomicU64 = AtomicU64::new(1);
         // Rows start on 256 bytes, as copies into images like them.
-        let pitch = width.next_multiple_of(256);
+        let pitch = (width * depth.sample_bytes()).next_multiple_of(256);
         let len = pitch as usize * height as usize * 3 / 2;
         let buffer = cuda::ExportedBuffer::new(ctx, len)?;
         let device_uuid = cuda::Current::push(ctx)?.device_uuid()?;
@@ -584,11 +622,12 @@ impl Export {
             id: IDS.fetch_add(1, Ordering::Relaxed),
             width,
             height,
+            depth,
             pitch,
         })
     }
 
-    fn picture(&self) -> Picture<'_> {
+    fn picture(&self, colour: Colour) -> Picture<'_> {
         let rows = u64::from(self.pitch) * u64::from(self.height);
         Picture::Exported {
             memory: self.buffer.fd(),
@@ -598,6 +637,7 @@ impl Export {
             width: self.width,
             height: self.height,
             planes: [(0, self.pitch), (rows, self.pitch)],
+            colour,
         }
     }
 }
@@ -630,7 +670,7 @@ impl NvdecDecoder {
 
     /// A decoder for `codec` (H.264, HEVC or AV1).
     pub fn for_codec(gpu: u32, codec: Codec) -> Result<Self, CodecError> {
-        let names = ff::names(codec, ff::Backend::Nvenc)?;
+        let names = ff::names(codec, ff::Backend::Nvenc, Depth::Eight)?;
         let index = CString::new(gpu.to_string()).expect("digits");
         // SAFETY: as in NvencEncoder::new.
         unsafe {
@@ -695,16 +735,17 @@ impl NvdecDecoder {
     }
 
     /// Copies the last decoded `width`×`height` frame into the exported
-    /// memory, on the GPU; sets it up first (again for a new size).
-    fn export(&mut self, width: u32, height: u32) -> Result<(), CodecError> {
+    /// memory, on the GPU; sets it up first (again for a new size or
+    /// depth).
+    fn export(&mut self, width: u32, height: u32, depth: Depth) -> Result<(), CodecError> {
         // SAFETY: device is the decoder's CUDA device context.
         let (ctx, stream) = unsafe { cuda_of(self.device) };
         if self.export.as_ref().is_none_or(|e| {
             e.as_ref()
-                .is_ok_and(|e| (e.width, e.height) != (width, height))
+                .is_ok_and(|e| (e.width, e.height, e.depth) != (width, height, depth))
         }) {
             self.export = None;
-            let e = Export::new(ctx, width, height).map_err(|e| e.to_string());
+            let e = Export::new(ctx, width, height, depth).map_err(|e| e.to_string());
             if let Err(e) = &e {
                 log::info!("NVDEC pictures go through the CPU: {e}");
             }
@@ -715,8 +756,9 @@ impl NvdecDecoder {
             Some(Err(e)) => return Err(CodecError::Backend(e.clone())),
             None => unreachable!("set above"),
         };
-        // SAFETY: frame holds a decoded CUDA NV12 frame of width×height
-        // (checked by the caller): two planes of device memory.
+        // SAFETY: frame holds a decoded CUDA NV12 (P010) frame of
+        // width×height (checked by the caller): two planes of device
+        // memory.
         let (y, y_pitch, uv, uv_pitch) = unsafe {
             let f = &*self.frame;
             (
@@ -726,7 +768,8 @@ impl NvdecDecoder {
                 f.linesize[1] as usize,
             )
         };
-        let (w, h, pitch) = (width as usize, height as usize, e.pitch as usize);
+        let w = (width * depth.sample_bytes()) as usize;
+        let (h, pitch) = (height as usize, e.pitch as usize);
         let current = cuda::Current::push(ctx)?;
         // On FFmpeg's stream: after NVDEC's own copy into the frame.
         cuda::copy_2d(
@@ -758,7 +801,7 @@ impl NvdecDecoder {
         // which case the transfer fails cleanly).
         unsafe {
             ffi::av_frame_unref(self.sw);
-            (*self.sw).format = ffi::AVPixelFormat::AV_PIX_FMT_NV12 as c_int;
+            (*self.sw).format = ff::sw_format(self.frame) as c_int;
             check(
                 "download frame",
                 ffi::av_hwframe_transfer_data(self.sw, self.frame, 0),
@@ -827,16 +870,22 @@ impl Decoder for NvdecDecoder {
         if format != ffi::AVPixelFormat::AV_PIX_FMT_CUDA as c_int {
             return Ok(None);
         }
+        // SAFETY: frame holds a decoded CUDA frame.
+        let colour = unsafe { ff::colour_of(self.frame, ff::sw_format(self.frame)) };
         let exportable = !matches!(self.export, Some(Err(_)));
-        if prefer == PictureKind::Gpu && exportable && self.export(width, height).is_ok() {
+        if prefer == PictureKind::Gpu
+            && exportable
+            && self.export(width, height, colour.depth).is_ok()
+        {
             let e = self.export.as_ref().and_then(|e| e.as_ref().ok());
-            return Ok(e.map(Export::picture));
+            return Ok(e.map(|e| e.picture(colour)));
         }
         self.download()?;
         Ok(Some(Picture::Nv12 {
             width,
             height,
             data: &self.nv12,
+            colour,
         }))
     }
 }

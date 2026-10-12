@@ -23,6 +23,7 @@ pub use cursor::{CursorImage, CursorState};
 pub use dmabuf::{DmaBuf, DmaBufPlane};
 pub use test_pattern::TestPattern;
 
+use fernsicht_core::colour::Colour;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +62,9 @@ pub struct Frame {
     pub capture_us: u64,
     /// Local monotonic clock (µs): when the frame was available to us.
     pub ready_us: u64,
+    /// How its values are to be read: the depth the screen has, and
+    /// whether it is HDR.
+    pub colour: Colour,
 }
 
 impl Frame {
@@ -75,12 +79,14 @@ impl Frame {
             seq: 0,
             capture_us: 0,
             ready_us: 0,
+            colour: Colour::SDR,
         }
     }
 
     /// A frame for a GPU image; capture backends fill the timestamps.
     pub fn from_dmabuf(image: DmaBuf) -> Self {
         Self {
+            colour: Colour::SDR.with_depth(dmabuf::depth_of(image.fourcc)),
             width: image.width,
             height: image.height,
             format: PixelFormat::Bgrx,
@@ -149,6 +155,12 @@ pub trait FrameSource: Send {
         Err(CaptureError::Backend(format!(
             "this source shows one picture only, not {connector}"
         )))
+    }
+
+    /// What the screen holds now (the frames say it from then on): its
+    /// depth and whether it is HDR. The test pattern is 8-bit SDR.
+    fn colour(&self) -> Colour {
+        Colour::SDR
     }
 
     /// A frame buffer matching this source.

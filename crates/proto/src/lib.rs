@@ -405,7 +405,7 @@ impl ClockPong {
 }
 
 /// Session request, client → host. Repeated until a [`HelloAck`] arrives.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
     pub width: u16,
     pub height: u16,
@@ -418,6 +418,10 @@ pub struct Hello {
     /// refresh heal it, instead of waiting for a keyframe (where the host's
     /// encoder can).
     pub refresh: bool,
+    /// The codecs of `codecs` the client also decodes in 10 bit (HEVC
+    /// Main 10, AV1 Main at 10 bit; H.264 never): a 10-bit or HDR desktop
+    /// comes in 10 bit then (D4).
+    pub ten_bit: CodecSet,
 }
 
 /// A set of real video codecs, e.g. what a client can decode.
@@ -480,6 +484,11 @@ impl CodecSet {
         Ok(CodecSet(set))
     }
 
+    /// The codecs in both sets.
+    pub fn and(self, other: CodecSet) -> Self {
+        CodecSet(self.0 & other.0)
+    }
+
     /// The best of `preference` (best first) in this set.
     pub fn best(self, preference: &[Codec]) -> Option<Codec> {
         preference.iter().copied().find(|&c| self.contains(c))
@@ -493,6 +502,24 @@ impl Default for CodecSet {
     }
 }
 
+impl Default for Hello {
+    fn default() -> Self {
+        Hello {
+            width: 0,
+            height: 0,
+            fps: 0,
+            bitrate_kbps: 0,
+            codecs: CodecSet::default(),
+            refresh: false,
+            ten_bit: CodecSet::EMPTY,
+        }
+    }
+}
+
+/// The bits of Hello's options byte that carry [`Hello::ten_bit`]: HEVC's
+/// and AV1's of a [`CodecSet`].
+const HELLO_TEN_BIT: u8 = 0b110;
+
 impl Hello {
     pub const LEN: usize = PREFIX_LEN + 11;
 
@@ -503,7 +530,7 @@ impl Hello {
         w.u16(self.height);
         w.u16(self.fps);
         w.u32(self.bitrate_kbps);
-        w.u8(u8::from(self.refresh));
+        w.u8(u8::from(self.refresh) | (self.ten_bit.0 & HELLO_TEN_BIT));
         Self::LEN
     }
 
@@ -514,11 +541,19 @@ impl Hello {
             fps: r.u16()?,
             bitrate_kbps: r.u32()?,
             codecs: CodecSet::from_flags(flags)?,
-            refresh: match r.u8()? {
-                0 => false,
-                1 => true,
-                _ => return Err(DecodeError::Invalid("hello refresh")),
-            },
+            refresh: false,
+            ten_bit: CodecSet::EMPTY,
+        };
+        // Bit 0: refresh; the HEVC and AV1 bits of a codec set: those
+        // decoded in 10 bit.
+        let options = r.u8()?;
+        if options & !(1 | HELLO_TEN_BIT) != 0 {
+            return Err(DecodeError::Invalid("hello options"));
+        }
+        let h = Hello {
+            refresh: options & 1 != 0,
+            ten_bit: CodecSet(options & HELLO_TEN_BIT).and(h.codecs),
+            ..h
         };
         if h.fps == 0 {
             return Err(DecodeError::Invalid("fps is zero"));
@@ -2000,12 +2035,13 @@ mod tests {
             bitrate_kbps: 20_000,
             codecs: CodecSet::of(&[Codec::H264, Codec::Hevc]),
             refresh: true,
+            ten_bit: CodecSet::EMPTY,
         };
         let n = hello.encode(&mut buf);
         assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Hello(hello));
-        // The refresh byte is 0 or 1.
+        // The options byte knows refresh and the ten-bit codecs only.
         let mut odd = buf;
-        odd[Hello::LEN - 1] = 2;
+        odd[Hello::LEN - 1] = 0x10;
         assert!(Packet::decode(&odd[..n]).is_err());
 
         let ack = HelloAck {
@@ -2296,6 +2332,29 @@ mod tests {
     }
 
     #[test]
+    fn hello_says_which_codecs_come_in_ten_bit() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let hello = Hello {
+            fps: 60,
+            codecs: CodecSet::of(&[Codec::H264, Codec::Hevc, Codec::Av1]),
+            refresh: true,
+            ten_bit: CodecSet::of(&[Codec::Hevc]),
+            ..Hello::default()
+        };
+        let n = hello.encode(&mut buf);
+        assert_eq!(buf[n - 1], 0b011, "refresh and HEVC");
+        assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Hello(hello)));
+        // H.264 never, and only what is decoded at all.
+        buf[n - 1] = 0b111;
+        let Ok(Packet::Hello(h)) = Packet::decode(&buf[..n]) else {
+            panic!("refused")
+        };
+        assert_eq!(h.ten_bit, CodecSet::of(&[Codec::Hevc, Codec::Av1]));
+        buf[n - 1] = 0b1000;
+        assert!(Packet::decode(&buf[..n]).is_err(), "unknown option");
+    }
+
+    #[test]
     fn hello_from_a_client_before_codec_choice_means_h264() {
         let mut buf = [0u8; MAX_DATAGRAM];
         let n = Hello {
@@ -2305,6 +2364,7 @@ mod tests {
             bitrate_kbps: 0,
             codecs: CodecSet::of(&[Codec::Hevc]),
             refresh: false,
+            ten_bit: CodecSet::EMPTY,
         }
         .encode(&mut buf);
         buf[3] = 0; // what older clients put in the flags byte
@@ -2323,6 +2383,7 @@ mod tests {
             bitrate_kbps: 0,
             codecs: CodecSet::H264,
             refresh: false,
+            ten_bit: CodecSet::EMPTY,
         };
         let b = h.encode_with_time(1_760_000_000_123);
         assert_eq!(Hello::decode_with_time(&b), Some((h, 1_760_000_000_123)));

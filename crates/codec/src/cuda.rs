@@ -545,7 +545,11 @@ pub const CUVID_AV1: c_uint = 11;
 
 /// Whether NVDEC on the GPU of the current context decodes `cuvid_codec`
 /// in 8-bit 4:2:0 up to at least 1920×1080 (pre-Pascal GPUs lack HEVC).
-pub fn nvdec_supports(_current: &Current<'_>, cuvid_codec: c_uint) -> Result<bool, CodecError> {
+pub fn nvdec_supports(
+    _current: &Current<'_>,
+    cuvid_codec: c_uint,
+    bits: c_uint,
+) -> Result<bool, CodecError> {
     static LIB: OnceLock<Result<libloading::Library, String>> = OnceLock::new();
     let lib = LIB
         .get_or_init(|| {
@@ -564,6 +568,7 @@ pub fn nvdec_supports(_current: &Current<'_>, cuvid_codec: c_uint) -> Result<boo
         let mut caps = DecodeCaps {
             codec: cuvid_codec,
             chroma: 1, // 4:2:0
+            bit_depth_minus8: bits - 8,
             ..Default::default()
         };
         check(api()?, "query NVDEC", caps_fn(&mut caps))?;
