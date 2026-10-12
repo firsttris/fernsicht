@@ -1,0 +1,39 @@
+name: Measure
+
+# Measurements on a GPU runner that are not tests, started by hand (Actions
+# → Measure → Run workflow). Like gpu.yml it runs only on the owner's
+# machines and never for pull requests.
+#
+# commit-lead (D8): how long before the vblank a compositor's new picture
+# shows on the plane. Something has to move on that machine's screen (a
+# video, an animation), or there is nothing to measure.
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: "Runner: amd or nvidia (the NVIDIA driver has no vblank wait)"
+        default: amd
+      seconds:
+        description: "How long to measure"
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  commit-lead:
+    name: Commit → vblank lead · ${{ inputs.gpu }}
+    if: github.repository == 'firsttris/fernsicht'
+    runs-on: [self-hosted, linux, "gpu-${{ inputs.gpu }}"]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Measure on every card that shows a picture
+        env:
+          SECONDS_TO_MEASURE: ${{ inputs.seconds }}
+        run: |
+          cargo build -q -p fernsicht-capture --features kms --example commit_lead
+          for card in /dev/dri/card*; do
+            target/debug/examples/commit_lead "$card" "$SECONDS_TO_MEASURE" \
+              | tee -a "$GITHUB_STEP_SUMMARY" || true
+          done

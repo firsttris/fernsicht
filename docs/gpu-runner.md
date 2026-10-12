@@ -177,6 +177,13 @@ If a machine is off, its job waits in the queue. GitHub cancels it after
 24 hours, but you can also cancel it in the Actions tab. The regular CI
 keeps running independently of this.
 
+## Measurements by hand
+
+`.github/workflows/measure.yml` runs measurements that are not tests, started by hand (Actions →
+Measure → Run workflow, choosing the runner). `commit-lead` (for capture on commit, D8) measures how
+long before the vblank a compositor's new picture shows on the primary plane; something has to move
+on that machine's screen meanwhile. It needs the vblank wait, which the NVIDIA driver does not have.
+
 ## Security
 
 The repo is public, and a self-hosted runner executes code from the repo on
