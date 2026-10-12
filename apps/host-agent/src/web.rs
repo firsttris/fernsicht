@@ -23,6 +23,7 @@
 
 mod commands;
 mod offer;
+mod rate;
 mod rtc;
 mod server;
 

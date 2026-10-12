@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, bounded, select};
 use fernsicht_input::InputSink;
 use fernsicht_proto::{Codec, InputEvent};
+use str0m::bwe::{Bitrate, BweKind};
 use str0m::channel::ChannelId;
 use str0m::format::Codec as RtcCodec;
 use str0m::media::{Frequency, MediaKind, MediaTime, Mid, Pt};
@@ -18,6 +19,7 @@ use str0m::{Event, IceConnectionState, Input, Output, Rtc};
 
 use super::commands::{Command, newer, parse_input};
 use super::offer::WebSetup;
+use super::rate::WebRate;
 use super::{CONNECT_WITHIN, WebOut};
 use crate::shared::Shared;
 
@@ -59,6 +61,8 @@ struct RtcSession {
     audio_time: u64,
     /// The round trip the browser's receiver reports tell.
     rtt: Duration,
+    /// The bitrate the path's estimate allows.
+    rate: WebRate,
 }
 
 impl RtcSession {
@@ -68,8 +72,16 @@ impl RtcSession {
         shared: Arc<Shared>,
         input: Option<Box<dyn InputSink>>,
     ) -> Self {
+        // The bitrate the session started with: where the estimate starts
+        // and what it may reach at most.
+        let ceiling = shared.target_kbps.load(Ordering::Relaxed);
+        let mut rtc = setup.rtc;
+        let start = Bitrate::kbps(u64::from(ceiling));
+        rtc.bwe().reset(start);
+        rtc.bwe().set_desired_bitrate(start);
         Self {
-            rtc: setup.rtc,
+            rate: WebRate::new(ceiling, Instant::now()),
+            rtc,
             socket: setup.socket,
             shared,
             input,
@@ -182,6 +194,20 @@ impl RtcSession {
             // Browsers ask (PLI) until the keyframe arrives: one answers
             // them all.
             Event::KeyframeRequest(_) => self.shared.want_keyframe(None, self.rtt),
+            Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }) => {
+                if let Some(kbps) = self.rate.estimate(estimate.as_u64() / 1000, Instant::now()) {
+                    log::info!(
+                        "web session: bitrate {:.1} Mbit/s (estimate)",
+                        f64::from(kbps) / 1000.0
+                    );
+                    let before = self.shared.target_kbps.swap(kbps, Ordering::Relaxed);
+                    let stats = &self.shared.stats;
+                    if kbps < before {
+                        crate::shared::HostStats::bump(&stats.bitrate_cuts);
+                    }
+                    stats.bitrate_kbps.store(u64::from(kbps), Ordering::Relaxed);
+                }
+            }
             Event::MediaEgressStats(s) => {
                 if let Some(rtt) = s.rtt {
                     self.rtt = rtt;

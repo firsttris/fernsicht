@@ -61,6 +61,9 @@ pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSe
         .clear_codecs()
         .enable_opus(true, false)
         .enable_av1(true)
+        // The browser's congestion feedback (TWCC) becomes an estimate of
+        // what the path carries; the session sets where it starts.
+        .enable_bwe(Some(str0m::bwe::Bitrate::mbps(10)))
         // For the round trip in the browser's receiver reports.
         .set_stats_interval(Some(STATS_INTERVAL));
     for (pt, rtx, profile) in H264 {

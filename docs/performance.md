@@ -41,7 +41,7 @@ measurement is missing ([latency-baseline.md](latency-baseline.md)).
 | 6 | **Intra refresh instead of keyframes** | No large data bursts after a loss, so less stutter over Wi-Fi | Medium | **Done** with NVENC, as a choice (app: “Nach Verlusten: Flüssig”, `--smooth`) |
 | 7 | **Delay-based congestion control** (like WebRTC) | Reacts to growing transit time before packets are lost. Better over Wi-Fi | Medium | **Done:** queue delay and ECN marks lower the bitrate before loss; pacing at the measured delivery rate |
 | 8 | **4:4:4 color for the desktop** | Crisp text (today, color is transmitted at half resolution) | Medium | Open, only with NVENC (H.264/HEVC). AMD and Intel do not encode 4:4:4 |
-| 9 | **Bitrate adaptation in the web viewer** (WebRTC bandwidth estimation, TWCC) | The browser gets no more than the network can carry | Medium | Open (today: fixed bitrate) |
+| 9 | **Bitrate adaptation in the web viewer** (WebRTC bandwidth estimation, TWCC) | The browser gets no more than the network can carry | Medium | **Done:** str0m's estimate from the browser's TWCC feedback sets the bitrate (`apps/host-agent/src/web/rate.rs`) |
 | 10 | **Cable instead of Wi-Fi** | Less latency and variation. Not a software matter | – | Recommendation |
 
 ## The individual items

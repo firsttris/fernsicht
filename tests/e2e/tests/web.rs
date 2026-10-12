@@ -359,3 +359,103 @@ fn the_host_serves_the_viewer_page() {
     host.stop();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A browser behind a narrow link: what the host sends reaches it only as
+/// fast as `kbps` carry (a queue, as in a router), so its congestion
+/// feedback (TWCC) shows the delay growing.
+#[test]
+fn a_narrow_path_lowers_the_browsers_bitrate() {
+    use std::collections::VecDeque;
+    let _serial = exclusive();
+    let sec = Arc::new(HostSecurity::new(
+        Identity::generate(),
+        "zentrale",
+        Trusted::default(),
+        None,
+    ));
+    let host = host(&sec, &Recorder::default(), None);
+    let web = host.web_addr().expect("web server");
+    let mut rtc = RtcConfig::new().build(Instant::now());
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let local = socket.local_addr().unwrap();
+    rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
+    let mut change = rtc.sdp_api();
+    change.add_media(MediaKind::Video, Direction::RecvOnly, None, None, None);
+    change.add_channel("fernsicht".into());
+    let (offer, pending) = change.apply().unwrap();
+    sec.open_pairing("482913");
+    let (status, body) = http(
+        web,
+        "POST",
+        "/api/connect",
+        Some(&json!({"pin": "482913", "offer": offer})),
+    );
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let answer: SdpAnswer = serde_json::from_value(json_of(&body)["answer"].clone()).unwrap();
+    rtc.sdp_api().accept_answer(pending, answer).unwrap();
+
+    let started_kbps = || {
+        host.stats()
+            .bitrate_kbps
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let cuts = || {
+        host.stats()
+            .bitrate_cuts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    const KBPS: u64 = 3_000;
+    let mut queue: VecDeque<(Instant, std::net::SocketAddr, Vec<u8>)> = VecDeque::new();
+    let mut busy = Instant::now();
+    let mut buf = vec![0u8; 2048];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while cuts() == 0 {
+        assert!(Instant::now() < deadline, "the bitrate stayed");
+        let timeout = loop {
+            match rtc.poll_output().unwrap() {
+                Output::Timeout(t) => break t,
+                Output::Transmit(t) => {
+                    socket.send_to(&t.contents, t.destination).unwrap();
+                }
+                Output::Event(_) => {}
+            }
+        };
+        // Due datagrams through the bottleneck into the browser.
+        let now = Instant::now();
+        while queue.front().is_some_and(|(due, _, _)| *due <= now) {
+            let (due, source, data) = queue.pop_front().unwrap();
+            rtc.handle_input(Input::Receive(
+                due.max(now - Duration::from_millis(1)).min(now),
+                Receive {
+                    proto: Protocol::Udp,
+                    source,
+                    destination: local,
+                    contents: data.as_slice().try_into().unwrap(),
+                },
+            ))
+            .unwrap();
+        }
+        let next = queue
+            .front()
+            .map_or(timeout, |(due, _, _)| (*due).min(timeout));
+        let wait = next.saturating_duration_since(Instant::now());
+        socket
+            .set_read_timeout(Some(wait.max(Duration::from_millis(1))))
+            .unwrap();
+        match socket.recv_from(&mut buf) {
+            Ok((n, source)) => {
+                // Its time on the narrow link, after those before it.
+                let wire = Duration::from_micros(n as u64 * 8_000 / KBPS);
+                busy = busy.max(Instant::now()) + wire;
+                queue.push_back((busy, source, buf[..n].to_vec()));
+            }
+            Err(_) => rtc.handle_input(Input::Timeout(Instant::now())).unwrap(),
+        }
+    }
+    let kbps = started_kbps();
+    assert!(
+        kbps > 0 && kbps <= KBPS,
+        "the browser's estimate brought the bitrate to {kbps} kbit/s"
+    );
+    host.stop();
+}

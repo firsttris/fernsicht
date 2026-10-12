@@ -24,6 +24,11 @@ network. The host serves the page itself.
   without retransmits (a lost move is not waited for, the next one
   replaces it), everything else a reliable, ordered one. Positions are
   numbered across both, so an old one never undoes a newer one.
+- **Bitrate:** the browser reports how the packets arrive (TWCC), and the
+  host estimates from that what the path carries: the video takes 85 % of
+  it, never more than the session started with. It drops at once when the
+  path narrows (Wi-Fi, a phone on mobile data) and climbs back after 5 s
+  in steps of at most 1.5×, as each change costs the encoder a keyframe.
 - **Input:** In **Desktop** mode the mouse controls the host directly, and
   the host's pointer image is the browser's own pointer (it moves at once,
   without the round trip) as soon as the host knows its tip. In

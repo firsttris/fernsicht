@@ -313,11 +313,11 @@ collected in [performance.md](performance.md).
    - Never run live: real KMS on the bazzite (HDMI-A-1). The user starts
      `sudo ./target/release/fernsicht-host-agent --capture kms --encoder nvenc --pair`
      on the bazzite, and the zentrale connects as the client.
-7. **Small things in the app:** The toolbar buttons for screen,
-   clipboard and files do nothing yet (sound and mode already work).
-8. **Bitrate adaptation in the web viewer:** WebRTC provides a bandwidth
-   estimate (TWCC), but the host does not use it yet; the bitrate stays
-   fixed there.
+7. **Small things in the app:** file transfer (the clipboard works for
+   text).
+8. **Bitrate adaptation in the web viewer:** built (TWCC estimate, tested
+   behind a simulated 3 Mbit/s link); not seen live on a phone over mobile
+   data yet.
 9. **Later:** internet (NAT, rendezvous server), PipeWire capture. Web
    viewer over the internet (rendezvous, TURN), remembering the browser
    instead of asking for a PIN every time, a test with real Chrome in CI.
