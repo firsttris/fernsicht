@@ -33,7 +33,9 @@ jobs:
           SECONDS_TO_MEASURE: ${{ inputs.seconds }}
         run: |
           cargo build -q -p fernsicht-capture --features kms --example commit_lead
+          # The runner builds into its cache (CARGO_TARGET_DIR).
+          bin="${CARGO_TARGET_DIR:-target}/debug/examples/commit_lead"
+          # A card without a picture (or without a vblank) fails alone.
           for card in /dev/dri/card*; do
-            target/debug/examples/commit_lead "$card" "$SECONDS_TO_MEASURE" \
-              | tee -a "$GITHUB_STEP_SUMMARY" || true
+            "$bin" "$card" "$SECONDS_TO_MEASURE" | tee -a "$GITHUB_STEP_SUMMARY" || true
           done
