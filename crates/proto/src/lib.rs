@@ -833,8 +833,49 @@ pub const BTN_MOUSE_LAST: u16 = 0x117;
 /// `BTN_NORTH` (0x133) the top (Y), `BTN_WEST` (0x134) the left (X).
 pub const BTN_PAD_FIRST: u16 = 0x130;
 pub const BTN_PAD_LAST: u16 = 0x13e;
+/// A touchpad's click (`BTN_TOUCH`), on pads that have one (DualSense).
+pub const BTN_PAD_TOUCHPAD: u16 = 0x14a;
 /// Gamepads one session may use.
 pub const MAX_PADS: u8 = 4;
+/// Fingers a pad's touchpad tells apart.
+pub const MAX_TOUCH_FINGERS: u8 = 2;
+
+/// What a gamepad becomes on the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum PadModel {
+    /// An Xbox 360 pad (uinput): buttons, sticks, triggers, rumble.
+    Xbox360 = 0,
+    /// A DualSense (uhid): also motion sensors and the touchpad.
+    DualSense = 1,
+}
+
+impl PadModel {
+    pub fn from_code(code: u16) -> Option<Self> {
+        [PadModel::Xbox360, PadModel::DualSense]
+            .into_iter()
+            .find(|m| *m as u16 == code)
+    }
+}
+
+/// A gamepad's motion sensors, in the axes of SDL and the DualSense:
+/// x to the right, y up, z towards the player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum PadSensor {
+    /// Rotation, 1/16 °/s (±2048 °/s), counter-clockwise positive.
+    Gyro = 0,
+    /// Acceleration including gravity, 1/8192 g (±4 g).
+    Accel = 1,
+}
+
+impl PadSensor {
+    pub fn from_code(code: u16) -> Option<Self> {
+        [PadSensor::Gyro, PadSensor::Accel]
+            .into_iter()
+            .find(|s| *s as u16 == code)
+    }
+}
 
 /// A gamepad's axes, with the Linux `ABS_*` codes they travel as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -898,6 +939,26 @@ pub enum InputEvent {
     PadButton { pad: u8, code: u16, pressed: bool },
     /// A gamepad axis at `value` (in [`PadAxis::range`]).
     PadAxis { pad: u8, axis: PadAxis, value: i32 },
+    /// What gamepad `pad` is: sent before its first other event, so the
+    /// host makes the right device (without it: an Xbox 360 pad).
+    PadModel { pad: u8, model: PadModel },
+    /// A motion sensor of gamepad `pad` reads `x`, `y`, `z`.
+    PadMotion {
+        pad: u8,
+        sensor: PadSensor,
+        x: i16,
+        y: i16,
+        z: i16,
+    },
+    /// Finger `finger` (0..[`MAX_TOUCH_FINGERS`]) on the touchpad of
+    /// gamepad `pad`, at 0..=65535 across and down; `down: false` lifts it.
+    PadTouch {
+        pad: u8,
+        finger: u8,
+        down: bool,
+        x: u16,
+        y: u16,
+    },
 }
 
 const INPUT_EVENT_LEN: usize = 16;
@@ -916,6 +977,33 @@ impl InputEvent {
                 (6, u8::from(pressed), code, i32::from(pad), 0)
             }
             InputEvent::PadAxis { pad, axis, value } => (7, 0, axis as u16, i32::from(pad), value),
+            InputEvent::PadModel { pad, model } => (8, 0, model as u16, i32::from(pad), 0),
+            InputEvent::PadMotion {
+                pad,
+                sensor,
+                x,
+                y,
+                z,
+            } => (
+                9,
+                0,
+                sensor as u16,
+                (u32::from(x as u16) | u32::from(y as u16) << 16) as i32,
+                (u32::from(z as u16) | u32::from(pad) << 16) as i32,
+            ),
+            InputEvent::PadTouch {
+                pad,
+                finger,
+                down,
+                x,
+                y,
+            } => (
+                10,
+                u8::from(down),
+                u16::from(finger),
+                i32::from(pad),
+                (u32::from(x) | u32::from(y) << 16) as i32,
+            ),
         };
         w.u32(seq);
         w.u8(kind);
@@ -938,8 +1026,9 @@ impl InputEvent {
         let unused_ok = match kind {
             1 | 2 | 4 => flags == 0 && code == 0,
             3 | 5 => flags & !FLAG_PRESSED == 0 && a == 0 && b == 0,
-            6 => flags & !FLAG_PRESSED == 0 && b == 0,
-            7 => flags == 0,
+            6 | 10 => flags & !FLAG_PRESSED == 0 && (kind == 10 || b == 0),
+            7 | 9 => flags == 0,
+            8 => flags == 0 && b == 0,
             _ => true,
         };
         if !unused_ok {
@@ -954,7 +1043,10 @@ impl InputEvent {
             3 => InputEvent::Button { code, pressed },
             4 => InputEvent::Scroll { dx: a, dy: b },
             5 => InputEvent::Key { code, pressed },
-            6 | 7 if !(0..i32::from(MAX_PADS)).contains(&a) => {
+            6 | 7 | 8 | 10 if !(0..i32::from(MAX_PADS)).contains(&a) => {
+                return Err(DecodeError::Invalid("gamepad number"));
+            }
+            9 if (b as u32) >> 16 >= u32::from(MAX_PADS) => {
                 return Err(DecodeError::Invalid("gamepad number"));
             }
             6 => InputEvent::PadButton {
@@ -966,6 +1058,24 @@ impl InputEvent {
                 pad: a as u8,
                 axis: PadAxis::from_code(code).ok_or(DecodeError::Invalid("gamepad axis"))?,
                 value: b,
+            },
+            8 => InputEvent::PadModel {
+                pad: a as u8,
+                model: PadModel::from_code(code).ok_or(DecodeError::Invalid("gamepad model"))?,
+            },
+            9 => InputEvent::PadMotion {
+                pad: ((b as u32) >> 16) as u8,
+                sensor: PadSensor::from_code(code).ok_or(DecodeError::Invalid("gamepad sensor"))?,
+                x: a as u16 as i16,
+                y: ((a as u32) >> 16) as u16 as i16,
+                z: b as u16 as i16,
+            },
+            10 => InputEvent::PadTouch {
+                pad: a as u8,
+                finger: u8::try_from(code).map_err(|_| DecodeError::Invalid("finger"))?,
+                down: pressed,
+                x: b as u16,
+                y: ((b as u32) >> 16) as u16,
             },
             _ => return Err(DecodeError::Invalid("unknown input event")),
         };
@@ -986,16 +1096,21 @@ impl InputEvent {
             {
                 Err("key code")
             }
-            InputEvent::PadButton { pad, .. } | InputEvent::PadAxis { pad, .. }
+            InputEvent::PadButton { pad, .. }
+            | InputEvent::PadAxis { pad, .. }
+            | InputEvent::PadModel { pad, .. }
+            | InputEvent::PadMotion { pad, .. }
+            | InputEvent::PadTouch { pad, .. }
                 if pad >= MAX_PADS =>
             {
                 Err("gamepad number")
             }
             InputEvent::PadButton { code, .. }
-                if !(BTN_PAD_FIRST..=BTN_PAD_LAST).contains(&code) =>
+                if !(BTN_PAD_FIRST..=BTN_PAD_LAST).contains(&code) && code != BTN_PAD_TOUCHPAD =>
             {
                 Err("gamepad button code")
             }
+            InputEvent::PadTouch { finger, .. } if finger >= MAX_TOUCH_FINGERS => Err("finger"),
             InputEvent::PadAxis { axis, value, .. } if !axis.range().contains(&value) => {
                 Err("gamepad axis")
             }
@@ -2854,6 +2969,36 @@ mod tests {
                 axis: PadAxis::DpadX,
                 value: -1,
             },
+            InputEvent::PadModel {
+                pad: 3,
+                model: PadModel::DualSense,
+            },
+            InputEvent::PadMotion {
+                pad: 3,
+                sensor: PadSensor::Gyro,
+                x: -32768,
+                y: 32767,
+                z: -1,
+            },
+            InputEvent::PadMotion {
+                pad: 0,
+                sensor: PadSensor::Accel,
+                x: 0,
+                y: 8192,
+                z: 0,
+            },
+            InputEvent::PadTouch {
+                pad: 1,
+                finger: 1,
+                down: true,
+                x: 65535,
+                y: 0,
+            },
+            InputEvent::PadButton {
+                pad: 1,
+                code: BTN_PAD_TOUCHPAD,
+                pressed: true,
+            },
         ];
         let events: Vec<_> = good
             .iter()
@@ -2891,6 +3036,24 @@ mod tests {
                 axis: PadAxis::RightX,
                 value: 40_000,
             },
+            InputEvent::PadModel {
+                pad: MAX_PADS,
+                model: PadModel::DualSense,
+            },
+            InputEvent::PadMotion {
+                pad: MAX_PADS,
+                sensor: PadSensor::Gyro,
+                x: 0,
+                y: 0,
+                z: 0,
+            },
+            InputEvent::PadTouch {
+                pad: 0,
+                finger: MAX_TOUCH_FINGERS,
+                down: true,
+                x: 0,
+                y: 0,
+            },
         ] {
             let n = InputHeader::encode(1, &[(0, bad)], &mut buf);
             assert!(Packet::decode(&buf[..n]).is_err(), "{bad:?}");
@@ -2912,6 +3075,28 @@ mod tests {
         assert!(Packet::decode(&buf[..n]).is_err());
         assert_eq!(PadAxis::from_code(0x10), Some(PadAxis::DpadX));
         assert_eq!(PadAxis::from_code(0x06), None);
+        // An unknown model or sensor, a motion's pad byte out of range.
+        let model = InputEvent::PadModel {
+            pad: 0,
+            model: PadModel::Xbox360,
+        };
+        let n = InputHeader::encode(1, &[(0, model)], &mut buf);
+        buf[InputHeader::LEN + 6] = 2;
+        assert!(Packet::decode(&buf[..n]).is_err(), "model 2");
+        let motion = InputEvent::PadMotion {
+            pad: 0,
+            sensor: PadSensor::Accel,
+            x: 1,
+            y: 2,
+            z: 3,
+        };
+        let n = InputHeader::encode(1, &[(0, motion)], &mut buf);
+        let mut bad = buf;
+        bad[InputHeader::LEN + 6] = 2;
+        assert!(Packet::decode(&bad[..n]).is_err(), "sensor 2");
+        let mut bad = buf;
+        bad[InputHeader::LEN + 15] = 1;
+        assert!(Packet::decode(&bad[..n]).is_err(), "bits above the pad");
     }
 
     #[test]

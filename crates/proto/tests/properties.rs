@@ -151,7 +151,7 @@ proptest! {
     #[test]
     fn input_roundtrip(session_id: u32, first_seq: u32,
                        raw in proptest::collection::vec(
-                           (0u8..7, any::<u16>(), any::<i32>(), any::<i32>(), any::<bool>()),
+                           (0u8..10, any::<u16>(), any::<i32>(), any::<i32>(), any::<bool>()),
                            1..=MAX_INPUT_EVENTS)) {
         let events: Vec<(u32, InputEvent)> = raw.iter().enumerate().map(|(i, &(k, c, a, b, p))| {
             let e = match k {
@@ -164,6 +164,24 @@ proptest! {
                     pad: (c % 4) as u8,
                     code: BTN_PAD_FIRST + c % (BTN_PAD_LAST - BTN_PAD_FIRST + 1),
                     pressed: p,
+                },
+                7 => InputEvent::PadModel {
+                    pad: (c % 4) as u8,
+                    model: if p { PadModel::DualSense } else { PadModel::Xbox360 },
+                },
+                8 => InputEvent::PadMotion {
+                    pad: (c % 4) as u8,
+                    sensor: if p { PadSensor::Gyro } else { PadSensor::Accel },
+                    x: a as i16,
+                    y: (a >> 16) as i16,
+                    z: b as i16,
+                },
+                9 => InputEvent::PadTouch {
+                    pad: (c % 4) as u8,
+                    finger: (c >> 8) as u8 % MAX_TOUCH_FINGERS,
+                    down: p,
+                    x: a as u16,
+                    y: b as u16,
                 },
                 _ => {
                     let axis = PadAxis::ALL[usize::from(c) % PadAxis::ALL.len()];
@@ -187,7 +205,7 @@ proptest! {
     /// `validate` says exactly which events the parser takes: a client that
     /// checks with it never sends a packet the host refuses.
     #[test]
-    fn validate_agrees_with_the_parser(k in 0u8..7, code: u16, pad in 0u8..8,
+    fn validate_agrees_with_the_parser(k in 0u8..10, code: u16, pad in 0u8..8,
                                        value: i32, pressed: bool) {
         let e = match k {
             0 => InputEvent::Button { code, pressed },
@@ -196,6 +214,9 @@ proptest! {
             3 => InputEvent::PadAxis { pad, axis: PadAxis::ALL[usize::from(code) % PadAxis::ALL.len()], value },
             4 => InputEvent::MouseRel { dx: value, dy: -value },
             5 => InputEvent::Scroll { dx: value, dy: value },
+            7 => InputEvent::PadModel { pad, model: PadModel::DualSense },
+            8 => InputEvent::PadMotion { pad, sensor: PadSensor::Gyro, x: value as i16, y: 0, z: -1 },
+            9 => InputEvent::PadTouch { pad, finger: code as u8, down: pressed, x: code, y: code },
             _ => InputEvent::MouseAbs { x: code, y: code },
         };
         let mut buf = [0u8; MAX_DATAGRAM];

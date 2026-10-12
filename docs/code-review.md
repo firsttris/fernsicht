@@ -880,7 +880,7 @@ counters, replay window checked before decryption). The gaps are in the logic ar
 | D6 | Local hardware pointer in desktop mode | The pointer feels free of latency |
 | D7 | HTTPS for the web viewer | Keyboard Lock, `pointerrawupdate`, clipboard and wake lock need a secure context; Keyboard Lock does **not** work over HTTP today |
 | D8 | Capture on commit; align capture to the client's refresh | 1–3 ms (plausible) |
-| D9 | SDL3 for gamepads | Mapping database, rumble, gyro, touchpad |
+| D9 | SDL3 for gamepads | Mapping database, rumble, gyro, touchpad ✅ |
 | D10 | Native PipeWire audio with adaptive resampling | Smaller buffers, no drift clicks |
 
 Status: D5 is done. Both conversions site chroma left (the NVENC converter filters 1/4, 1/2,
@@ -1034,8 +1034,7 @@ virtual Xbox 360 pads offer `FF_RUMBLE` with 16 effects; a thread per pad answer
 `Rumble` packet (kind 23) to the native client, which plays it with `SDL_RumbleGamepad`. Tests: a
 virtual SDL gamepad (`SDL_AttachVirtualJoystick`) presses, pulls a trigger, is rumbled and
 unplugged; in CI a uinput pad gets a rumble effect uploaded through `EVIOCSFF` and played, as a
-game does; the fake host's rumble reaches the pads. Open: gyro and touchpad (they need a virtual
-DualSense on the host, through uhid, as inputtino does), rumble in the web viewer
+game does; the fake host's rumble reaches the pads. Open: rumble in the web viewer
 (`vibrationActuator`).
 
 D9, SDL3 in the AppImage (2026-10-12): the release builds SDL 3.4.18 itself
@@ -1043,7 +1042,24 @@ D9, SDL3 in the AppImage (2026-10-12): the release builds SDL 3.4.18 itself
 libudev loaded at runtime, so it needs nothing beyond glibc; 3 MB) and puts it in the AppImage's
 `usr/lib`. The client loads the copy in `../lib` beside itself first, then the system's, so the
 AppImage has SDL's database and rumble on Ubuntu too and the same SDL everywhere. The minimal build
-passes the virtual-pad test (`crates/input/tests/sdl.rs`).
+passes the virtual-pad test (`crates/input/tests/sdl.rs`); CI builds it too and runs the SDL tests
+against it (`FERNSICHT_REQUIRE_SDL`).
+
+D9, gyro and touchpad (2026-10-12): a PlayStation pad (SDL's `SDL_GAMEPAD_TYPE_PS4`/`PS5`) is
+announced with a new input event, `PadModel` (8); its sensors go as `PadMotion` (9: gyro in
+1/16 °/s, acceleration in 1/8192 g, SDL's axes, at most every 4 ms, an unsent reading replaced by
+the newer) and its touchpad as `PadTouch` (10: two fingers, 0..65535), its click as the button
+`BTN_TOUCH`. The host makes a DualSense of it through `/dev/uhid` (`fernsicht_input::uhid`, the
+reports in `fernsicht_input::dualsense`, after the kernel's `hid-playstation.c`, SDL's
+`SDL_hidapi_ps5.c` and inputtino): USB report descriptor, the calibration, pairing and firmware
+feature reports the driver asks for at probe (the calibration chosen so that raw values are the
+protocol's units, which the kernel and SDL both accept), the 64-byte input report per change, and
+rumble from the output report's motor bytes. Without uhid it stays an Xbox pad. Tests: the reports
+byte by byte against the kernel's layout, the calibration through the kernel's and SDL's formulas;
+a virtual PS5 pad in SDL sends motion, touch and click; in CI the DualSense is bound by the real
+hid-playstation, read back through its gamepad, motion and touchpad devices, and rumbled by a game's
+`EVIOCSFF` (`FERNSICHT_REQUIRE_DUALSENSE` where the driver loads). Not done: the adaptive triggers,
+lightbar and player LEDs (the output report carries them; nothing on the client plays them yet).
 
 ## E. Clean code and consistency
 

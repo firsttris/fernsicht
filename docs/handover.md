@@ -281,6 +281,13 @@ Confirmed live (2026-10-10, according to the user):
     when the session started should be on zentrale. The host's log says
     “clipboard shared”.
 
+15. **DualSense (D9).** Built, tested against a virtual SDL pad and (in
+    CI) the kernel's hid-playstation, never played live. With a PS4 or
+    PS5 pad on the client: the host's log says “gamepad 1 connected
+    (DualSense)”, Steam on the host shows a DualSense, and a game with
+    gyro aiming or touchpad controls (or `evtest` on “Fernsicht DualSense
+    pad 1 Motion Sensors”) follows the pad's movements.
+
 ## Open tasks, by importance
 
 The findings of the code review (bugs, security, performance, clean-up) are listed with

@@ -15,6 +15,11 @@
 //! The window is not SDL's, so SDL has to be told to deliver pad events
 //! without focus (`SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS`); the
 //! client itself decides whether its window has focus.
+//!
+//! A PlayStation pad (DualShock 4, DualSense) is announced as
+//! [`PadModel::DualSense`], and its motion sensors (in the protocol's
+//! units, at most every [`MOTION_EVERY`]), touchpad and touchpad click go
+//! along: the host makes a DualSense of it.
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -23,7 +28,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use fernsicht_proto::{InputEvent, MAX_PADS, PadAxis};
+use fernsicht_proto::{
+    BTN_PAD_TOUCHPAD, InputEvent, MAX_PADS, MAX_TOUCH_FINGERS, PadAxis, PadModel, PadSensor,
+};
 
 pub use crate::Rumble;
 
@@ -42,6 +49,19 @@ const HINT_BACKGROUND: &CStr = c"SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS";
 const BUTTONS: std::ops::Range<c_int> = 0..15;
 /// `SDL_GAMEPAD_AXIS_LEFTX` .. `SDL_GAMEPAD_AXIS_RIGHT_TRIGGER`.
 const AXES: std::ops::Range<c_int> = 0..6;
+/// `SDL_GAMEPAD_BUTTON_TOUCHPAD`.
+const BUTTON_TOUCHPAD: c_int = 20;
+/// `SDL_GAMEPAD_TYPE_PS4`, `SDL_GAMEPAD_TYPE_PS5`.
+const TYPE_PS4: c_int = 5;
+const TYPE_PS5: c_int = 6;
+/// `SDL_SENSOR_ACCEL`, `SDL_SENSOR_GYRO` (SDL_sensor.h).
+const SENSOR_ACCEL: c_int = 1;
+const SENSOR_GYRO: c_int = 2;
+/// `SDL_STANDARD_GRAVITY`, m/s².
+const GRAVITY: f32 = 9.80665;
+/// Sensors read up to 1000 times a second; the host gets a reading at most
+/// this often (the DualSense's own Bluetooth rate).
+pub const MOTION_EVERY: Duration = Duration::from_millis(4);
 
 const BTN_EAST: u16 = 0x131;
 const BTN_TL: u16 = 0x136;
@@ -88,6 +108,31 @@ pub fn axis_code(axis: c_int) -> Option<u16> {
     })
 }
 
+/// What a pad of SDL's `SDL_GamepadType` becomes on the host.
+pub fn model_of(kind: c_int) -> PadModel {
+    match kind {
+        TYPE_PS4 | TYPE_PS5 => PadModel::DualSense,
+        _ => PadModel::Xbox360,
+    }
+}
+
+/// An SDL sensor reading in the protocol's units: rad/s to 1/16 °/s, m/s²
+/// to 1/8192 g (the axes are the same: SDL's PS5 driver passes the pad's
+/// own through, `SDL_hidapi_ps5.c`).
+pub fn motion_units(sensor: PadSensor, data: [f32; 3]) -> [i16; 3] {
+    let scale = match sensor {
+        PadSensor::Gyro => 16.0 * 180.0 / std::f32::consts::PI,
+        PadSensor::Accel => 8192.0 / GRAVITY,
+    };
+    // `as` saturates: beyond ±2048 °/s or ±4 g is the end of the range.
+    data.map(|v| (v * scale).round() as i16)
+}
+
+/// A touchpad position (0..=1) in the protocol's 0..=65535.
+pub fn touch_units(v: f32) -> u16 {
+    (v.clamp(0.0, 1.0) * 65535.0).round() as u16
+}
+
 /// How SDL's values read: sticks −32768..32767, triggers 0..32767.
 pub fn mapping() -> Mapping {
     let stick = |axis| AxisMap {
@@ -131,6 +176,19 @@ struct Api {
     button: unsafe extern "C" fn(GamepadPtr, c_int) -> bool,
     axis: unsafe extern "C" fn(GamepadPtr, c_int) -> i16,
     rumble: unsafe extern "C" fn(GamepadPtr, u16, u16, u32) -> bool,
+    kind: unsafe extern "C" fn(GamepadPtr) -> c_int,
+    has_sensor: unsafe extern "C" fn(GamepadPtr, c_int) -> bool,
+    enable_sensor: unsafe extern "C" fn(GamepadPtr, c_int, bool) -> bool,
+    sensor_data: unsafe extern "C" fn(GamepadPtr, c_int, *mut f32, c_int) -> bool,
+    finger: unsafe extern "C" fn(
+        GamepadPtr,
+        c_int,
+        c_int,
+        *mut bool,
+        *mut f32,
+        *mut f32,
+        *mut f32,
+    ) -> bool,
     wait_event: unsafe extern "C" fn(*mut Event, i32) -> bool,
     push_event: unsafe extern "C" fn(*mut Event) -> bool,
     free: unsafe extern "C" fn(*mut c_void),
@@ -211,6 +269,11 @@ fn api() -> Result<&'static Api, String> {
                 button: sym!(b"SDL_GetGamepadButton\0"),
                 axis: sym!(b"SDL_GetGamepadAxis\0"),
                 rumble: sym!(b"SDL_RumbleGamepad\0"),
+                kind: sym!(b"SDL_GetGamepadType\0"),
+                has_sensor: sym!(b"SDL_GamepadHasSensor\0"),
+                enable_sensor: sym!(b"SDL_SetGamepadSensorEnabled\0"),
+                sensor_data: sym!(b"SDL_GetGamepadSensorData\0"),
+                finger: sym!(b"SDL_GetGamepadTouchpadFinger\0"),
                 wait_event: sym!(b"SDL_WaitEventTimeout\0"),
                 push_event: sym!(b"SDL_PushEvent\0"),
                 free: sym!(b"SDL_free\0"),
@@ -247,6 +310,37 @@ struct OpenPad {
     handle: GamepadPtr,
     slot: u8,
     state: PadState,
+    model: PadModel,
+    /// What went to the host last: the sensors' readings, when, the
+    /// fingers, the touchpad's click.
+    motion: [Option<[i16; 3]>; 2],
+    motion_at: Option<Instant>,
+    fingers: [Option<(u16, u16)>; MAX_TOUCH_FINGERS as usize],
+    click: bool,
+}
+
+impl OpenPad {
+    /// The pad's touchpad and its click let go.
+    fn lift(&mut self, sink: &mut impl FnMut(InputEvent)) {
+        for (finger, f) in self.fingers.iter_mut().enumerate() {
+            if f.take().is_some() {
+                sink(InputEvent::PadTouch {
+                    pad: self.slot,
+                    finger: finger as u8,
+                    down: false,
+                    x: 0,
+                    y: 0,
+                });
+            }
+        }
+        if std::mem::take(&mut self.click) {
+            sink(InputEvent::PadButton {
+                pad: self.slot,
+                code: BTN_PAD_TOUCHPAD,
+                pressed: false,
+            });
+        }
+    }
 }
 
 /// The SDL thread's state: SDL is initialised (and quit on drop).
@@ -294,6 +388,7 @@ impl Session {
             if !here {
                 log::info!("gamepad {} unplugged", p.slot + 1);
                 p.state.release(p.slot).into_iter().for_each(&mut *sink);
+                p.lift(sink);
                 // SAFETY: opened by us, closed once.
                 unsafe { (api.close)(p.handle) };
             }
@@ -329,12 +424,31 @@ impl Session {
                 unsafe { (api.close)(handle) };
                 continue;
             }
-            log::info!("gamepad {} (SDL): {name}", slot + 1);
+            // SAFETY: an open gamepad.
+            let model = model_of(unsafe { (api.kind)(handle) });
+            if model == PadModel::DualSense {
+                for s in [SENSOR_GYRO, SENSOR_ACCEL] {
+                    // SAFETY: an open gamepad.
+                    unsafe {
+                        if (api.has_sensor)(handle, s) {
+                            (api.enable_sensor)(handle, s, true);
+                        }
+                    }
+                }
+            }
+            log::info!("gamepad {} (SDL): {name}, {model:?} on the host", slot + 1);
+            // Before its first other event: the host makes the device.
+            sink(InputEvent::PadModel { pad: slot, model });
             pads.push(OpenPad {
                 id,
                 handle,
                 slot,
                 state: PadState::default(),
+                model,
+                motion: [None; 2],
+                motion_at: None,
+                fingers: [None; MAX_TOUCH_FINGERS as usize],
+                click: false,
             });
         }
     }
@@ -356,6 +470,9 @@ impl Session {
                 p.state
                     .translate(&self.map, p.slot, EV_ABS, code, i32::from(v), &mut *sink);
             }
+            if p.model == PadModel::DualSense {
+                read_dualsense(self.api, p, sink);
+            }
         }
     }
 
@@ -363,6 +480,78 @@ impl Session {
         if let Some(p) = self.pads.iter().find(|p| p.slot == r.pad) {
             // SAFETY: an open gamepad.
             unsafe { (self.api.rumble)(p.handle, r.low, r.high, r.ms) };
+        }
+    }
+}
+
+/// A PlayStation pad's touchpad, its click and (at most every
+/// [`MOTION_EVERY`]) its sensors, as far as they changed.
+fn read_dualsense(api: &Api, p: &mut OpenPad, sink: &mut impl FnMut(InputEvent)) {
+    // SAFETY: an open gamepad.
+    let click = unsafe { (api.button)(p.handle, BUTTON_TOUCHPAD) };
+    if click != p.click {
+        p.click = click;
+        sink(InputEvent::PadButton {
+            pad: p.slot,
+            code: BTN_PAD_TOUCHPAD,
+            pressed: click,
+        });
+    }
+    for (finger, last) in p.fingers.iter_mut().enumerate() {
+        let (mut down, mut x, mut y, mut pressure) = (false, 0.0, 0.0, 0.0);
+        // SAFETY: an open gamepad and four places to write to; false for
+        // a pad without touchpad.
+        let ok = unsafe {
+            (api.finger)(
+                p.handle,
+                0,
+                finger as c_int,
+                &mut down,
+                &mut x,
+                &mut y,
+                &mut pressure,
+            )
+        };
+        let now = (ok && down).then(|| (touch_units(x), touch_units(y)));
+        if now != *last {
+            *last = now;
+            let (x, y) = now.unwrap_or_default();
+            sink(InputEvent::PadTouch {
+                pad: p.slot,
+                finger: finger as u8,
+                down: now.is_some(),
+                x,
+                y,
+            });
+        }
+    }
+    if p.motion_at.is_some_and(|t| t.elapsed() < MOTION_EVERY) {
+        return;
+    }
+    p.motion_at = Some(Instant::now());
+    for (i, (sensor, kind)) in [
+        (PadSensor::Gyro, SENSOR_GYRO),
+        (PadSensor::Accel, SENSOR_ACCEL),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut data = [0f32; 3];
+        // SAFETY: an open gamepad, three floats to fill.
+        if !unsafe { (api.sensor_data)(p.handle, kind, data.as_mut_ptr(), 3) } {
+            continue;
+        }
+        let v = motion_units(sensor, data);
+        if p.motion[i] != Some(v) {
+            p.motion[i] = Some(v);
+            let [x, y, z] = v;
+            sink(InputEvent::PadMotion {
+                pad: p.slot,
+                sensor,
+                x,
+                y,
+                z,
+            });
         }
     }
 }
@@ -415,6 +604,7 @@ pub(crate) fn run(
     }
     for p in &mut session.pads {
         p.state.release(p.slot).into_iter().for_each(&mut *sink);
+        p.lift(sink);
     }
     Ok(())
 }
@@ -441,6 +631,38 @@ pub(crate) fn rumble_channel() -> (Rumbles, Receiver<Rumble>) {
 mod tests {
     use super::*;
     use crate::gamepad::scale;
+
+    #[test]
+    fn playstation_pads_bring_their_sensors_in_the_protocols_units() {
+        assert_eq!(model_of(TYPE_PS5), PadModel::DualSense);
+        assert_eq!(model_of(TYPE_PS4), PadModel::DualSense);
+        assert_eq!(model_of(2), PadModel::Xbox360, "an Xbox 360 pad");
+        assert_eq!(model_of(7), PadModel::Xbox360, "a Switch Pro pad");
+        // 90 °/s, -1 rad/s; at rest gravity points up (SDL_sensor.h).
+        let quarter = std::f32::consts::FRAC_PI_2;
+        assert_eq!(
+            motion_units(PadSensor::Gyro, [quarter, -1.0, 0.0]),
+            [1440, -917, 0]
+        );
+        assert_eq!(
+            motion_units(PadSensor::Accel, [0.0, GRAVITY, -2.0 * GRAVITY]),
+            [0, 8192, -16384]
+        );
+        assert_eq!(
+            motion_units(PadSensor::Gyro, [1e9, -1e9, f32::NAN]),
+            [i16::MAX, i16::MIN, 0],
+            "saturates"
+        );
+        assert_eq!(
+            [
+                touch_units(0.0),
+                touch_units(0.5),
+                touch_units(1.0),
+                touch_units(2.0)
+            ],
+            [0, 32768, 65535, 65535]
+        );
+    }
 
     #[test]
     fn the_appimages_sdl_comes_first() {

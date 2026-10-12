@@ -45,6 +45,8 @@ pub struct InputQueue {
     /// Gamepad buttons held, and axes away from rest, per pad.
     pad_held: BTreeSet<(u8, u16)>,
     pad_axes: BTreeMap<(u8, PadAxis), i32>,
+    /// Fingers down on a pad's touchpad: (pad, finger).
+    pad_touch: BTreeSet<(u8, u8)>,
     /// What [`Self::due`] hands out, reused: no allocation per send.
     sending: Vec<(u32, InputEvent)>,
 }
@@ -59,6 +61,7 @@ impl Default for InputQueue {
             held: BTreeSet::new(),
             pad_held: BTreeSet::new(),
             pad_axes: BTreeMap::new(),
+            pad_touch: BTreeSet::new(),
             sending: Vec::with_capacity(MAX_INPUT_EVENTS),
         }
     }
@@ -112,6 +115,43 @@ impl InputQueue {
                     return;
                 }
             }
+            // Sensors read hundreds of times a second and only the newest
+            // reading matters: it replaces an unsent one.
+            InputEvent::PadMotion { pad, sensor, .. } => {
+                if let Some(e) = self.entries.iter_mut().rev().find(|e| {
+                    !e.sent
+                        && matches!(e.event, InputEvent::PadMotion { pad: p, sensor: s, .. }
+                            if p == pad && s == sensor)
+                }) {
+                    e.event = event;
+                    return;
+                }
+            }
+            InputEvent::PadTouch {
+                pad, finger, down, ..
+            } => {
+                let was = self.pad_touch.contains(&(pad, finger));
+                if !down && !was {
+                    return;
+                }
+                if down {
+                    self.pad_touch.insert((pad, finger));
+                } else {
+                    self.pad_touch.remove(&(pad, finger));
+                }
+                // A finger moving: an unsent position of it is replaced
+                // (a touch or a lift stays).
+                if down
+                    && was
+                    && let Some(e) = self.entries.back_mut()
+                    && !e.sent
+                    && matches!(e.event, InputEvent::PadTouch { pad: p, finger: f, down: true, .. }
+                        if p == pad && f == finger)
+                {
+                    e.event = event;
+                    return;
+                }
+            }
             _ => {}
         }
         if let Some(back) = self.entries.back_mut() {
@@ -161,8 +201,19 @@ impl InputQueue {
         (!e.sent && moving && !reordered).then_some(i)
     }
 
-    /// Releases every held key and button, and centers the gamepads.
+    /// Releases every held key and button, centers the gamepads and lifts
+    /// fingers off their touchpads.
     pub fn release_all(&mut self) {
+        let fingers: Vec<(u8, u8)> = self.pad_touch.iter().copied().collect();
+        for (pad, finger) in fingers {
+            self.push(InputEvent::PadTouch {
+                pad,
+                finger,
+                down: false,
+                x: 0,
+                y: 0,
+            });
+        }
         let pad_held: Vec<(u8, u16)> = self.pad_held.iter().copied().collect();
         for (pad, code) in pad_held {
             self.push(InputEvent::PadButton {
@@ -502,6 +553,61 @@ mod tests {
             q.due(t0 + RESEND_AFTER * 3).unwrap().len(),
             5,
             "at rest already"
+        );
+    }
+
+    #[test]
+    fn motion_keeps_the_newest_reading_and_fingers_are_lifted() {
+        use fernsicht_proto::PadSensor;
+        let mut q = InputQueue::default();
+        let t0 = Instant::now();
+        let gyro = |x| InputEvent::PadMotion {
+            pad: 0,
+            sensor: PadSensor::Gyro,
+            x,
+            y: 0,
+            z: 0,
+        };
+        let accel = InputEvent::PadMotion {
+            pad: 0,
+            sensor: PadSensor::Accel,
+            x: 0,
+            y: 8192,
+            z: 0,
+        };
+        let touch = |down, x| InputEvent::PadTouch {
+            pad: 0,
+            finger: 1,
+            down,
+            x,
+            y: 0,
+        };
+        q.push(gyro(1));
+        q.push(accel);
+        q.push(gyro(2));
+        q.push(touch(true, 10));
+        q.push(touch(true, 20));
+        assert_eq!(
+            q.due(t0).unwrap(),
+            vec![(1, gyro(2)), (2, accel), (3, touch(true, 20))],
+            "one reading per sensor, the finger where it is now"
+        );
+        // Sent readings stay; a new one goes after them.
+        q.push(gyro(3));
+        q.push(touch(false, 0));
+        q.push(touch(false, 0));
+        q.push(touch(true, 5));
+        q.release_all();
+        let events: Vec<InputEvent> = q
+            .due(t0 + RESEND_AFTER)
+            .unwrap()
+            .iter()
+            .map(|&(_, e)| e)
+            .collect();
+        assert_eq!(
+            &events[3..],
+            [gyro(3), touch(false, 0), touch(true, 5), touch(false, 0)],
+            "a lift once, and the finger lifted with the rest"
         );
     }
 }

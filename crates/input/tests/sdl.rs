@@ -1,6 +1,7 @@
 //! Gamepads through SDL3 against a virtual SDL gamepad: its buttons and
-//! triggers arrive as protocol events, and a rumble reaches it. Skips
-//! where SDL3 is not installed (`FERNSICHT_REQUIRE_SDL` makes it fail).
+//! triggers arrive as protocol events, and a rumble reaches it; a virtual
+//! PlayStation pad's sensors and touchpad arrive too. Skips where SDL3 is
+//! not installed (`FERNSICHT_REQUIRE_SDL` makes it fail).
 #![cfg(feature = "gamepad")]
 
 use std::ffi::{c_char, c_int, c_void};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use fernsicht_input::InputEvent;
 use fernsicht_input::gamepad::Gamepads;
 use fernsicht_input::sdl::Rumble;
-use fernsicht_proto::PadAxis;
+use fernsicht_proto::{BTN_PAD_TOUCHPAD, PadAxis, PadModel, PadSensor};
 
 /// `SDL_VirtualJoystickDesc` (SDL_joystick.h, SDL 3.2).
 #[repr(C)]
@@ -44,8 +45,24 @@ struct VirtualDesc {
     cleanup: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// `SDL_VirtualJoystickTouchpadDesc`, `SDL_VirtualJoystickSensorDesc`.
+#[repr(C)]
+struct TouchpadDesc {
+    nfingers: u16,
+    padding: [u16; 3],
+}
+
+#[repr(C)]
+struct SensorDesc {
+    kind: c_int,
+    rate: f32,
+}
+
 /// What the virtual pad's motors were last told.
 static RUMBLED: Mutex<Option<(u16, u16)>> = Mutex::new(None);
+
+/// SDL's gamepads are one per process: one test at a time.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 unsafe extern "C" fn rumble(_: *mut c_void, low: u16, high: u16) -> bool {
     *RUMBLED.lock().unwrap() = Some((low, high));
@@ -62,6 +79,8 @@ struct Sdl {
     open: unsafe extern "C" fn(u32) -> *mut c_void,
     set_button: unsafe extern "C" fn(*mut c_void, c_int, bool) -> bool,
     set_axis: unsafe extern "C" fn(*mut c_void, c_int, i16) -> bool,
+    set_touch: unsafe extern "C" fn(*mut c_void, c_int, c_int, bool, f32, f32, f32) -> bool,
+    send_sensor: unsafe extern "C" fn(*mut c_void, c_int, u64, *const f32, c_int) -> bool,
     _lib: libloading::Library,
 }
 
@@ -76,6 +95,8 @@ fn sdl() -> Option<Sdl> {
                 open: *lib.get(b"SDL_OpenJoystick\0")?,
                 set_button: *lib.get(b"SDL_SetJoystickVirtualButton\0")?,
                 set_axis: *lib.get(b"SDL_SetJoystickVirtualAxis\0")?,
+                set_touch: *lib.get(b"SDL_SetJoystickVirtualTouchpad\0")?,
+                send_sensor: *lib.get(b"SDL_SendJoystickVirtualSensorData\0")?,
                 _lib: lib,
             })
         })
@@ -111,6 +132,7 @@ fn wait_for<T>(
 #[test]
 fn a_virtual_sdl_pad_plays_and_rumbles() {
     let Some(sdl) = sdl() else { return };
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (tx, rx) = channel();
     let pads = Gamepads::start("/dev/input".into(), true, move |e| {
         let _ = tx.send(e);
@@ -201,4 +223,142 @@ fn a_virtual_sdl_pad_plays_and_rumbles() {
         });
         assert!(released.is_some(), "an unplugged pad keeps its button");
     }
+}
+
+#[test]
+fn a_virtual_playstation_pad_sends_motion_and_touch() {
+    let Some(sdl) = sdl() else { return };
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (tx, rx) = channel();
+    let pads = Gamepads::start("/dev/input".into(), true, move |e| {
+        let _ = tx.send(e);
+    })
+    .unwrap();
+    let touchpads = [TouchpadDesc {
+        nfingers: 2,
+        padding: [0; 3],
+    }];
+    // SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO.
+    let sensors = [
+        SensorDesc {
+            kind: 1,
+            rate: 250.0,
+        },
+        SensorDesc {
+            kind: 2,
+            rate: 250.0,
+        },
+    ];
+    // Sony's ids: SDL takes it for a DualSense (SDL_GAMEPAD_TYPE_PS5).
+    let desc = VirtualDesc {
+        version: std::mem::size_of::<VirtualDesc>() as u32,
+        kind: SDL_JOYSTICK_TYPE_GAMEPAD,
+        padding: 0,
+        vendor_id: 0x054c,
+        product_id: 0x0ce6,
+        naxes: 6,
+        nbuttons: 21,
+        nballs: 0,
+        nhats: 0,
+        ntouchpads: 1,
+        nsensors: 2,
+        padding2: [0; 2],
+        button_mask: (1 << 21) - 1,
+        axis_mask: (1 << 6) - 1,
+        name: c"SDL test DualSense".as_ptr(),
+        touchpads: touchpads.as_ptr().cast(),
+        sensors: sensors.as_ptr().cast(),
+        userdata: std::ptr::null_mut(),
+        update: None,
+        set_player_index: None,
+        rumble: None,
+        rumble_triggers: None,
+        set_led: None,
+        send_effect: None,
+        set_sensors_enabled: None,
+        cleanup: None,
+    };
+    // SAFETY: as above; the touchpad and sensor lists outlive the call.
+    unsafe {
+        assert!((sdl.init_sub)(SDL_INIT_JOYSTICK));
+        let id = (sdl.attach)(&desc);
+        assert_ne!(id, 0, "virtual pad not attached");
+        let js = (sdl.open)(id);
+        assert!(!js.is_null());
+        let pad = wait_for(&rx, |e| match *e {
+            InputEvent::PadModel {
+                pad,
+                model: PadModel::DualSense,
+            } => Some(pad),
+            _ => None,
+        })
+        .expect("never announced as a DualSense");
+        // 90 °/s about x; gravity up. Sent until the reader (which turns
+        // the sensors on when it opens the pad) passes them on.
+        let gyro = [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+        let accel = [0.0, 9.80665, 0.0];
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (mut turned, mut lying) = (false, false);
+        let mut t = 0u64;
+        while !(turned && lying) && Instant::now() < deadline {
+            t += 4_000_000;
+            (sdl.send_sensor)(js, 2, t, gyro.as_ptr(), 3);
+            (sdl.send_sensor)(js, 1, t, accel.as_ptr(), 3);
+            while let Ok(e) = rx.recv_timeout(Duration::from_millis(10)) {
+                match e {
+                    InputEvent::PadMotion {
+                        pad: p,
+                        sensor: PadSensor::Gyro,
+                        x: 1440,
+                        y: 0,
+                        z: 0,
+                    } if p == pad => turned = true,
+                    InputEvent::PadMotion {
+                        pad: p,
+                        sensor: PadSensor::Accel,
+                        x: 0,
+                        y: 8192,
+                        z: 0,
+                    } if p == pad => lying = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(turned && lying, "motion: gyro {turned}, accel {lying}");
+        (sdl.set_touch)(js, 0, 1, true, 1.0, 0.5, 1.0);
+        let touch = wait_for(&rx, |e| match *e {
+            InputEvent::PadTouch {
+                pad: p,
+                finger: 1,
+                down: true,
+                x,
+                y,
+            } if p == pad => Some((x, y)),
+            _ => None,
+        });
+        assert_eq!(touch, Some((65535, 32768)));
+        (sdl.set_button)(js, 20, true);
+        let click = wait_for(&rx, |e| match *e {
+            InputEvent::PadButton {
+                pad: p,
+                code: BTN_PAD_TOUCHPAD,
+                pressed: true,
+            } if p == pad => Some(()),
+            _ => None,
+        });
+        assert!(click.is_some(), "the touchpad click");
+        // Unplugged: the finger lifts.
+        (sdl.detach)(id);
+        let lifted = wait_for(&rx, |e| match *e {
+            InputEvent::PadTouch {
+                pad: p,
+                finger: 1,
+                down: false,
+                ..
+            } if p == pad => Some(()),
+            _ => None,
+        });
+        assert!(lifted.is_some(), "an unplugged pad keeps its finger down");
+    }
+    drop(pads);
 }

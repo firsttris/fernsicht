@@ -24,7 +24,7 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 | Hello (5) / HelloAck (6) | client → host / back | the session request (size, fps, bitrate, the codecs the client decodes and which of them in 10 bit, whether it wants intra refresh) and the answer (session ID, size, fps, codec, whether the stream refreshes) |
 | Bye (7) | both | the session ends |
 | Cursor (8) / CursorShape (9) | host → client | pointer position and visibility per frame, and the image's hotspot once the host learnt it (where input put the pointer against where its image appears: KMS does not tell); the pointer image in 1 KiB pieces when it changes |
-| Input (10) / InputAck (11) | client → host / back | mouse, keyboard and gamepad events with sequence numbers; the host's acknowledgement |
+| Input (10) / InputAck (11) | client → host / back | mouse, keyboard and gamepad events with sequence numbers (a pad's buttons and axes; its model, so a PlayStation pad becomes a DualSense; its motion sensors in 1/16 °/s and 1/8192 g, and its touchpad); the host's acknowledgement |
 | Audio (12) | host → client | an Opus frame and, again, the frame before it |
 | Handshake (13) | both | a Noise IK handshake message |
 | Sealed (14) | both | any packet above, encrypted and authenticated, with an explicit counter |

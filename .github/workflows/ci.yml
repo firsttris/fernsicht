@@ -113,6 +113,26 @@ jobs:
           echo 'SUBSYSTEM=="input", KERNEL=="event*", MODE="0666"' |
             sudo tee /etc/udev/rules.d/99-fernsicht-test.rules
           sudo udevadm control --reload-rules
+          # A DualSense through uhid needs the kernel's hid-playstation:
+          # required where it loads.
+          sudo modprobe uhid || true
+          if sudo modprobe hid-playstation && [ -e /dev/uhid ]; then
+            sudo chmod 666 /dev/uhid
+            echo "FERNSICHT_REQUIRE_DUALSENSE=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no hid-playstation: the DualSense test skips"
+          fi
+      # SDL3 for the gamepad tests: the build the AppImage carries.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/sdl3
+          key: sdl3-${{ runner.os }}-${{ hashFiles('packaging/sdl3.sh') }}
+      - name: SDL3 (packaging/sdl3.sh)
+        run: |
+          sudo apt-get install -y -q libudev-dev cmake
+          ./packaging/sdl3.sh ~/sdl3
+          echo "LD_LIBRARY_PATH=$HOME/sdl3/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "FERNSICHT_REQUIRE_SDL=1" >> "$GITHUB_ENV"
       # Two desktops for the clipboard tests: headless Sway (wlroots' data
       # control; KWin's is tried by hand), one for the host, one for the
       # client.

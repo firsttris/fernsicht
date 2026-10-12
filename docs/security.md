@@ -63,7 +63,7 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
 ## The host
 
 - The host service runs as root, because KMS capture needs `CAP_SYS_ADMIN` and input injection needs
-  `/dev/uinput`. Its unit keeps only the capabilities it uses (`CAP_SYS_ADMIN`, `CAP_DAC_OVERRIDE`,
+  `/dev/uinput` (and `/dev/uhid` for DualSense pads). Its unit keeps only the capabilities it uses (`CAP_SYS_ADMIN`, `CAP_DAC_OVERRIDE`,
   `CAP_DAC_READ_SEARCH`, `CAP_SYS_NICE`, `CAP_NET_ADMIN`), mounts the system read-only except its
   state and runtime directories, and forbids loading kernel modules, new privileges, namespaces and
   set-uid files (`packaging/fernsicht-host-agent.service`). A small privileged helper for capture only

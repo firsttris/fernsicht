@@ -5,11 +5,15 @@
 //! - [`Dedup`] (host): applies each sequence number once.
 //! - [`uinput`] (feature `uinput`, host): virtual keyboard and mice at
 //!   kernel level; works under every compositor and on the login screen.
+//!   Gamepads become Xbox 360 pads there, or DualSense pads through
+//!   [`uhid`] (reports in [`dualsense`]) for clients with motion sensors.
 //! - [`gamepad`] (feature `gamepad`, client): the machine's gamepads,
 //!   through SDL3 ([`sdl`]: its controller database, rumble) where it
 //!   loads, else read from evdev.
 //! - [`Recorder`]: a sink that only records, for tests.
 
+#[cfg(feature = "uinput")]
+pub mod dualsense;
 #[cfg(feature = "uinput")]
 pub mod ff;
 #[cfg(feature = "gamepad")]
@@ -17,6 +21,8 @@ pub mod gamepad;
 mod queue;
 #[cfg(feature = "gamepad")]
 pub mod sdl;
+#[cfg(feature = "uinput")]
+pub mod uhid;
 #[cfg(feature = "uinput")]
 pub mod uinput;
 

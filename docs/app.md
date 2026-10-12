@@ -139,6 +139,11 @@ button on any of them. When a game on the host rumbles its pad, the client's pad
 only). Without SDL3 the client reads the pads from the kernel (evdev) as before, without rumble;
 the log says which (“gamepads through SDL”).
 
+A PlayStation pad (DualShock 4 or DualSense) becomes a DualSense on the host instead (“Fernsicht
+DualSense pad 1”), with its motion sensors, touchpad and touchpad click, so games with gyro aiming
+or touchpad controls get them; rumble works the same. That takes `/dev/uhid` on the host, which the
+host service has; a host without it makes an Xbox pad as before (its log says so).
+
 ## Settings
 
 ![Settings](screenshot-settings.png)

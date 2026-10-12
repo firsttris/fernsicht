@@ -9,7 +9,10 @@
 //! - per client gamepad, created when it is first used: an Xbox 360 pad
 //!   (its USB ids and the `xpad` driver's layout), which Steam, SDL and
 //!   games know without configuration, with its rumble motors
-//!   ([`crate::ff`]: what games play goes to the client).
+//!   ([`crate::ff`]: what games play goes to the client); or, when the
+//!   client says the pad is a PlayStation pad ([`PadModel::DualSense`]), a
+//!   DualSense through `/dev/uhid` ([`crate::uhid`]), with motion sensors
+//!   and touchpad. Without uhid it stays an Xbox pad.
 //!
 //! Compositors spread an absolute pointer over the whole desktop (all
 //! monitors). Positions arrive relative to the streamed monitor, so they
@@ -26,8 +29,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use fernsicht_proto::{BTN_MOUSE_FIRST, BTN_MOUSE_LAST, InputEvent, KEY_MAX, MAX_PADS, PadAxis};
+use fernsicht_proto::{
+    BTN_MOUSE_FIRST, BTN_MOUSE_LAST, InputEvent, KEY_MAX, MAX_PADS, PadAxis, PadModel,
+};
 
+use crate::uhid::DualSense;
 use crate::{InputSink, RumbleOut, ff};
 
 // linux/input-event-codes.h
@@ -304,12 +310,31 @@ pub struct Uinput {
     /// Keys and buttons down, and the pointer a button went down on.
     held: BTreeMap<u16, Pointer>,
     area: AbsArea,
-    pads: Vec<Option<Device>>,
+    /// Where DualSense pads are made.
+    uhid: PathBuf,
+    /// What each pad is to become, as the client said.
+    models: [PadModel; MAX_PADS as usize],
+    pads: Vec<Option<Pad>>,
     pad_held: BTreeSet<(u8, u16)>,
     pad_axes: BTreeMap<(u8, PadAxis), i32>,
     /// Where the pads' rumble goes, and the threads taking it.
     rumble: Option<RumbleOut>,
     feedback: Vec<ff::Feedback>,
+}
+
+/// A client's gamepad on the host.
+enum Pad {
+    Xbox(Device),
+    DualSense(DualSense),
+}
+
+impl Pad {
+    fn model(&self) -> PadModel {
+        match self {
+            Pad::Xbox(_) => PadModel::Xbox360,
+            Pad::DualSense(_) => PadModel::DualSense,
+        }
+    }
 }
 
 /// A virtual Xbox 360 pad.
@@ -388,6 +413,11 @@ impl Uinput {
     }
 
     pub fn open_at(path: &Path, area: AbsArea) -> Result<Self, String> {
+        Self::open_with(path, Path::new("/dev/uhid"), area)
+    }
+
+    /// With DualSense pads made at `uhid`.
+    pub fn open_with(path: &Path, uhid: &Path, area: AbsArea) -> Result<Self, String> {
         let keyboard = Device::create(
             path,
             "Fernsicht keyboard",
@@ -426,6 +456,8 @@ impl Uinput {
             pointer: Pointer::Absolute,
             held: BTreeMap::new(),
             area,
+            uhid: uhid.to_owned(),
+            models: [PadModel::Xbox360; MAX_PADS as usize],
             pads: (0..MAX_PADS).map(|_| None).collect(),
             pad_held: BTreeSet::new(),
             pad_axes: BTreeMap::new(),
@@ -434,28 +466,59 @@ impl Uinput {
         })
     }
 
-    /// Gamepad `n`, created on first use.
-    fn pad(&mut self, n: u8) -> Result<&mut Device, String> {
-        let slot = self
-            .pads
-            .get_mut(usize::from(n))
+    /// Gamepad `n`, created on first use as the model the client named.
+    fn pad(&mut self, n: u8) -> Result<&mut Pad, String> {
+        let model = *self
+            .models
+            .get(usize::from(n))
             .ok_or_else(|| format!("no gamepad {n}"))?;
+        let slot = &mut self.pads[usize::from(n)];
         if slot.is_none() {
-            let pad = create_pad(&self.path, n)?;
-            if let Some(out) = &self.rumble {
-                match pad
-                    .file
-                    .try_clone()
-                    .and_then(|f| ff::Feedback::start(f, n, out.clone()))
-                {
-                    Ok(f) => self.feedback.push(f),
-                    Err(e) => log::warn!("gamepad {}: no rumble: {e}", n + 1),
+            let dualsense = (model == PadModel::DualSense)
+                .then(|| DualSense::create(&self.uhid, n, self.rumble.clone()))
+                .and_then(|made| {
+                    made.map_err(|e| {
+                        log::warn!("gamepad {}: no DualSense ({e}); an Xbox pad", n + 1)
+                    })
+                    .ok()
+                });
+            let pad = match dualsense {
+                Some(d) => Pad::DualSense(d),
+                None => {
+                    let pad = create_pad(&self.path, n)?;
+                    if let Some(out) = &self.rumble {
+                        match pad
+                            .file
+                            .try_clone()
+                            .and_then(|f| ff::Feedback::start(f, n, out.clone()))
+                        {
+                            Ok(f) => self.feedback.push(f),
+                            Err(e) => log::warn!("gamepad {}: no rumble: {e}", n + 1),
+                        }
+                    }
+                    Pad::Xbox(pad)
                 }
-            }
+            };
+            log::info!("gamepad {} connected ({:?})", n + 1, pad.model());
             *slot = Some(pad);
-            log::info!("gamepad {} connected", n + 1);
         }
         Ok(slot.as_mut().expect("just created"))
+    }
+
+    /// The client says what pad `n` is; a pad made as another model goes
+    /// (it is made anew on its next event).
+    fn set_model(&mut self, n: u8, model: PadModel) {
+        let Some(m) = self.models.get_mut(usize::from(n)) else {
+            return;
+        };
+        *m = model;
+        if let Some(slot) = self.pads.get_mut(usize::from(n))
+            && slot.as_ref().is_some_and(|p| p.model() != model)
+        {
+            *slot = None;
+            self.pad_held.retain(|&(p, _)| p != n);
+            self.pad_axes.retain(|&(p, _), _| p != n);
+        }
     }
 }
 
@@ -547,6 +610,10 @@ fn translate(event: &InputEvent, area: &AbsArea) -> (Target, Events) {
             Target::Pad(pad),
             Events::of(&[(EV_ABS, axis as u16, value)]),
         ),
+        // Only a DualSense has these; an Xbox pad leaves them out.
+        InputEvent::PadModel { pad, .. }
+        | InputEvent::PadMotion { pad, .. }
+        | InputEvent::PadTouch { pad, .. } => (Target::Pad(pad), Events::default()),
     }
 }
 
@@ -574,6 +641,10 @@ impl InputSink for Uinput {
     }
 
     fn inject(&mut self, event: &InputEvent) -> Result<(), String> {
+        if let InputEvent::PadModel { pad, model } = *event {
+            self.set_model(pad, model);
+            return Ok(());
+        }
         // Where a button event goes (scrolling goes to the last moved one).
         let mut pointer = self.pointer;
         match *event {
@@ -601,6 +672,12 @@ impl InputSink for Uinput {
             _ => {}
         }
         let (target, events) = translate(event, &self.area);
+        if let Target::Pad(n) = target
+            && self.models.get(usize::from(n)) == Some(&PadModel::DualSense)
+            && let Pad::DualSense(d) = self.pad(n)?
+        {
+            return d.apply(event);
+        }
         if events.len == 0 {
             return Ok(());
         }
@@ -618,7 +695,10 @@ impl InputSink for Uinput {
                 Pointer::Absolute => &mut self.absolute,
                 Pointer::Relative => &mut self.relative,
             },
-            Target::Pad(n) => self.pad(n)?,
+            Target::Pad(n) => match self.pad(n)? {
+                Pad::Xbox(d) => d,
+                Pad::DualSense(d) => return d.apply(event),
+            },
         };
         device.emit(events.as_slice())
     }
@@ -643,10 +723,17 @@ impl InputSink for Uinput {
             .into_keys()
             .map(|(pad, axis)| (pad, (EV_ABS, axis as u16, 0)));
         for (pad, event) in buttons.chain(axes).collect::<Vec<_>>() {
-            if let Some(Some(d)) = self.pads.get_mut(usize::from(pad))
+            if let Some(Some(Pad::Xbox(d))) = self.pads.get_mut(usize::from(pad))
                 && let Err(e) = d.emit(&[event])
             {
                 log::warn!("releasing gamepad {}: {e}", pad + 1);
+            }
+        }
+        for (n, pad) in self.pads.iter_mut().enumerate() {
+            if let Some(Pad::DualSense(d)) = pad
+                && let Err(e) = d.release()
+            {
+                log::warn!("releasing gamepad {}: {e}", n + 1);
             }
         }
     }
