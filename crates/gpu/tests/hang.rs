@@ -99,12 +99,23 @@ fn a_gpu_that_stops_finishing_work_is_given_up_not_waited_for() {
     // SAFETY: as above.
     let again = unsafe { submit_timeline(&gpu, &[cmd], None, None, None, fence) };
     assert_eq!(again.unwrap_err(), GIVEN_UP);
-    // Dropping the device leaves it to the process's end instead of
-    // waiting for the stuck work.
-    drop(gpu);
     assert!(
         t.elapsed() < Duration::from_millis(500),
         "waited {:?}",
         t.elapsed()
     );
+
+    // The test's own hang is ended, so nothing stuck is left on a real
+    // GPU: NVIDIA's driver waited for it when the process exited.
+    // SAFETY: our semaphore; value 1 is what the work waits for.
+    unsafe {
+        gpu.device
+            .signal_semaphore(&vk::SemaphoreSignalInfo::default().semaphore(sem).value(1))
+            .unwrap();
+        gpu.device
+            .wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64)
+            .unwrap();
+    }
+    // A GPU given up is left to the process's end, not waited for.
+    drop(gpu);
 }
