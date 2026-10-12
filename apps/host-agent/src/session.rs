@@ -19,6 +19,10 @@ use crate::health::RepeatedError;
 use crate::link::Link;
 use crate::shared::{HostStats, Shared};
 
+/// How long a session's threads get to stop (each looks at `running` at
+/// least every 100 ms).
+const STOP_WAIT: Duration = Duration::from_secs(3);
+
 pub(crate) struct Session {
     pub(crate) params: SessionParams,
     pub(crate) codec: Codec,
@@ -78,9 +82,9 @@ impl Session {
         }
         self.shared.running.store(false, Ordering::Release);
         self.frame_slot.close();
-        for t in self.threads.drain(..) {
-            let _ = t.join();
-        }
+        // A thread stuck in a driver call is left behind rather than
+        // holding the host (the encoder after a GPU fault).
+        crate::health::join_within(std::mem::take(&mut self.threads), STOP_WAIT);
     }
 }
 

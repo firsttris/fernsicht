@@ -72,6 +72,9 @@ pub(crate) struct Shared {
     /// Where input last put the pointer, 0..65535 on the monitor shown, and
     /// when (packed, see [`Shared::note_pointer`]); `NO_POINTER` before.
     pub(crate) pointer: AtomicU64,
+    /// When the encode thread's current encoder call began (µs, 0: none
+    /// running): the control loop ends a session whose encoder hangs.
+    pub(crate) encoding_since: AtomicU64,
 }
 
 /// [`Shared::pointer`] before any absolute pointer input.

@@ -3,7 +3,7 @@
 //! thread that stopped into the end of its session.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,58 @@ pub fn capture_retry_delay(failures: u32) -> Duration {
     Duration::from_millis((5u64 << failures.min(5)).min(100))
 }
 
+/// How long one call into the encoder (encode, bitrate, a new encoder) may
+/// take before the encoder counts as hung. A frame takes milliseconds and a
+/// new encoder well under a second; after a GPU fault (NVIDIA Xid 13/32)
+/// CUDA and NVENC calls can wait forever instead of failing.
+pub const ENCODER_HANG: Duration = Duration::from_secs(5);
+
+/// Held around a call into the encoder: `since` holds when it began (µs,
+/// [`fernsicht_core::now_us`]), 0 while the encoder is idle.
+pub struct Busy<'a>(&'a AtomicU64);
+
+impl<'a> Busy<'a> {
+    pub fn enter(since: &'a AtomicU64) -> Self {
+        since.store(fernsicht_core::now_us().max(1), Ordering::Release);
+        Self(since)
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::Release);
+    }
+}
+
+/// How long the encoder has been in its current call (zero when idle).
+pub fn busy_for(since_us: u64, now_us: u64) -> Duration {
+    match since_us {
+        0 => Duration::ZERO,
+        t => Duration::from_micros(now_us.saturating_sub(t)),
+    }
+}
+
+/// Joins `threads` that end within `wait`; the ones still running then are
+/// left behind (stuck in a driver call, they would hold the host forever).
+/// How many were left.
+pub fn join_within(threads: Vec<JoinHandle<()>>, wait: Duration) -> usize {
+    let deadline = Instant::now() + wait;
+    while threads.iter().any(|t| !t.is_finished()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (done, stuck): (Vec<_>, Vec<_>) = threads.into_iter().partition(|t| t.is_finished());
+    for t in done {
+        let _ = t.join();
+    }
+    for t in &stuck {
+        log::error!(
+            "thread {} does not stop; left behind",
+            t.thread().name().unwrap_or("?")
+        );
+    }
+    stuck.len()
+}
+
 /// Why the control loop ends a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
@@ -52,15 +104,21 @@ pub enum End {
     Unpaired,
     /// Ended on the host (control socket).
     EndedHere,
+    /// A call into the encoder has not returned for [`ENCODER_HANG`]: the
+    /// GPU is wedged, and the host restarts with a fresh one.
+    EncoderHung,
 }
 
 /// Whether a session has ended, from what the control loop knows of it.
 pub fn session_end(
     web: bool,
     running: bool,
-    silent_for: Duration,
-    timeout: Duration,
+    (silent_for, timeout): (Duration, Duration),
+    encoding_for: Duration,
 ) -> Option<End> {
+    if encoding_for > ENCODER_HANG {
+        return Some(End::EncoderHung);
+    }
     match (web, running) {
         (true, false) => Some(End::BrowserLeft),
         (false, false) => Some(End::StreamStopped),
@@ -77,12 +135,16 @@ impl End {
             End::StreamStopped => "stream stopped",
             End::Unpaired => "its device was unpaired",
             End::EndedHere => "ended on the host",
+            End::EncoderHung => "the encoder stopped responding",
         }
     }
 
     /// Whether the client gets a Bye (it is still there to hear it).
     pub fn tells_the_client(self) -> bool {
-        matches!(self, End::StreamStopped | End::Unpaired | End::EndedHere)
+        matches!(
+            self,
+            End::StreamStopped | End::Unpaired | End::EndedHere | End::EncoderHung
+        )
     }
 }
 
@@ -256,16 +318,72 @@ mod tests {
     #[test]
     fn sessions_end_for_the_right_reason() {
         let t = Duration::from_secs(5);
-        let (quiet, silent) = (Duration::from_secs(1), Duration::from_secs(6));
-        assert_eq!(session_end(false, true, quiet, t), None);
-        assert_eq!(session_end(false, true, silent, t), Some(End::TimedOut));
+        let (quiet, silent) = ((Duration::from_secs(1), t), (Duration::from_secs(6), t));
+        let idle = Duration::ZERO;
+        assert_eq!(session_end(false, true, quiet, idle), None);
+        assert_eq!(session_end(false, true, silent, idle), Some(End::TimedOut));
         assert_eq!(
-            session_end(false, false, quiet, t),
+            session_end(false, false, quiet, idle),
             Some(End::StreamStopped)
         );
-        assert_eq!(session_end(true, false, quiet, t), Some(End::BrowserLeft));
+        assert_eq!(
+            session_end(true, false, quiet, idle),
+            Some(End::BrowserLeft)
+        );
         // A browser's packets never reach our socket: silence is normal.
-        assert_eq!(session_end(true, true, silent, t), None);
+        assert_eq!(session_end(true, true, silent, idle), None);
+        // A slow frame is no hang; an encoder call that never returns ends
+        // native and web sessions alike, and the client hears of it.
+        let slow = Duration::from_millis(500);
+        assert_eq!(session_end(false, true, quiet, slow), None);
+        let hung = ENCODER_HANG + Duration::from_millis(1);
+        for web in [false, true] {
+            assert_eq!(session_end(web, true, quiet, hung), Some(End::EncoderHung));
+        }
+        assert!(End::EncoderHung.tells_the_client());
+    }
+
+    #[test]
+    fn the_encoder_is_busy_only_inside_a_call() {
+        let since = AtomicU64::new(0);
+        assert_eq!(
+            busy_for(since.load(Ordering::Acquire), 10_000_000),
+            Duration::ZERO
+        );
+        {
+            let _busy = Busy::enter(&since);
+            let t = since.load(Ordering::Acquire);
+            assert_ne!(t, 0);
+            assert_eq!(busy_for(t, t + 6_000_000), Duration::from_secs(6));
+            // A clock read before the call began counts as no time.
+            assert_eq!(busy_for(t, t - 1), Duration::ZERO);
+        }
+        assert_eq!(since.load(Ordering::Acquire), 0, "idle again");
+    }
+
+    #[test]
+    fn a_stuck_thread_is_left_behind_not_waited_for() {
+        let release = std::sync::Arc::new(AtomicBool::new(false));
+        let stuck = {
+            let release = release.clone();
+            std::thread::Builder::new()
+                .name("encode".into())
+                .spawn(move || {
+                    while !release.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                })
+                .unwrap()
+        };
+        let quick = std::thread::spawn(|| std::thread::sleep(Duration::from_millis(20)));
+        let started = Instant::now();
+        assert_eq!(
+            join_within(vec![stuck, quick], Duration::from_millis(200)),
+            1
+        );
+        assert!(started.elapsed() < Duration::from_secs(2), "it waited");
+        release.store(true, Ordering::Release);
+        assert_eq!(join_within(Vec::new(), Duration::from_secs(1)), 0);
     }
 
     #[test]

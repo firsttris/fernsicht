@@ -68,6 +68,20 @@ use fernsicht_proto::{MAX_DATAGRAM, Packet};
 
 use session::say_bye;
 
+/// What [`HostAgent::run`] ends with when an encoder call never returned
+/// (a GPU fault): the process should go (without exit handlers, which may
+/// wait on the same driver), and its service manager starts a fresh one.
+#[derive(Debug)]
+pub struct EncoderHung;
+
+impl std::fmt::Display for EncoderHung {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the encoder stopped responding (a GPU fault); the host has to start afresh")
+    }
+}
+
+impl std::error::Error for EncoderHung {}
+
 pub struct HostAgent {
     cfg: HostConfig,
     socket: Arc<UdpSocket>,
@@ -149,8 +163,11 @@ impl HostAgent {
         let control_stop = Arc::new(AtomicBool::new(false));
         let control = self.serve_control(&control_stop)?;
 
-        while !stop.load(Ordering::Relaxed) {
+        while !stop.load(Ordering::Relaxed) && !l.wedged {
             self.end_if_over(&mut l);
+            if l.wedged {
+                break;
+            }
             if let Some(s) = l.session.as_mut()
                 && let Some(c) = s.clipboard.as_mut()
             {
@@ -187,6 +204,9 @@ impl HostAgent {
         if let Some(w) = self.web.take() {
             w.stop.store(true, Ordering::Relaxed);
             let _ = w.thread.join();
+        }
+        if l.wedged {
+            return Err(EncoderHung.into());
         }
         Ok(())
     }

@@ -214,6 +214,14 @@ thread stops and the session fails with `gpu-lost` ("Die Grafikkarte dieses Comp
 mehr"); on the host the encode loop ends, and with it the session. Tested with a hang made on
 purpose (a submission that waits for a semaphore nobody signals), on llvmpipe as on the GPUs.
 
+NVENC and CUDA wait inside the driver, where no timeout of ours reaches. So the host watches the
+encoder from outside: the encode thread notes when each call into the encoder begins (encode, a new
+bitrate, a new encoder; two atomic stores a frame), and when one has not returned after 5 s the
+control loop ends the session (the client gets a Bye) and leaves the stuck thread behind instead of
+waiting for it. The GPU then needs a fresh process, so the host ends too, at once and without exit
+handlers that could wait on the same driver (exit code 1); as a service, systemd starts it again
+3 s later (`Restart=on-failure`). Ending any session waits at most 3 s for its threads now.
+
 ## Recording
 
 `fernsicht-client --record <file>` writes the received bitstream as it arrives: `ffplay file.h264`,

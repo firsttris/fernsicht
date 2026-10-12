@@ -12,7 +12,7 @@ use fernsicht_core::Slot;
 use fernsicht_core::colour::Colour;
 
 use crate::backends::fit;
-use crate::health::RepeatedError;
+use crate::health::{Busy, RepeatedError};
 use crate::shared::{HostStats, Shared};
 
 /// Makes an encoder for another stream size or screen colour (at a
@@ -52,7 +52,11 @@ pub(crate) fn encode_loop(
         // colour. The new encoder starts with a keyframe that carries both.
         let wanted = (fit((frame.width, frame.height), bounds), frame.colour);
         if wanted != (size, screen) && Some(wanted) != failed {
-            match rebuild(kbps, wanted.0, wanted.1) {
+            let rebuilt = {
+                let _busy = Busy::enter(&shared.encoding_since);
+                rebuild(kbps, wanted.0, wanted.1)
+            };
+            match rebuilt {
                 Ok(e) => {
                     let c = e.colour();
                     log::info!(
@@ -80,7 +84,11 @@ pub(crate) fn encode_loop(
         if target != kbps && target != failed_kbps && target > 0 {
             // On the running encoder: no new GPU objects, no gap in the
             // picture.
-            match encoder.set_bitrate(target) {
+            let set = {
+                let _busy = Busy::enter(&shared.encoding_since);
+                encoder.set_bitrate(target)
+            };
+            match set {
                 Ok(()) => kbps = target,
                 Err(e) => {
                     log::warn!("bitrate {target} kbit/s: {e:#}");
@@ -95,7 +103,12 @@ pub(crate) fn encode_loop(
             let _ = free_frames.send(frame);
             continue;
         };
-        let result = encoder.encode(&frame, &mut out);
+        // Watched by the control loop: after a GPU fault this call may
+        // never return (two atomic stores a frame).
+        let result = {
+            let _busy = Busy::enter(&shared.encoding_since);
+            encoder.encode(&frame, &mut out)
+        };
         let _ = free_frames.send(frame);
         match result {
             Ok(()) => {

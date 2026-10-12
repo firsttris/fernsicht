@@ -40,6 +40,8 @@ pub(crate) struct Loop {
     revocations_seen: u64,
     /// Answers are encoded here.
     pub(crate) out: [u8; MAX_DATAGRAM],
+    /// An encoder hung: the GPU needs a fresh process, the host ends.
+    pub(crate) wedged: bool,
 }
 
 impl HostAgent {
@@ -53,6 +55,7 @@ impl HostAgent {
             refusal_logs: PerSource::new(REFUSAL_LOGS_PER_SOURCE, REFUSAL_LOGS_TOTAL, now),
             revocations_seen: self.cfg.security.as_ref().map_or(0, |s| s.revocations()),
             out: [0; MAX_DATAGRAM],
+            wedged: false,
         }
     }
 
@@ -85,13 +88,14 @@ impl HostAgent {
             health::session_end(
                 s.web,
                 s.shared.running.load(Ordering::Acquire),
-                s.last_seen.elapsed(),
-                self.cfg.client_timeout,
+                (s.last_seen.elapsed(), self.cfg.client_timeout),
+                health::busy_for(s.shared.encoding_since.load(Ordering::Acquire), now_us()),
             )
         });
         if let Some(why) = end
             && let Some(s) = l.session.take()
         {
+            l.wedged |= why == End::EncoderHung;
             self.end_session(s, why, &mut l.out);
         }
     }

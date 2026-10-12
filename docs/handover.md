@@ -31,8 +31,9 @@ Status as of 2026-10-10, commit `ed802fd`, CI and GPU runner green.
   is worth a rerun before blaming the code; `journalctl -k | grep Xid` tells
   whether one came with it. Possible remedies: another 580 driver, another
   card. Fernsicht itself gives such a GPU up after its wait times out and
-  ends the session with `gpu-lost` instead of hanging
-  ([video](video.md#when-the-gpu-stops-responding)). Once (2026-10-12, Vulkan
+  ends the session with `gpu-lost` instead of hanging; an NVENC call that
+  hangs inside the driver ends the session after 5 s and restarts the host
+  ([video](video.md#when-the-gpu-stops-responding); never seen live). Once (2026-10-12, Vulkan
   Video HEVC end to end) an Xid 13 made the test process abort (SIGABRT) with
   no message of ours or FFmpeg's, so inside the driver; 60 runs of the same
   test under gdb afterwards brought neither an Xid nor an abort. The Xids come

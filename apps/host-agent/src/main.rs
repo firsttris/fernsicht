@@ -314,5 +314,14 @@ fn main() -> anyhow::Result<()> {
     if let Some(web) = agent.web_addr() {
         log::info!("web viewer on http://{web}");
     }
-    agent.run(stop)
+    let ended = agent.run(stop);
+    if let Err(e) = &ended
+        && e.is::<fernsicht_host_agent::EncoderHung>()
+    {
+        log::error!("{e}");
+        // SAFETY: ends the process at once. The hung thread still holds
+        // the driver; exit handlers (CUDA's among them) could wait on it.
+        unsafe { libc::_exit(1) };
+    }
+    ended
 }

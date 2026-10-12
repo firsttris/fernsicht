@@ -7,8 +7,8 @@ use crossbeam_channel::bounded;
 use fernsicht_capture::{Frame, FrameSource};
 use fernsicht_codec::synthetic::SyntheticEncoder;
 use fernsicht_codec::{CodecError, EncodedFrame, Encoder};
-use fernsicht_core::Slot;
 use fernsicht_core::colour::Colour;
+use fernsicht_core::{Slot, now_us};
 use fernsicht_proto::{Codec, CodecSet};
 use fernsicht_secure::{Identity, Peer, Trusted};
 
@@ -88,6 +88,7 @@ fn shared() -> Shared {
         screen: Default::default(),
         screen_changes: AtomicU64::new(0),
         pointer: AtomicU64::new(crate::shared::NO_POINTER),
+        encoding_since: AtomicU64::new(0),
     }
 }
 
@@ -272,6 +273,74 @@ fn a_gpu_that_stops_responding_ends_the_encode_loop() {
         .expect("the encode loop goes on without a GPU");
     encoder.join().unwrap();
     assert!(send_rx.try_recv().is_err(), "nothing was encoded");
+}
+
+/// An encoder whose call does not return until `release` is set, as NVENC
+/// after a GPU fault.
+struct HungGpu {
+    release: Arc<AtomicBool>,
+}
+
+impl Encoder for HungGpu {
+    fn codec(&self) -> Codec {
+        Codec::H264
+    }
+
+    fn encode(&mut self, _: &Frame, _: &mut EncodedFrame) -> Result<(), CodecError> {
+        while !self.release.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Err(CodecError::GpuLost)
+    }
+
+    fn request_keyframe(&mut self) {}
+
+    fn set_bitrate(&mut self, _: u32) -> Result<(), CodecError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_hung_encoder_call_shows_how_long_it_has_been_hanging() {
+    let shared = Arc::new(shared());
+    let slot = Arc::new(Slot::new());
+    let (send_tx, _send_rx) = bounded::<EncodedFrame>(16);
+    let (free_frames_tx, _free_frames) = bounded(16);
+    let (free_enc_tx, free_enc_rx) = bounded(16);
+    free_enc_tx.send(EncodedFrame::default()).unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let encoder = {
+        let (shared, slot, release) = (shared.clone(), slot.clone(), release.clone());
+        std::thread::spawn(move || {
+            let rebuild: Rebuild = Box::new(|_, _, _| anyhow::bail!("no rebuild"));
+            encode_loop(
+                Box::new(HungGpu { release }),
+                rebuild,
+                2000,
+                ((1920, 1080), (1920, 1080)),
+                Colour::SDR,
+                &shared,
+                &slot,
+                &send_tx,
+                &free_frames_tx,
+                &free_enc_rx,
+                &free_enc_tx,
+            );
+        })
+    };
+    let idle = crate::health::busy_for(shared.encoding_since.load(Ordering::Acquire), now_us());
+    assert_eq!(idle, Duration::ZERO, "no call before a frame");
+    slot.put(Frame::new(1920, 1080, fernsicht_capture::PixelFormat::Nv12));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while shared.encoding_since.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let busy = crate::health::busy_for(shared.encoding_since.load(Ordering::Acquire), now_us());
+    assert!(busy >= Duration::from_millis(50), "{busy:?}");
+    release.store(true, Ordering::Release);
+    encoder.join().unwrap();
+    assert_eq!(shared.encoding_since.load(Ordering::Acquire), 0);
 }
 
 #[test]
