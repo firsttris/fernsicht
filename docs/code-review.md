@@ -880,6 +880,7 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
+D6, D2 and D1 are done; D8 was measured and set aside (below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -934,6 +935,15 @@ The AppImage gets FFmpeg 8.1: the release still builds on Ubuntu 24.04 (glibc 2.
 on Ubuntu 24.04, Mint 22 and Debian 13 as well), whose FFmpeg 6.1 is too old, and builds its own
 (`packaging/ffmpeg.sh`: pinned sources, only what Fernsicht uses, LGPL, 5 MB, cached per version).
 The GPU tests pass against that build as well.
+
+D8, measured and set aside (decided 2026-10-12). On `zentrale` (RX 7800 XT, KWin, 165 Hz) a new
+framebuffer shows on the primary plane a median 1.1 ms before the vblank (p10 0.9, p90 3.2, max 5.9
+ms; `crates/capture/examples/commit_lead.rs`, run by hand with the Measure workflow). Capturing on
+commit would win about that, at the cost of reading the plane every 0.2 ms (some 5,000 calls a
+second) and of waiting for the compositor's render fence first (the buffer may still be drawn when
+it is committed), which takes back part of it. On NVIDIA hosts it cannot work at all: nvidia-drm
+answers both vblank paths (WAIT_VBLANK and CRTC_GET_SEQUENCE) with EOPNOTSUPP, so their KMS capture
+paces by timer. Aligning to the client's refresh is not pursued either. D10 comes first.
 
 ## E. Clean code and consistency
 
