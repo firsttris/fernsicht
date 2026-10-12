@@ -880,7 +880,7 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
-D6, D2 and D1 are done; D8 was measured and set aside (below).
+D6, D2, D1 and D10 are done; D8 was measured and set aside (below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -944,6 +944,18 @@ second) and of waiting for the compositor's render fence first (the buffer may s
 it is committed), which takes back part of it. On NVIDIA hosts it cannot work at all: nvidia-drm
 answers both vblank paths (WAIT_VBLANK and CRTC_GET_SEQUENCE) with EOPNOTSUPP, so their KMS capture
 paces by timer. Aligning to the client's refresh is not pursued either. D10 comes first.
+
+D10 is done (2026-10-12). Measured first (`crates/audio/examples/sound_latency.rs`, silence): through
+pipewire-pulse the client's sound sat about 21 ms in the server whatever it ordered (1, 2 or 4
+frames, or `node.latency` through `PULSE_PROP`): four quanta of 256 samples, pipewire-pulse's own
+buffer per stream. The client now plays through a native PipeWire stream (`fernsicht_audio::pipewire`,
+libpipewire loaded at runtime; the SPA format pod is serialized by hand, PipeWire builds those with
+inline header functions) that asks for a 5 ms quantum and is fed from a ring kept one frame ahead:
+8.3 ms after the client (p90 9.7), about 13 ms less, without a single silent frame even with every
+core busy. PulseAudio's API stays the fallback. The host's capture stays on it: it holds about 3 ms.
+"Adaptive resampling" was already done in A22 (the drift control stretches frames). Tests: the
+format pod and the struct layouts against PipeWire's headers; a real stream, opt-in
+(`FERNSICHT_SOUND=1`, it plays silence; CI has no PipeWire session).
 
 ## E. Clean code and consistency
 

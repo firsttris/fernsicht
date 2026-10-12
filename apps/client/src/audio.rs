@@ -20,24 +20,44 @@ pub(crate) struct AudioPacket {
     pub(crate) captured_local: i64,
 }
 
-/// Frames the jitter buffer holds before playing (15 ms), and what the
-/// sound server buffers after it (10 ms).
+/// Frames the jitter buffer holds before playing (15 ms).
 const AUDIO_JITTER_FRAMES: usize = 3;
 
-const AUDIO_OUTPUT_FRAMES: u32 = 2;
+/// Frames kept ahead of a native PipeWire stream (5 ms; the graph then
+/// holds about a quantum more: 8 ms in all, measured, with no gap even
+/// with every core busy).
+const PIPEWIRE_AHEAD_FRAMES: usize = 1;
+
+/// What the PulseAudio path orders from the server (10 ms; pipewire-pulse
+/// holds about 21 ms whatever it is asked).
+const PULSE_OUTPUT_FRAMES: u32 = 2;
 
 fn audio_sink(out: &AudioOutput) -> Option<Box<dyn fernsicht_audio::AudioSink>> {
     match out {
         AudioOutput::Off => None,
         AudioOutput::Record(r) => Some(Box::new(r.clone())),
-        AudioOutput::Speakers => {
-            match fernsicht_audio::pulse::Playback::open(AUDIO_OUTPUT_FRAMES) {
-                Ok(p) => Some(Box::new(p)),
-                Err(e) => {
-                    log::warn!("no sound: {e}");
-                    None
-                }
-            }
+        AudioOutput::Speakers => speakers(),
+    }
+}
+
+/// PipeWire's own stream where it can be had (about 13 ms less delay),
+/// else PulseAudio's API (pipewire-pulse, or a real PulseAudio).
+fn speakers() -> Option<Box<dyn fernsicht_audio::AudioSink>> {
+    let pipewire = match fernsicht_audio::pipewire::Playback::open(PIPEWIRE_AHEAD_FRAMES) {
+        Ok(p) => {
+            log::info!("sound through PipeWire");
+            return Some(Box::new(p));
+        }
+        Err(e) => e,
+    };
+    match fernsicht_audio::pulse::Playback::open(PULSE_OUTPUT_FRAMES) {
+        Ok(p) => {
+            log::info!("sound through PulseAudio ({pipewire})");
+            Some(Box::new(p))
+        }
+        Err(e) => {
+            log::warn!("no sound: {e}; {pipewire}");
+            None
         }
     }
 }

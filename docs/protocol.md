@@ -114,6 +114,12 @@ gaps. The two sound cards' clocks drift apart (up to about 100 ppm): instead of 
 running dry, the client plays a frame one sample shorter or longer now and then (0.4 % for 5 ms,
 inaudible), steered by the smoothed buffer depth.
 
+The client plays through a native PipeWire stream (`libpipewire-0.3`, loaded at runtime) that asks
+for a 5 ms quantum and is kept one frame ahead: the sound server then holds about 8 ms after the
+client. Through PulseAudio's API, served by pipewire-pulse, it held about 21 ms whatever the client
+asked for (four quanta per stream); that path stays the fallback without PipeWire. The host records
+the output's monitor through PulseAudio's API, which holds about 3 ms there.
+
 ## Monitors
 
 The host announces its active monitors (connector name and size) and the one shown when the session

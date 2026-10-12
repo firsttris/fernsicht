@@ -2,6 +2,8 @@
 //!
 //! - [`pulse`]: capture of the default output's monitor and playback,
 //!   through PipeWire's PulseAudio interface.
+//! - [`pipewire`]: playback through PipeWire's own stream API, with one
+//!   quantum in the server instead of pipewire-pulse's four.
 //! - [`opus`]: Opus, 48 kHz stereo, 5 ms frames, low-delay mode.
 //! - [`jitter`]: the client's jitter buffer.
 //! - [`Tone`]: a test source (a sine), paced like real capture.
@@ -12,6 +14,7 @@
 pub mod drift;
 pub mod jitter;
 pub mod opus;
+pub mod pipewire;
 pub mod pulse;
 
 use std::time::{Duration, Instant};
