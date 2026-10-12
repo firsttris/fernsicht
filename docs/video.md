@@ -193,8 +193,10 @@ over it. 10-bit planes are sampled as 16-bit words, which fits P010 and the Vulk
   it, so the overlay's Decode stays the decoder's time.
 
 The window presents in mailbox mode: no tearing, and a new frame replaces one that has not been shown
-yet. Presenting immediately (with tearing, for games) is a possible next step
-([performance](performance.md)).
+yet. In gaming mode it presents immediately where the driver offers it: a frame shows the moment it
+is drawn instead of at the next refresh (up to one refresh sooner), and may tear. On Wayland the
+compositor has to allow tearing (KWin does for full-screen windows); where it does not, mailbox
+stays. Switching the mode rebuilds the swapchain; the log names the mode (“swapchain … Immediate”).
 
 ## When the GPU stops responding
 

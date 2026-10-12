@@ -36,9 +36,9 @@ measurement is missing ([latency-baseline.md](latency-baseline.md)).
 | 1 | **Comparison measurement with Sunshine/Moonlight** | We know where we stand and what is worth doing | Small, needs the user at the machine | Open |
 | 2 | **Clock the GPU up during sessions** | Encode at 1440p from 10 ms towards 3–4 ms (estimated) | Small | Built, measurement open |
 | 3 | **AV1 or HEVC instead of H.264** | Same quality with 30–50 % less bitrate: noticeably sharper, especially over Wi-Fi. Same latency | Medium | **Done:** AV1, HEVC, H.264 – every connection uses the best format both sides can handle in hardware; the web viewer uses AV1 or H.264 |
-| 4 | **Show immediately instead of waiting for the refresh** (Vulkan "Immediate" in gaming mode) | Up to one display refresh less: on average ≈ 3 ms at 165 Hz, ≈ 8 ms at 60 Hz. The cost is tearing | Small to medium | Open |
+| 4 | **Show immediately instead of waiting for the refresh** (Vulkan "Immediate" in gaming mode) | Up to one display refresh less: on average ≈ 3 ms at 165 Hz, ≈ 8 ms at 60 Hz. The cost is tearing | Small to medium | **Done:** gaming mode presents with Immediate where the driver (and on Wayland the compositor) allows tearing |
 | 5 | **Slices: send parts of the image before the image is finished** (like Parsec) | Several milliseconds per frame, because encoding, sending and decoding overlap | Large | Open |
-| 6 | **Intra refresh instead of keyframes** | No large data bursts after a loss, so less stutter over Wi-Fi | Medium | Open |
+| 6 | **Intra refresh instead of keyframes** | No large data bursts after a loss, so less stutter over Wi-Fi | Medium | **Done** with NVENC, as a choice (app: “Nach Verlusten: Flüssig”, `--smooth`) |
 | 7 | **Delay-based congestion control** (like WebRTC) | Reacts to growing transit time before packets are lost. Better over Wi-Fi | Medium | **Done:** queue delay and ECN marks lower the bitrate before loss; pacing at the measured delivery rate |
 | 8 | **4:4:4 color for the desktop** | Crisp text (today, color is transmitted at half resolution) | Medium | Open, only with NVENC (H.264/HEVC). AMD and Intel do not encode 4:4:4 |
 | 9 | **Bitrate adaptation in the web viewer** (WebRTC bandwidth estimation, TWCC) | The browser gets no more than the network can carry | Medium | Open (today: fixed bitrate) |
@@ -114,6 +114,11 @@ saves that wait, but causes tearing (a visible edge where the old and the
 new image meet). That is common for games, but not for the desktop. So it
 is for gaming mode only. With VRR/FreeSync, the tearing largely
 disappears.
+
+Built (2026-10-12): in gaming mode the window takes Immediate where the
+driver offers it, and goes back to Mailbox for the desktop; on Wayland only
+where the compositor allows tearing for the window (KWin: full screen).
+Not measured live yet.
 
 ### 5 · Slices
 

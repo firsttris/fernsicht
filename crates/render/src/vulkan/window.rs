@@ -2,10 +2,16 @@
 //!
 //! Present mode Mailbox (newest frame replaces a waiting one, no tearing),
 //! else Immediate (may tear), else FIFO (vsync, adds up to a refresh of
-//! latency). The window is created by the caller on the main thread
-//! (winit's rule); presenting happens on the client's present thread.
+//! latency). In gaming mode Immediate comes first: a frame shows the moment
+//! it is drawn instead of at the next refresh (up to one refresh sooner,
+//! ≈ 8 ms at 60 Hz), at the cost of tearing. On Wayland the compositor has
+//! to allow it (`wp_tearing_control`; KWin does for full-screen windows),
+//! else the driver offers no Immediate and Mailbox stays. The window is
+//! created by the caller on the main thread (winit's rule); presenting
+//! happens on the client's present thread.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ash::vk;
 use fernsicht_codec::{DecodedFrame, Picture, PictureKind};
@@ -16,9 +22,16 @@ use super::renderer::Target;
 use super::{Gpu, Prefer, RenderError, Renderer};
 use crate::{CursorOverlay, Presenter};
 
-/// Present modes from most to least preferred for latency.
-pub fn pick_present_mode(available: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]
+/// The present mode for the lowest latency: without tearing (Mailbox)
+/// first, or where `tearing` is allowed (gaming) without waiting for the
+/// refresh (Immediate) first; FIFO, which every driver has, last.
+pub fn pick_present_mode(available: &[vk::PresentModeKHR], tearing: bool) -> vk::PresentModeKHR {
+    let order = if tearing {
+        [vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::MAILBOX]
+    } else {
+        [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]
+    };
+    order
         .into_iter()
         .find(|m| available.contains(m))
         .unwrap_or(vk::PresentModeKHR::FIFO)
@@ -59,6 +72,10 @@ pub struct WindowPresenter {
     surface: vk::SurfaceKHR,
     swapchain: Option<Swapchain>,
     mode: vk::PresentModeKHR,
+    /// Tearing allowed (gaming mode), as the window says; and what the
+    /// swapchain was made for.
+    tearing: Arc<AtomicBool>,
+    tearing_now: bool,
     wants: PictureKind,
     title: String,
     pub presented: u64,
@@ -70,8 +87,14 @@ unsafe impl Send for WindowPresenter {}
 
 impl WindowPresenter {
     /// A presenter for `window` on the GPU `prefer` names (the decoder's,
-    /// so its pictures import without a copy).
-    pub fn new(window: Arc<Window>, title: &str, prefer: Prefer) -> Result<Self, String> {
+    /// so its pictures import without a copy). While `tearing` is set
+    /// (gaming mode), frames show without waiting for the refresh.
+    pub fn new(
+        window: Arc<Window>,
+        title: &str,
+        prefer: Prefer,
+        tearing: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
         let display = window
             .display_handle()
             .map_err(|e| format!("display handle: {e}"))?
@@ -129,6 +152,8 @@ impl WindowPresenter {
             surface,
             swapchain: None,
             mode: vk::PresentModeKHR::FIFO,
+            tearing,
+            tearing_now: false,
             title: title.to_owned(),
             presented: 0,
         })
@@ -158,17 +183,19 @@ impl WindowPresenter {
         }
     }
 
-    /// (Re)creates the swapchain for the window's current size. `false`
-    /// when the window has no area (minimized).
+    /// (Re)creates the swapchain for the window's current size and mode
+    /// (tearing or not). `false` when the window has no area (minimized).
     fn ensure_swapchain(&mut self) -> Result<bool, String> {
         let size = self.window.inner_size();
         if size.width == 0 || size.height == 0 {
             return Ok(false);
         }
-        if self
-            .swapchain
-            .as_ref()
-            .is_some_and(|s| (s.extent.width, s.extent.height) == (size.width, size.height))
+        let tearing = self.tearing.load(Ordering::Relaxed);
+        if tearing == self.tearing_now
+            && self
+                .swapchain
+                .as_ref()
+                .is_some_and(|s| (s.extent.width, s.extent.height) == (size.width, size.height))
         {
             return Ok(true);
         }
@@ -195,7 +222,8 @@ impl WindowPresenter {
                 .get_physical_device_surface_present_modes(gpu.physical, self.surface)
                 .map_err(e("present modes"))?;
             let format = pick_format(&formats).ok_or("no 8-bit UNORM surface format")?;
-            self.mode = pick_present_mode(&modes);
+            self.mode = pick_present_mode(&modes, tearing);
+            self.tearing_now = tearing;
             let extent = if caps.current_extent.width != u32::MAX {
                 caps.current_extent
             } else {
@@ -435,12 +463,20 @@ mod tests {
     fn lowest_latency_present_mode_wins() {
         use vk::PresentModeKHR as M;
         assert_eq!(
-            pick_present_mode(&[M::FIFO, M::IMMEDIATE, M::MAILBOX]),
+            pick_present_mode(&[M::FIFO, M::IMMEDIATE, M::MAILBOX], false),
             M::MAILBOX
         );
-        assert_eq!(pick_present_mode(&[M::FIFO, M::IMMEDIATE]), M::IMMEDIATE);
-        assert_eq!(pick_present_mode(&[M::FIFO]), M::FIFO);
-        assert_eq!(pick_present_mode(&[]), M::FIFO);
+        assert_eq!(
+            pick_present_mode(&[M::FIFO, M::IMMEDIATE], false),
+            M::IMMEDIATE
+        );
+        assert_eq!(pick_present_mode(&[M::FIFO], false), M::FIFO);
+        assert_eq!(pick_present_mode(&[], false), M::FIFO);
+        // Gaming: no waiting for the refresh where the driver offers it.
+        let all = [M::FIFO, M::IMMEDIATE, M::MAILBOX];
+        assert_eq!(pick_present_mode(&all, true), M::IMMEDIATE);
+        assert_eq!(pick_present_mode(&[M::FIFO, M::MAILBOX], true), M::MAILBOX);
+        assert_eq!(pick_present_mode(&[M::FIFO], true), M::FIFO);
     }
 
     #[test]

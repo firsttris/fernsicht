@@ -63,6 +63,9 @@ struct App {
     /// Fractions of wheel units from touchpads, carried over.
     scroll_rest: (f64, f64),
     gaming: bool,
+    /// The same for the presenter: in gaming mode frames show without
+    /// waiting for the refresh (they may tear).
+    tearing: Arc<AtomicBool>,
     /// The pointer is captured: motion goes to the host relatively.
     captured: bool,
     /// Fractions of pixels of relative motion, carried over.
@@ -290,8 +293,9 @@ impl ApplicationHandler<UserEvent> for App {
             fernsicht_client::DecoderChoice::Nvdec => Prefer::Best,
             _ => Prefer::render_node(&cfg.render_node),
         };
+        let tearing = self.tearing.clone();
         let factory: PresenterFactory = Box::new(move || {
-            WindowPresenter::new(for_presenter, &title, prefer)
+            WindowPresenter::new(for_presenter, &title, prefer, tearing)
                 .map(|p| Box::new(p) as Box<dyn Presenter>)
         });
         let (stop, proxy) = (self.stop.clone(), self.proxy.clone());
@@ -418,6 +422,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Gaming(on) => {
                 self.gaming = on;
+                self.tearing.store(on, Ordering::Relaxed);
                 if !on {
                     self.capture(false);
                 }
@@ -482,6 +487,7 @@ pub fn run(
         modifiers: ModifiersState::empty(),
         scroll_rest: (0.0, 0.0),
         gaming: options.gaming,
+        tearing: Arc::new(AtomicBool::new(options.gaming)),
         captured: false,
         motion_rest: (0.0, 0.0),
         focused: false,

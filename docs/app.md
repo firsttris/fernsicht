@@ -104,7 +104,10 @@ packets lost → frames dropped, as WebRTC there has no FEC.
   pointer, so it moves at once, without the round trip; until the host knows where in the image the
   pointer's tip is (a moment after the first move), the host's pointer is drawn in the picture.
 - **Gaming:** a click into the window captures the pointer; it then moves relatively, as games want
-  it. Ctrl+Alt+Shift+M lets it go.
+  it. Ctrl+Alt+Shift+M lets it go. Frames show the moment they are drawn instead of at the monitor's
+  next refresh (up to one refresh less latency, ≈ 8 ms at 60 Hz), at the cost of occasional
+  tearing, as in games without vsync; on Wayland where the desktop allows it (KDE: in full
+  screen).
 
 ### System keys
 
