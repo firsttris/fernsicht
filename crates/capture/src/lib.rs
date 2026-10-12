@@ -14,6 +14,7 @@
 
 pub mod cursor;
 pub mod dmabuf;
+pub mod hdr;
 #[cfg(feature = "kms")]
 pub mod kms;
 mod test_pattern;

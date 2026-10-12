@@ -22,7 +22,20 @@ their 1,024 steps instead of banding at 256. H.264 stays 8 bit (no hardware deco
 does a client whose decoder cannot; the web viewer always gets 8 bit. Each frame carries the
 screen's colour, and a screen that changes it (another depth, HDR switched on) gets a new encoder
 and a keyframe, like a new size. The stream says its colour (depth, primaries, transfer) in its
-VUI or sequence header; the client reads it from every decoded frame.
+VUI or sequence header; the client reads it from every decoded frame, and the overlay names it
+(“HEVC 10 Bit HDR · Vulkan Video”).
+
+**HDR:** an HDR desktop (KWin, gamescope or GNOME with HDR on) scans out the signal its monitor
+gets: BT.2020, PQ-encoded. The compositor says so in the connector's KMS properties
+(`HDR_OUTPUT_METADATA`'s EOTF, `Colorspace`), which the capture reads at the start and once a
+second after (switching HDR on is a modeset). The host converts such a screen with the BT.2020
+matrix and tags the stream BT.2020 and PQ, in 10 bit where the client takes it. The client shows
+it on an SDR display tone-mapped: PQ to light relative to SDR white (203 nits, ITU-R BT.2408), the
+highlights above 80 % of it compressed up to a peak of 1,000 nits, BT.2020 converted to BT.709
+(ITU-R BT.2087), sRGB encoded; so an HDR desktop no longer looks washed out. Not done yet: showing
+HDR on an HDR display (an HDR10 swapchain), HLG, and the stream's mastering metadata. Compositors
+that move part of the colour pipeline into the display hardware (plane colour pipelines) scan out
+values that are not the signal yet; capture cannot undo that.
 
 With several monitors the host lists them to the client; a switch opens the other monitor on the same
 card, and the stream takes that monitor's shape (a new encoder at the fitted size, starting with a

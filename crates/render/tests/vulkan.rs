@@ -210,6 +210,36 @@ fn p010_in_either_matrix_becomes_the_right_rgb() {
 }
 
 #[test]
+fn hdr10_is_tone_mapped_for_an_sdr_display() {
+    let Some(mut r) = renderer() else { return };
+    let (w, h) = (640, 360);
+    // The stripes' values read as PQ-encoded BT.2020: from black through
+    // HDR highlights (255 is 10,000 nits).
+    let data = stripes_in(w, h, Colour::HDR10);
+    let pic = Picture::Nv12 {
+        width: w as u32,
+        height: h as u32,
+        data: &data,
+        colour: Colour::HDR10,
+    };
+    let rgba = r
+        .render_to_rgba(Some(&pic), None, w as u32, h as u32)
+        .unwrap();
+    for (i, &(sr, sg, sb)) in STRIPES.iter().enumerate() {
+        let unit = |v: u8| f32::from(v) / 255.0;
+        let want = fernsicht_render::colour::pq_to_sdr([unit(sr), unit(sg), unit(sb)])
+            .map(|v| (v * 255.0).round() as i32);
+        let x = (2 * i + 1) * w / (2 * STRIPES.len());
+        let got = pixel(&rgba, w, x, h / 2);
+        let got = [got.0, got.1, got.2].map(i32::from);
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 3),
+            "stripe {i}: got {got:?}, the tone mapping wants {want:?}"
+        );
+    }
+}
+
+#[test]
 fn chroma_is_read_sited_left() {
     let Some(mut r) = renderer() else { return };
     // Grey, with red in chroma sample 1 alone, which sits on column 2.

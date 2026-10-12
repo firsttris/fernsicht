@@ -25,11 +25,12 @@ use std::time::{Duration, Instant};
 
 use drm::control::{self, Device as _, ResourceHandles, framebuffer, plane};
 use drm::{ClientCapability, Device as _, VblankWaitFlags, VblankWaitTarget};
+use fernsicht_core::colour::{Colour, Primaries, Transfer};
 use fernsicht_core::{clock, now_us};
 
 use crate::dmabuf::{DmaBuf, DmaBufPlane, depth_of, formats};
+use crate::hdr;
 use crate::{CaptureError, CursorImage, CursorState, Frame, FrameSource, PixelFormat, ScreenInfo};
-use fernsicht_core::colour::Colour;
 
 /// Part of the error message when the process lacks the capability.
 pub const NEEDS_CAP_SYS_ADMIN: &str = "KMS capture needs CAP_SYS_ADMIN";
@@ -158,6 +159,8 @@ pub struct KmsCapture {
     vblank_retry_at: Option<Instant>,
     seq: u64,
     flips: FlipWatch,
+    /// What the monitor gets (HDR or not), read again every second.
+    signal: (Primaries, Transfer),
 }
 
 /// Tells from the framebuffers the plane shows whether the picture
@@ -282,7 +285,12 @@ impl KmsCapture {
             vblank_retry_at: None,
             seq: 0,
             flips: FlipWatch::default(),
+            signal: (Primaries::Bt709, Transfer::Sdr),
         };
+        cap.signal = read_signal(&cap.card, cap.sel.crtc);
+        if cap.signal.1 == Transfer::Pq {
+            log::info!("the captured monitor runs in HDR (PQ, BT.2020)");
+        }
         // Export once: fails early without the capability and tells us the
         // framebuffer size.
         let (first, _) = cap.export()?;
@@ -754,9 +762,60 @@ fn monotonic_to_instant(t: Duration) -> Instant {
     Instant::now().checked_sub(age).unwrap_or_else(Instant::now)
 }
 
-/// How the framebuffer's values are to be read: its depth.
-fn colour_of(image: &DmaBuf) -> Colour {
-    Colour::SDR.with_depth(depth_of(image.fourcc))
+/// How the framebuffer's values are to be read: its depth, and the signal
+/// the monitor gets.
+fn colour_of(image: &DmaBuf, (primaries, transfer): (Primaries, Transfer)) -> Colour {
+    Colour {
+        depth: depth_of(image.fourcc),
+        primaries,
+        transfer,
+    }
+}
+
+/// What the compositor tells the monitor on `crtc`'s connector: its HDR
+/// metadata's EOTF and its colorspace ([`hdr::signal`]). SDR where the
+/// properties are missing (older kernels, drivers without HDR).
+fn read_signal(card: &Card, crtc: u32) -> (Primaries, Transfer) {
+    let Ok(res) = card.resource_handles() else {
+        return hdr::signal(None, None);
+    };
+    let on_crtc = |h: &control::connector::Handle| {
+        card.get_connector(*h, false)
+            .ok()
+            .and_then(|c| c.current_encoder())
+            .and_then(|e| card.get_encoder(e).ok())
+            .and_then(|e| e.crtc())
+            .is_some_and(|c| u32::from(c) == crtc)
+    };
+    let Some(&connector) = res.connectors().iter().find(|h| on_crtc(h)) else {
+        return hdr::signal(None, None);
+    };
+    let Ok(props) = card.get_properties(connector) else {
+        return hdr::signal(None, None);
+    };
+    let (mut eotf, mut colorspace) = (None, None);
+    for (id, &value) in props.iter() {
+        let Ok(p) = card.get_property(*id) else {
+            continue;
+        };
+        match p.name().to_bytes() {
+            b"HDR_OUTPUT_METADATA" if value != 0 => {
+                eotf = card
+                    .get_property_blob(value)
+                    .ok()
+                    .and_then(|b| hdr::eotf(&b));
+            }
+            b"Colorspace" => {
+                if let control::property::ValueType::Enum(e) = p.value_type() {
+                    colorspace = e
+                        .get_value_from_raw_value(value)
+                        .map(|v| v.name().to_string_lossy().into_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    hdr::signal(eotf, colorspace.as_deref())
 }
 
 impl FrameSource for KmsCapture {
@@ -778,7 +837,7 @@ impl FrameSource for KmsCapture {
 
     fn colour(&self) -> Colour {
         self.export()
-            .map_or(Colour::SDR, |(image, _)| colour_of(&image))
+            .map_or(Colour::SDR, |(image, _)| colour_of(&image, self.signal))
     }
 
     fn screen(&self) -> Option<ScreenInfo> {
@@ -833,7 +892,15 @@ impl FrameSource for KmsCapture {
         frame.width = image.width;
         frame.height = image.height;
         frame.format = PixelFormat::Bgrx;
-        frame.colour = colour_of(&image);
+        // HDR switched on or off is a modeset: noticed within a second.
+        if self.seq.is_multiple_of(u64::from(self.hz)) {
+            let signal = read_signal(&self.card, self.sel.crtc);
+            if signal != self.signal {
+                log::info!("the captured monitor now gets {signal:?}");
+                self.signal = signal;
+            }
+        }
+        frame.colour = colour_of(&image, self.signal);
         frame.data.clear();
         frame.dmabuf = Some(image);
         frame.seq = self.seq;

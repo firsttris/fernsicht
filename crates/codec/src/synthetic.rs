@@ -118,6 +118,7 @@ impl Decoder for SyntheticDecoder {
             width: u32::from(u16::from_le_bytes(head[12..14].try_into().unwrap())),
             height: u32::from(u16::from_le_bytes(head[14..16].try_into().unwrap())),
             keyframe,
+            colour: fernsicht_core::colour::Colour::SDR,
         };
         Ok(())
     }

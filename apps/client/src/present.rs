@@ -265,6 +265,11 @@ pub(crate) fn present_loop(
             match decoder.decode(&rf.data, &mut decoded) {
                 Ok(()) => {
                     let decoded_us = now_us();
+                    if let Ok(mut i) = info.lock()
+                        && i.colour != decoded.colour
+                    {
+                        i.colour = decoded.colour;
+                    }
                     r.keyframes += u64::from(decoded.keyframe);
                     // The host's stream takes the shape of the monitor shown;
                     // clicks map onto the picture as it is now.

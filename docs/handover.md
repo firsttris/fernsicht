@@ -258,6 +258,15 @@ Confirmed live (2026-10-10, according to the user):
     for right click, two-finger scrolling, zoom and reset, typing with
     Gboard/iOS keyboard (including word suggestions), rotation.
 
+12. **10 bit and HDR (D4).** Built, the codecs tested on both GPUs,
+    never seen live. On zentrale (KDE, `AB30`) the stream should come in
+    10 bit: the overlay says “HEVC 10 Bit” (or “AV1 10 Bit”) on a client
+    that decodes it. Then switch KDE to HDR (Display settings, “HDR”; needs
+    an HDR monitor): the host's log says “the captured monitor now gets
+    (Bt2020, Pq)”, the overlay “HDR”, and the picture on an SDR client
+    should look like the desktop, not washed out. An HDR monitor on the
+    client still shows it tone-mapped to SDR.
+
 ## Open tasks, by importance
 
 The findings of the code review (bugs, security, performance, clean-up) are listed with

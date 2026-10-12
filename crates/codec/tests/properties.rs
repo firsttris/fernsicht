@@ -25,7 +25,7 @@ proptest! {
         prop_assert!(out.data.len() >= base.min(21 + 16));
         let mut d = DecodedFrame::default();
         SyntheticDecoder::default().decode(&out.data, &mut d).unwrap();
-        prop_assert_eq!(d, DecodedFrame { width: 64, height: 32, seq, keyframe: true });
+        prop_assert_eq!(d, DecodedFrame { width: 64, height: 32, seq, keyframe: true, ..DecodedFrame::default() });
     }
 
     /// Any single corrupted byte is detected.

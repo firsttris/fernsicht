@@ -59,6 +59,8 @@ pub struct DecodedFrame {
     pub height: u32,
     pub seq: u64,
     pub keyframe: bool,
+    /// What the stream says about its colour (depth, primaries, transfer).
+    pub colour: Colour,
 }
 
 #[derive(Debug, Error)]

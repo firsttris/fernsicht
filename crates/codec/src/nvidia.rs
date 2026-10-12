@@ -850,6 +850,7 @@ impl Decoder for NvdecDecoder {
                     height: f.height as u32,
                     seq: self.decoded - 1,
                     keyframe: f.flags & ffi::AV_FRAME_FLAG_KEY as c_int != 0,
+                    colour: ff::colour_of(self.frame, ff::sw_format(self.frame)),
                 };
             }
             if !got {

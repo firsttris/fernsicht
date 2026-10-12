@@ -185,9 +185,12 @@ streamed monitor. The output shows `pointer input mapped to DP-1: …`.
 - **Root process.** For now the whole host agent runs as root. This is
   only meant for testing on the LAN. Later, a small privileged helper will
   take over only the capture.
-- **HDR** is not transferred faithfully yet. 10-bit desktops (KDE on AMD
-  uses `AB30`) go through in 10 bit where the client decodes HEVC Main 10
-  or AV1 in 10 bit ([video](video.md)), else in 8 bit.
+- **HDR:** 10-bit desktops (KDE on AMD uses `AB30`) go through in 10 bit
+  where the client decodes HEVC Main 10 or AV1 in 10 bit, else in 8 bit.
+  An HDR desktop is recognised by the connector's `HDR_OUTPUT_METADATA`
+  (PQ) and streamed as BT.2020/PQ; the client tone-maps it for its SDR
+  display ([video](video.md)). An HDR display on the client side does not
+  show it in HDR yet.
 - Minimal **tearing** is possible if the compositor writes into the buffer
   that is being read (as with Sunshine).
 

@@ -8,6 +8,7 @@
 
 use std::fmt::Write;
 
+use fernsicht_core::colour::{Colour, Depth};
 use fernsicht_core::latency::{LatencyStats, Stage};
 use fernsicht_proto::Codec;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,8 @@ pub struct StreamInfo {
     /// What decodes it here, e.g. "Vulkan Video"; `None` before the first
     /// frame and for the synthetic codec.
     pub decoder: Option<&'static str>,
+    /// The stream's colour, from the last decoded frame.
+    pub colour: Colour,
     pub fps: f32,
     pub bitrate_bps: u64,
     /// Packet loss on the wire, before FEC (0.0–1.0).
@@ -37,11 +40,19 @@ pub fn codec_label(codec: Codec) -> &'static str {
     }
 }
 
-/// The codec and what decodes it, e.g. "HEVC · Vulkan Video".
+/// The codec, its depth and HDR where it has them, and what decodes it,
+/// e.g. "HEVC 10 Bit HDR · Vulkan Video".
 pub fn codec_and_decoder(info: &StreamInfo) -> String {
+    let mut label = codec_label(info.codec).to_owned();
+    if info.colour.depth == Depth::Ten {
+        label.push_str(" 10 Bit");
+    }
+    if info.colour.is_hdr() {
+        label.push_str(" HDR");
+    }
     match info.decoder {
-        Some(decoder) => format!("{} · {decoder}", codec_label(info.codec)),
-        None => codec_label(info.codec).to_owned(),
+        Some(decoder) => format!("{label} · {decoder}"),
+        None => label,
     }
 }
 
@@ -195,6 +206,7 @@ mod tests {
         let info = StreamInfo {
             codec: Codec::Av1,
             decoder: None,
+            colour: Colour::SDR,
             fps: 120.0,
             bitrate_bps: 38_000_000,
             loss_before_fec: 0.004,
@@ -237,6 +249,17 @@ mod tests {
         };
         assert_eq!(super::stats(&stats, &decoding).codec, "AV1 · Vulkan Video");
         assert!(lines(&stats, &decoding)[2].starts_with("Codec AV1 · Vulkan Video · Bildrate"));
+        // A 10-bit stream, and an HDR one, say so.
+        let deep = StreamInfo {
+            colour: Colour::SDR.with_depth(Depth::Ten),
+            ..decoding
+        };
+        assert_eq!(codec_and_decoder(&deep), "AV1 10 Bit · Vulkan Video");
+        let hdr = StreamInfo {
+            colour: Colour::HDR10,
+            ..decoding
+        };
+        assert_eq!(codec_and_decoder(&hdr), "AV1 10 Bit HDR · Vulkan Video");
         // What the app reads back is what was written.
         let s = super::stats(&stats, &with_rtt);
         let text = serde_json::to_string(&s).unwrap();

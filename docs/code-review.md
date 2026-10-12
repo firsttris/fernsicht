@@ -890,8 +890,8 @@ Order for the rest, most benefit first (decided 2026-10-11): D6 (the pointer is 
 D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (first the browser
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
-D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 and D4 have their first step
-(below).
+D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 has its first step, D4 its
+first two (10 bit, HDR tone-mapped; HDR displays are open; below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -1005,6 +1005,20 @@ Video HEVC Main 10 from an XR30 buffer decode to the right colours through NVDEC
 decoder, in 10-bit SDR and HDR10; the renderer shows P010 from the CPU, from NVDEC and from the
 Vulkan decoder right; VAAPI's HEVC and AV1 at 10 bit from AB30 (on the AMD runner). Open: HDR
 itself (reading HDR from KMS, PQ on the client), and the web viewer stays 8 bit.
+
+D4, second step (2026-10-12): HDR. The capture reads the connector's `HDR_OUTPUT_METADATA`
+(the EOTF byte of `hdr_output_metadata`, `drm_mode.h`) and `Colorspace` when it opens and once a
+second (`fernsicht_capture::hdr`): PQ means BT.2020 and PQ, the frames carry it, and the encode loop
+gets a new encoder when it changes. The stream is tagged BT.2020/SMPTE 2084 (`scale_vaapi` with the
+same primaries and transfer in and out, so the video processor applies the matrix only). The
+client's shader tone-maps PQ for an SDR window: ST 2084's EOTF, light relative to 203 nits (BT.2408),
+identity up to 80 % of it and a rational curve with the same slope there up to a 1,000-nit peak,
+BT.2020 → BT.709 (BT.2087) with what lies outside clipped, sRGB; `fernsicht_render::colour::pq_to_sdr`
+spells it out and the renderer test checks the shader against it. The overlay says “10 Bit” and
+“HDR”. Open: an HDR10 swapchain for HDR displays (needs `VK_EXT_swapchain_colorspace` and the
+compositor's colour management; to be seen on a real HDR monitor), HLG, mastering metadata, and
+the web viewer (it gets the stream tagged as it is, in 8 bit; untested in browsers). Not seen live:
+an HDR desktop captured (bazzite's and zentrale's monitors have not been tried in HDR).
 
 ## E. Clean code and consistency
 
