@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use ash::vk;
-use fernsicht_gpu::{GIVEN_UP, GPU_TIMEOUT, Gpu, Timeline, submit_timeline, wait_fence};
+use fernsicht_gpu::{GIVEN_UP, Gpu, Timeline, submit_timeline, wait_fence};
 
 fn gpu() -> Option<Gpu> {
     match Gpu::new() {
@@ -88,7 +88,7 @@ fn a_gpu_that_stops_finishing_work_is_given_up_not_waited_for() {
     let took = t.elapsed();
     assert!(waited.unwrap_err().contains(GIVEN_UP));
     assert!(
-        took < GPU_TIMEOUT + Duration::from_secs(2),
+        took < gpu.timeout + Duration::from_secs(2),
         "gave up after {took:?}"
     );
     assert!(gpu.is_lost());
@@ -113,7 +113,7 @@ fn a_gpu_that_stops_finishing_work_is_given_up_not_waited_for() {
             .signal_semaphore(&vk::SemaphoreSignalInfo::default().semaphore(sem).value(1))
             .unwrap();
         gpu.device
-            .wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64)
+            .wait_for_fences(&[fence], true, gpu.timeout.as_nanos() as u64)
             .unwrap();
     }
     // A GPU given up is left to the process's end, not waited for.

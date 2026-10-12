@@ -276,7 +276,8 @@ the limits FFmpeg puts on the next latency step.
   may read a half-written buffer. The renderer waits forever (`u64::MAX`).
 - **Fix:** reset after `wait_idle` on the error path; one shared `submit_and_wait` with a limit.
 - **Status:** fixed. `fernsicht_gpu::submit_with` (and `submit_and_wait` without semaphores) is the
-  one place that submits and waits: at most `GPU_TIMEOUT` (1 s), and after a timeout it idles the
+  one place that submits and waits: at most `GPU_TIMEOUT` (1 s; 30 s on a CPU device such as
+  llvmpipe, `timeout_for`), and after a timeout it idles the
   device and resets the fence, so the next submit never gets a signalled fence. The renderer uses
   it too instead of waiting forever.
 
@@ -637,6 +638,8 @@ counters, replay window checked before decryption). The gaps are in the logic ar
   as lost at once, so FEC goes on sizing for the loss on the wire. End to end, bursts of eight lost
   datagrams every 200 ms (half a 720p frame, beyond its recovery shards) cost no frame
   (`shards_fec_cannot_repair_are_sent_again`; without NACK each burst cost one and a keyframe).
+  A frame asked for while its sender was only held up (a busy machine) gets its own packets after
+  all: each takes its booked loss back, so the loss FEC and the bitrate see stays the wire's.
 
 ### C3 · Fixed-rate pacing adds latency on cable and paces large frames least
 

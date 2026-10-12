@@ -128,6 +128,13 @@ impl FrameSlot {
         self.retransmitted = h.retransmit;
     }
 
+    /// Whether the shard `h` carries arrived already.
+    fn has(&self, h: &VideoHeader) -> bool {
+        self.groups
+            .get(h.group_index as usize)
+            .is_some_and(|g| g.seen && g.have.get(h.shard_index as usize) == Some(&true))
+    }
+
     /// Shards that FEC still lacks, data shards each group misses, into
     /// `out`. Groups never seen cannot be named (their size is unknown).
     fn needed(&self, out: &mut Vec<ShardRef>) {
@@ -306,6 +313,19 @@ impl Reassembler {
 
         let shard = payload.len();
         let idx = self.slot_for(h, shard, now_us)?;
+        // A packet first sent, of a frame asked for again before it came:
+        // it was late (the sender held up), not lost; its booked loss goes.
+        let late = {
+            let s = &mut self.slots[idx];
+            let late = !h.retransmit && s.lost_booked > 0 && !s.has(h);
+            if late {
+                s.lost_booked -= 1;
+            }
+            late
+        };
+        if late {
+            self.count(|s| s.packets_lost = s.packets_lost.saturating_sub(1));
+        }
         let slot = &mut self.slots[idx];
         slot.last_packet_us = now_us;
         slot.retransmitted |= h.retransmit;
@@ -711,6 +731,26 @@ mod tests {
         }
         let s = r.take_interval();
         assert_eq!((s.packets_lost, s.frames_dropped), (1, 1));
+
+        // A sender held up: the frame is asked for, then its own packets
+        // come after all, and a retransmission too. Nothing was lost.
+        let mut r = Reassembler::new();
+        let late = packets(0, &[3u8; 2000], no_fec(), true);
+        for p in &late[..10] {
+            at(&mut r, p, 1_000);
+        }
+        assert!(!asked(&mut r, 5_000).is_empty());
+        let done = late[10..]
+            .iter()
+            .filter_map(|p| at(&mut r, p, 6_000))
+            .count();
+        assert_eq!(done, 1);
+        at(&mut r, &resent(&late[12]), 6_100);
+        let s = r.take_interval();
+        assert_eq!(
+            (s.packets_lost, s.frames_dropped, s.packets_retransmitted),
+            (0, 0, 1)
+        );
     }
 
     #[test]

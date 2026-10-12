@@ -201,7 +201,8 @@ yet. Presenting immediately (with tearing, for games) is a possible next step
 A GPU can stop finishing work: a hung or faulted GPU (on NVIDIA the kernel log shows an Xid), or a
 lost device. Work given to it then never finishes, and whoever waits for it waits for ever; FFmpeg's
 own waits have no time limit. So every wait for the GPU in Fernsicht has one (1 s; 5 s for a
-decoded frame, as a new decoder session can be slow to start), and work that does not finish in it
+decoded frame, as a new decoder session can be slow to start; 30 s on a software rasterizer such as
+llvmpipe, which is slow, not hung), and work that does not finish in it
 **gives the GPU up** (`Gpu::give_up`): from then on submissions fail at once, nothing waits for the
 GPU any more, and objects it may still use are left to the process's end instead of destroyed. The
 Vulkan codecs no longer call FFmpeg on it (which would wait for ever while freeing its frames).

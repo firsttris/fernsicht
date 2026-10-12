@@ -86,7 +86,7 @@ by property tests and a fuzz target ([testing](testing.md)).
   afresh. Only where the round trip and that wait fit in a frame interval (a LAN), so the answer
   comes before the next frame; further away a keyframe or the refresh heals the loss as before. The
   shards asked for count as lost when they are asked for, so that FEC goes on sizing for the loss on
-  the wire.
+  the wire; one that arrives after all (the sender was only held up) takes its loss back.
 - The client reassembles frames in a few slots, repairs them with FEC and hands complete frames to the
   decoder. A gap in the frame IDs (a frame lost despite FEC, or a full queue) means the decoder's
   reference chain is broken: it waits for a keyframe and asks for one. A stream with intra refresh

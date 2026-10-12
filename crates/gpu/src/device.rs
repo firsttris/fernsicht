@@ -129,6 +129,8 @@ pub struct Gpu {
     pub swapchain: Option<ash::khr::swapchain::Device>,
     name: String,
     uuid: [u8; 16],
+    /// How long a submission may take ([`timeout_for`]).
+    pub timeout: std::time::Duration,
 }
 
 /// Which GPU to take when there are several.
@@ -199,6 +201,21 @@ pub(crate) fn err(what: &'static str) -> impl Fn(vk::Result) -> String {
 
 /// How long a submission may take before the GPU counts as hung.
 pub const GPU_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The same for a software rasterizer (llvmpipe): it is slow, not hung. A
+/// 1080p frame drawn on two busy CI cores with the validation layers took
+/// over a second.
+pub const CPU_DEVICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long work on a device of `kind` may take ([`GPU_TIMEOUT`], or
+/// [`CPU_DEVICE_TIMEOUT`] for a CPU device).
+pub fn timeout_for(kind: vk::PhysicalDeviceType) -> std::time::Duration {
+    if kind == vk::PhysicalDeviceType::CPU {
+        CPU_DEVICE_TIMEOUT
+    } else {
+        GPU_TIMEOUT
+    }
+}
 
 /// Submits `cmds` (waiting on `wait` at colour output, signalling
 /// `signal`) and waits for `fence` ([`wait_fence`]).
@@ -304,7 +321,7 @@ pub unsafe fn submit_timeline(
 /// What submissions to a GPU that was given up fail with.
 pub const GIVEN_UP: &str = "the GPU stopped responding and was given up";
 
-/// Waits for a submission's `fence`, at most [`GPU_TIMEOUT`], and
+/// Waits for a submission's `fence`, at most [`Gpu::timeout`], and
 /// unsignals it again for the next submission
 /// (VUID-vkQueueSubmit-fence-00063). Work that does not finish in time
 /// gives the GPU up ([`Gpu::give_up`]): the fence stays pending, and
@@ -316,14 +333,15 @@ pub unsafe fn wait_fence(gpu: &Gpu, fence: vk::Fence) -> Result<(), String> {
     let d = &gpu.device;
     // SAFETY: as the caller promises.
     unsafe {
-        match d.wait_for_fences(&[fence], true, GPU_TIMEOUT.as_nanos() as u64) {
+        let timeout = gpu.timeout;
+        match d.wait_for_fences(&[fence], true, timeout.as_nanos() as u64) {
             Ok(()) => d
                 .reset_fences(&[fence])
                 .map_err(|e| format!("reset fence: {e}")),
             Err(vk::Result::TIMEOUT) => {
-                gpu.give_up(&format!("work did not finish within {GPU_TIMEOUT:?}"));
+                gpu.give_up(&format!("work did not finish within {timeout:?}"));
                 Err(format!(
-                    "the GPU did not finish within {GPU_TIMEOUT:?} (hung?); {GIVEN_UP}"
+                    "the GPU did not finish within {timeout:?} (hung?); {GIVEN_UP}"
                 ))
             }
             Err(vk::Result::ERROR_DEVICE_LOST) => {
@@ -646,6 +664,7 @@ impl Gpu {
             let mut ids = vk::PhysicalDeviceIDProperties::default();
             let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut ids);
             instance.get_physical_device_properties2(physical, &mut props2);
+            let timeout = timeout_for(props2.properties.device_type);
             let uuid = ids.device_uuid;
             if let Some((family, _)) = decode {
                 log::debug!("video decode on queue family {family}");
@@ -674,6 +693,7 @@ impl Gpu {
                 queue_lock: QueueLock::default(),
                 queue_family,
                 name,
+                timeout,
                 lost: std::sync::atomic::AtomicBool::new(false),
             })
         }
@@ -808,6 +828,19 @@ mod tests {
         // Not there: the best kind.
         assert_eq!(pick(&gpus, &Prefer::RenderNode(226, 200)), Some(2));
         assert_eq!(pick(&[], &Prefer::Best), None);
+    }
+
+    #[test]
+    fn a_software_rasterizer_is_slow_not_hung() {
+        assert_eq!(
+            timeout_for(vk::PhysicalDeviceType::DISCRETE_GPU),
+            GPU_TIMEOUT
+        );
+        assert_eq!(
+            timeout_for(vk::PhysicalDeviceType::INTEGRATED_GPU),
+            GPU_TIMEOUT
+        );
+        assert_eq!(timeout_for(vk::PhysicalDeviceType::CPU), CPU_DEVICE_TIMEOUT);
     }
 
     #[test]
