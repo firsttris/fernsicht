@@ -27,9 +27,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A push that leaves the GPU code alone (network, protocol, input, sound,
+  # web viewer, docs) keeps the runners free: they test what only they can
+  # (scripts/ci-changes.sh). Nightly and on demand everything runs.
+  changes:
+    name: GPU code changed?
+    if: github.repository == 'firsttris/fernsicht' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      gpu: ${{ steps.diff.outputs.gpu }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+
   gpu:
     name: GPU · ${{ matrix.gpu }}
-    if: github.repository == 'firsttris/fernsicht' && github.event_name != 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.gpu == 'true'
     strategy:
       fail-fast: false
       matrix:

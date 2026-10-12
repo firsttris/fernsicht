@@ -167,7 +167,11 @@ The workflow
 [`.github/workflows/gpu.yml`](https://github.com/firsttris/fernsicht/blob/main/.github/workflows/gpu.yml)
 runs
 
-- on pushes to `main` that change code or `dev/`,
+- on pushes to `main` that change GPU code: the GPU crates (`capture`, `codec`, `core`, `gpu`,
+  `render`, `shader`), the host's encoder choice and encode loop, the client's decoder choice, the
+  GPU tests, `Cargo.lock`, `dev/` or this workflow (`scripts/ci-changes.sh` decides, in a first
+  job on a GitHub machine). Network, protocol, input, sound, the web viewer and the docs are
+  tested in CI and leave the runners free,
 - every night (this catches Mesa and driver updates from Bazzite),
 - on demand (*Run workflow*).
 
