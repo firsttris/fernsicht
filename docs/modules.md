@@ -44,6 +44,7 @@ flowchart BT
 | `render` | The `Presenter` trait, overlay formatting, the Vulkan renderer (NV12 from the CPU or a DMA-BUF → RGB, letterboxing, the pointer) and the window presenter (feature `window`) |
 | `shader` | WGSL to SPIR-V for the build scripts of `gpu` and `render`: the shaders compile when the crate builds, the programs carry SPIR-V and no shader compiler |
 | `input` | Input events, the duplicate filter, `uinput` devices on the host (mouse, keyboard, Xbox 360 pads with rumble), gamepads on the client (SDL3, else evdev) |
+| `clipboard` | The clipboard: a Wayland desktop's through data control (`ext-data-control-v1`, else wlroots' `zwlr-data-control`), and a text across the link in acknowledged pieces |
 | `audio` | Capture and playback through PipeWire's PulseAudio interface, Opus (48 kHz stereo, 5 ms frames, low delay), the client's jitter buffer, a test tone; libopus and libpulse are loaded at runtime |
 | `secure` | Device keys (X25519), the list of paired devices, pairing with SPAKE2, Noise IK sessions, the replay window ([security](security.md)) |
 

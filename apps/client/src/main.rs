@@ -94,6 +94,9 @@ struct Args {
     /// Leave this machine's gamepads out.
     #[arg(long)]
     no_gamepad: bool,
+    /// Do not share this machine's clipboard with the host.
+    #[arg(long)]
+    no_clipboard: bool,
     /// After a packet loss keep the picture going and let it heal (intra
     /// refresh, NVIDIA hosts) instead of waiting for a fresh keyframe:
     /// smooth instead of sharp, and no bitrate bursts. Good on Wi-Fi.
@@ -398,6 +401,11 @@ fn session_config(args: &Args, wanted: &str, host: &Peer, identity: Identity) ->
             CodecArg::Av1 => CodecChoice::Av1,
         },
         record: args.record.clone(),
+        clipboard: if args.view_only || args.no_clipboard {
+            fernsicht_clipboard::Place::Off
+        } else {
+            fernsicht_clipboard::Place::Here
+        },
         refresh: args.smooth,
         audio: if args.no_audio {
             AudioOutput::Off

@@ -141,6 +141,8 @@ struct Net {
     refresh: bool,
     /// Packets on their way out are encoded here.
     out: [u8; MAX_DATAGRAM],
+    /// The clipboard, shared once the session runs (with input).
+    clipboard: Option<crate::clipboard::SessionClipboard>,
 }
 
 pub(crate) fn network_loop(
@@ -281,6 +283,7 @@ fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
         crypto: None,
         refresh: false,
         out: [0; MAX_DATAGRAM],
+        clipboard: None,
     })
 }
 
@@ -330,6 +333,10 @@ fn send_due(
     }
     ping(cfg, socket, net);
     if let Some((session_id, codec)) = net.session {
+        if let Some(c) = net.clipboard.as_mut() {
+            let crypto = net.crypto.as_deref().map(|t| (t, session_id));
+            c.tick(socket, crypto, session_id, now_us());
+        }
         ask_monitor(cfg, socket, net, session_id);
         send_feedback(socket, pipe, info, net, session_id, codec);
     }
@@ -648,6 +655,21 @@ fn on_packet(
                 on_video(pipe, net, &h, payload, datagram_len, now);
             }
         }
+        Packet::Clipboard(c, data) => {
+            if ours(c.session_id)
+                && let Some(clip) = net.clipboard.as_mut()
+            {
+                let crypto = net.crypto.as_deref().map(|t| (t, c.session_id));
+                clip.piece(socket, crypto, &c, data);
+            }
+        }
+        Packet::ClipboardAck(a) => {
+            if ours(a.session_id)
+                && let Some(clip) = net.clipboard.as_mut()
+            {
+                clip.acked(&a);
+            }
+        }
         Packet::Rumble(r) => {
             if ours(r.session_id)
                 && let Some(input) = &cfg.input
@@ -674,6 +696,10 @@ fn on_packet(
 fn on_hello_ack(cfg: &ClientConfig, socket: &UdpSocket, net: &mut Net, ack: &HelloAck) {
     if net.session.is_none() {
         net.acked_at = Some(Instant::now());
+        // Only a session that may control the host shares the clipboard.
+        if cfg.input.is_some() {
+            net.clipboard = crate::clipboard::open(&cfg.clipboard);
+        }
         log::info!(
             "session {:08x}: {}x{}@{} {}",
             ack.session_id,

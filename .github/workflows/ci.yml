@@ -113,6 +113,26 @@ jobs:
           echo 'SUBSYSTEM=="input", KERNEL=="event*", MODE="0666"' |
             sudo tee /etc/udev/rules.d/99-fernsicht-test.rules
           sudo udevadm control --reload-rules
+      # Two desktops for the clipboard tests: headless Sway (wlroots' data
+      # control; KWin's is tried by hand), one for the host, one for the
+      # client.
+      - name: Two headless Wayland compositors
+        run: |
+          sudo apt-get install -y -q sway
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          for i in 1 2; do
+            env -u WAYLAND_DISPLAY WLR_BACKENDS=headless WLR_RENDERER=pixman \
+              WLR_LIBINPUT_NO_DEVICES=1 LIBSEAT_BACKEND=noop \
+              sway -c /dev/null > "/tmp/sway$i.log" 2>&1 &
+            for _ in $(seq 50); do
+              [ "$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' | wc -l)" -ge "$i" ] && break
+              sleep 0.2
+            done
+          done
+          mapfile -t sockets < <(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' | sort)
+          if [ "${#sockets[@]}" -lt 2 ]; then cat /tmp/sway*.log; exit 1; fi
+          echo "FERNSICHT_WAYLAND_SOCKET=${sockets[0]}" >> "$GITHUB_ENV"
+          echo "FERNSICHT_WAYLAND_SOCKET_2=${sockets[1]}" >> "$GITHUB_ENV"
       # Failed tests become annotations: readable without a login. CLI entry
       # points run as separate processes in the binary tests, so they are
       # not measured; nor is the Vulkan code in crates/gpu, which needs a

@@ -49,6 +49,7 @@ fernsicht-codec.workspace = true
 fernsicht-gpu = { workspace = true, optional = true }
 fernsicht-core.workspace = true
 fernsicht-input = { workspace = true, features = ["gamepad"] }
+fernsicht-clipboard.workspace = true
 fernsicht-net.workspace = true
 libc.workspace = true
 fernsicht-proto.workspace = true

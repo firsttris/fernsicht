@@ -53,6 +53,9 @@ pub struct ClientConfig {
     /// Writes the received bitstream here (H.264 Annex B: plays with
     /// `ffplay` or `mpv`). Only frames the decoder gets are written.
     pub record: Option<std::path::PathBuf>,
+    /// Whose clipboard the session shares with the host (with input only).
+    /// Off by default here: the program turns it on.
+    pub clipboard: fernsicht_clipboard::Place,
 }
 
 impl Default for ClientConfig {
@@ -79,6 +82,7 @@ impl Default for ClientConfig {
             pointer: Arc::default(),
             security: None,
             record: None,
+            clipboard: fernsicht_clipboard::Place::Off,
         }
     }
 }

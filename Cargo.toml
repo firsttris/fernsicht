@@ -25,6 +25,7 @@ fernsicht-shader = { path = "crates/shader" }
 fernsicht-input = { path = "crates/input" }
 fernsicht-audio = { path = "crates/audio" }
 fernsicht-secure = { path = "crates/secure" }
+fernsicht-clipboard = { path = "crates/clipboard" }
 fernsicht-host-agent = { path = "apps/host-agent" }
 fernsicht-client = { path = "apps/client" }
 
@@ -61,7 +62,9 @@ winit = "0.30"
 # (keyboard-shortcuts-inhibit), on winit's own Wayland connection.
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+# The clipboard on compositors that offer only wlroots' data control.
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11-dl = "2.21"
 
 # test-only

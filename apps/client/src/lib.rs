@@ -14,6 +14,7 @@
 //! `input`, `monitors` and `summary` hold what an app hands in and gets back.
 
 mod audio;
+mod clipboard;
 mod config;
 mod congestion;
 mod cursor;

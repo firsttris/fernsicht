@@ -1220,6 +1220,7 @@ dependencies = [
  "env_logger",
  "fernsicht-audio",
  "fernsicht-capture",
+ "fernsicht-clipboard",
  "fernsicht-codec",
  "fernsicht-core",
  "fernsicht-gpu",
@@ -1239,6 +1240,19 @@ dependencies = [
  "wayland-protocols",
  "winit",
  "x11-dl",
+]
+
+[[package]]
+name = "fernsicht-clipboard"
+version = "0.1.4"
+dependencies = [
+ "fernsicht-proto",
+ "libc",
+ "log",
+ "proptest",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]
@@ -1276,6 +1290,7 @@ dependencies = [
  "escargot",
  "fernsicht-audio",
  "fernsicht-client",
+ "fernsicht-clipboard",
  "fernsicht-codec",
  "fernsicht-core",
  "fernsicht-gpu",
@@ -1309,6 +1324,7 @@ dependencies = [
  "env_logger",
  "fernsicht-audio",
  "fernsicht-capture",
+ "fernsicht-clipboard",
  "fernsicht-codec",
  "fernsicht-core",
  "fernsicht-input",

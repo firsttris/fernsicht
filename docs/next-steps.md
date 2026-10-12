@@ -41,7 +41,7 @@ From the [performance](performance.md) page, in its recommended order:
 
 ## 4. Features
 
-- **Clipboard and file transfer** between client and host.
+- **File transfer** between client and host, and pictures in the clipboard (text works).
 - **Gyro and touchpad** of PlayStation pads (a virtual DualSense on the host, through uhid), rumble
   in the web viewer, and more than four controllers.
 - **A visible hint when the pointer is captured**, and how to release it.

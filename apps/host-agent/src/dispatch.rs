@@ -170,6 +170,22 @@ impl HostAgent {
                 }
             }
             Packet::Input(h, body) if authentic => on_input(l, &h, body),
+            Packet::Clipboard(c, data) if authentic => {
+                if let Some(s) = l.session.as_mut()
+                    && ours(s, c.session_id)
+                    && let Some(clip) = s.clipboard.as_mut()
+                {
+                    clip.piece(&s.link, &c, data);
+                }
+            }
+            Packet::ClipboardAck(a) if authentic => {
+                if let Some(s) = l.session.as_mut()
+                    && ours(s, a.session_id)
+                    && let Some(clip) = s.clipboard.as_mut()
+                {
+                    clip.acked(&a);
+                }
+            }
             Packet::Nack(n) if authentic => {
                 if let Some(s) = l.session.as_ref()
                     && ours(s, n.session_id)

@@ -50,6 +50,8 @@ pub(crate) struct Session {
     pub(crate) input: Option<Box<dyn InputSink>>,
     pub(crate) input_seen: Dedup,
     pub(crate) input_errors: RepeatedError,
+    /// The desktop's clipboard, shared (input on, not a browser).
+    pub(crate) clipboard: Option<crate::clipboard::SessionClipboard>,
     /// GPU clocked up while the session runs; dropped with it.
     pub(crate) _gpu: Option<crate::power::GpuBoost>,
 }

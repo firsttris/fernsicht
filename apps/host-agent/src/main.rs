@@ -71,6 +71,9 @@ struct Args {
     /// through /dev/uinput).
     #[arg(long)]
     input: bool,
+    /// Do not share the desktop's clipboard with clients that control it.
+    #[arg(long)]
+    no_clipboard: bool,
     /// TCP address of the web viewer (page and API for browsers).
     #[arg(long, default_value = "0.0.0.0:47800")]
     web: String,
@@ -261,6 +264,11 @@ fn main() -> anyhow::Result<()> {
             InputKind::Uinput
         } else {
             InputKind::Off
+        },
+        clipboard: if args.no_clipboard {
+            fernsicht_clipboard::Place::Off
+        } else {
+            fernsicht_clipboard::Place::Here
         },
         description: HostDescription::of_this_machine(&encoder),
         web: (!args.no_web).then(|| args.web.clone()),

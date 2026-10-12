@@ -77,7 +77,7 @@ the [installation guide](https://firsttris.github.io/fernsicht/installation.html
 
 | | |
 |---|---|
-| 🖥️ **Remote desktop** | Mouse and keyboard reliably over UDP, every event exactly once; the pointer drawn by the client so it never lags; several monitors with switching in the session; system keys (Meta, Alt+Tab, Ctrl+Alt+Del) in fullscreen or from a menu |
+| 🖥️ **Remote desktop** | Mouse and keyboard reliably over UDP, every event exactly once; the pointer drawn by the client so it never lags; several monitors with switching in the session; system keys (Meta, Alt+Tab, Ctrl+Alt+Del) in fullscreen or from a menu; a shared clipboard (text, on KDE, Sway, Hyprland, COSMIC) |
 | 🎮 **Game streaming** | Gaming mode with a captured pointer (relative mouse), up to four controllers that appear on the host as Xbox 360 pads Steam knows (any layout through SDL3, rumble back to the controller), 60 to 144 fps |
 | ⚡ **Low latency** | KMS capture at vblank, zero-copy into VAAPI, NVENC or Vulkan Video, low-latency encoder settings, Reed-Solomon FEC (retransmits only in the LAN, for what FEC cannot repair), UDP paced at the rate the path delivers, decoded pictures drawn where the GPU decoded them (Vulkan Video), a per-stage latency overlay |
 | 🎞️ **AV1, HEVC, H.264** | Each session takes the best codec both sides do in hardware; switchable in the settings; 10-bit desktops stream in 10 bit (HEVC Main 10, AV1) without banding; HDR desktops are recognised and tone-mapped for the client's display |

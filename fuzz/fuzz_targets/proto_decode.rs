@@ -48,6 +48,8 @@ fuzz_target!(|data: &[u8]| {
         Packet::KeyframeRequest(p) => p.encode(&mut buf),
         Packet::Nack(p) => p.encode(&mut buf),
         Packet::Rumble(p) => p.encode(&mut buf),
+        Packet::Clipboard(c, data) => c.encode(data, &mut buf),
+        Packet::ClipboardAck(p) => p.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

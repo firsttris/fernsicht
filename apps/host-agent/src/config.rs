@@ -32,6 +32,9 @@ pub struct HostConfig {
     pub input: InputKind,
     /// Sound sent along.
     pub audio: AudioKind,
+    /// Whose clipboard a session that may control the desktop shares
+    /// (none without input).
+    pub clipboard: fernsicht_clipboard::Place,
     /// Pairing and encryption. `None` (the library default) accepts anyone
     /// unencrypted: for tests only; the program always sets it.
     pub security: Option<Arc<HostSecurity>>,
@@ -253,6 +256,7 @@ impl Default for HostConfig {
             encoder: EncoderKind::default(),
             input: InputKind::default(),
             audio: AudioKind::default(),
+            clipboard: fernsicht_clipboard::Place::default(),
             security: None,
             control: None,
             description: HostDescription::default(),

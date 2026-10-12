@@ -59,6 +59,8 @@ pub enum Kind {
     KeyframeRequest = 21,
     Nack = 22,
     Rumble = 23,
+    Clipboard = 24,
+    ClipboardAck = 25,
 }
 
 impl Kind {
@@ -87,6 +89,8 @@ impl Kind {
             21 => Kind::KeyframeRequest,
             22 => Kind::Nack,
             23 => Kind::Rumble,
+            24 => Kind::Clipboard,
+            25 => Kind::ClipboardAck,
             _ => return None,
         })
     }
@@ -117,7 +121,9 @@ impl Kind {
             | Kind::Discover
             | Kind::SelectMonitor
             | Kind::Nack
-            | Kind::Rumble => 0,
+            | Kind::Rumble
+            | Kind::Clipboard
+            | Kind::ClipboardAck => 0,
         }
     }
 }
@@ -1486,6 +1492,91 @@ impl SelectMonitor {
     }
 }
 
+/// Bytes of clipboard text one [`ClipboardChunk`] carries.
+pub const CLIPBOARD_CHUNK: usize = 1024;
+
+/// The longest clipboard text that goes across.
+pub const MAX_CLIPBOARD_TEXT: usize = 256 * 1024;
+
+/// A piece of a clipboard text, both ways: text `serial` (newer replaces
+/// older) of `total` bytes, these at `offset` (a multiple of
+/// [`CLIPBOARD_CHUNK`]). Every piece but the last is a whole chunk; an
+/// emptied clipboard is one empty piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipboardChunk {
+    pub session_id: u32,
+    pub serial: u32,
+    pub total: u32,
+    pub offset: u32,
+}
+
+impl ClipboardChunk {
+    pub const HEADER_LEN: usize = PREFIX_LEN + 16;
+
+    /// Writes the header and `data` (at most [`CLIPBOARD_CHUNK`] bytes).
+    pub fn encode(&self, data: &[u8], buf: &mut [u8]) -> usize {
+        assert!(data.len() <= CLIPBOARD_CHUNK, "clipboard chunk too large");
+        let len = Self::HEADER_LEN + data.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Clipboard, 0);
+        w.u32(self.session_id);
+        w.u32(self.serial);
+        w.u32(self.total);
+        w.u32(self.offset);
+        w.bytes(data);
+        len
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(ClipboardChunk {
+            session_id: r.u32()?,
+            serial: r.u32()?,
+            total: r.u32()?,
+            offset: r.u32()?,
+        })
+    }
+
+    /// Whether `len` bytes at its offset make a piece of its text.
+    fn fits(&self, len: usize) -> bool {
+        let (total, offset) = (self.total as usize, self.offset as usize);
+        total <= MAX_CLIPBOARD_TEXT
+            && offset.is_multiple_of(CLIPBOARD_CHUNK)
+            && offset <= total
+            && len == CLIPBOARD_CHUNK.min(total - offset)
+            && (len > 0 || total == 0)
+    }
+}
+
+/// How much of clipboard text `serial` arrived without gaps (`upto`
+/// bytes), both ways: the sender sends again from there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipboardAck {
+    pub session_id: u32,
+    pub serial: u32,
+    pub upto: u32,
+}
+
+impl ClipboardAck {
+    pub const LEN: usize = PREFIX_LEN + 12;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::ClipboardAck, 0);
+        w.u32(self.session_id);
+        w.u32(self.serial);
+        w.u32(self.upto);
+        Self::LEN
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(ClipboardAck {
+            session_id: r.u32()?,
+            serial: r.u32()?,
+            upto: r.u32()?,
+        })
+    }
+}
+
 /// A gamepad's motors, host → client (D9): what a game on the host plays
 /// on the virtual pad `pad`, for the client's pad. `low` is the big,
 /// low-frequency motor, `high` the small one (0..65535), for
@@ -1694,6 +1785,9 @@ pub enum Packet<'a> {
     KeyframeRequest(KeyframeRequest),
     Nack(Nack),
     Rumble(Rumble),
+    /// A piece of a clipboard text, and its bytes.
+    Clipboard(ClipboardChunk, &'a [u8]),
+    ClipboardAck(ClipboardAck),
 }
 
 impl<'a> Packet<'a> {
@@ -1831,6 +1925,21 @@ impl<'a> Packet<'a> {
                 Packet::SelectMonitor(m)
             }
             Kind::Nack => Packet::Nack(Nack::read(&mut r)?),
+            Kind::Clipboard => {
+                let c = ClipboardChunk::read(&mut r)?;
+                let data = r.rest();
+                if !c.fits(data.len()) {
+                    return Err(DecodeError::Invalid("clipboard chunk"));
+                }
+                Packet::Clipboard(c, data)
+            }
+            Kind::ClipboardAck => {
+                let a = ClipboardAck::read(&mut r)?;
+                if !r.is_empty() || a.upto > MAX_CLIPBOARD_TEXT as u32 {
+                    return Err(DecodeError::Invalid("clipboard ack"));
+                }
+                Packet::ClipboardAck(a)
+            }
             Kind::Rumble => {
                 let m = Rumble::read(&mut r)?;
                 if !r.is_empty() {
@@ -2382,6 +2491,55 @@ mod tests {
         assert_eq!(both.best(&pref), Some(Codec::Hevc));
         assert_eq!(CodecSet::H264.best(&pref), Some(Codec::H264));
         assert_eq!(CodecSet::EMPTY.best(&pref), None);
+    }
+
+    #[test]
+    fn clipboard_pieces_roundtrip_and_are_checked() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let text = vec![b'x'; 1500];
+        let first = ClipboardChunk {
+            session_id: 7,
+            serial: 3,
+            total: 1500,
+            offset: 0,
+        };
+        let n = first.encode(&text[..CLIPBOARD_CHUNK], &mut buf);
+        assert!(n <= MAX_DATAGRAM);
+        assert_eq!(
+            Packet::decode(&buf[..n]),
+            Ok(Packet::Clipboard(first, &text[..CLIPBOARD_CHUNK]))
+        );
+        let last = ClipboardChunk {
+            offset: 1024,
+            ..first
+        };
+        let n = last.encode(&text[1024..], &mut buf);
+        assert!(Packet::decode(&buf[..n]).is_ok(), "the short last piece");
+        let n = last.encode(&text[1024..1100], &mut buf);
+        assert!(Packet::decode(&buf[..n]).is_err(), "shorter than its piece");
+        let n = ClipboardChunk { offset: 3, ..first }.encode(&text[..1024], &mut buf);
+        assert!(Packet::decode(&buf[..n]).is_err(), "off the grid");
+        let n = ClipboardChunk {
+            total: MAX_CLIPBOARD_TEXT as u32 + 1,
+            ..first
+        }
+        .encode(&text[..1024], &mut buf);
+        assert!(Packet::decode(&buf[..n]).is_err(), "too long a text");
+        let empty = ClipboardChunk { total: 0, ..first };
+        let n = empty.encode(&[], &mut buf);
+        assert_eq!(
+            Packet::decode(&buf[..n]),
+            Ok(Packet::Clipboard(empty, &[][..]))
+        );
+
+        let ack = ClipboardAck {
+            session_id: 7,
+            serial: 3,
+            upto: 1024,
+        };
+        let n = ack.encode(&mut buf);
+        assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::ClipboardAck(ack)));
+        assert!(Packet::decode(&buf[..n + 1]).is_err(), "trailing bytes");
     }
 
     #[test]

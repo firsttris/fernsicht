@@ -14,6 +14,7 @@
 mod audio;
 mod backends;
 mod capture;
+mod clipboard;
 mod config;
 pub mod control;
 mod dispatch;
@@ -150,6 +151,11 @@ impl HostAgent {
 
         while !stop.load(Ordering::Relaxed) {
             self.end_if_over(&mut l);
+            if let Some(s) = l.session.as_mut()
+                && let Some(c) = s.clipboard.as_mut()
+            {
+                c.tick(&s.link, s.params.session_id, now_us());
+            }
             if let Some(w) = &self.web {
                 while let Ok(req) = w.requests.try_recv() {
                     self.on_web_request(req, &mut l.session);

@@ -1,0 +1,22 @@
+[package]
+name = "fernsicht-clipboard"
+description = "The clipboard between client and host: Wayland data control, and the transfer"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fernsicht-proto.workspace = true
+libc.workspace = true
+log.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

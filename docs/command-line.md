@@ -28,7 +28,8 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 | `--kms-card` | first card with a display | e.g. `/dev/dri/card1` |
 | `--kms-connector` | first active display | the monitor a session starts with, e.g. `DP-1`; switching during the session is possible |
 | `--audio` | `desktop` with KMS, `off` with the test pattern | `desktop` (what this computer plays), `tone` (440 Hz test tone), `off` |
-| `--input` | off | accept mouse, keyboard and gamepads from paired clients (virtual devices through `/dev/uinput`) |
+| `--input` | off | accept mouse, keyboard and gamepads from paired clients (virtual devices through `/dev/uinput`); with it the desktop's clipboard is shared |
+| `--no-clipboard` | | do not share the desktop's clipboard with clients |
 | `--pair` | | open pairing for 5 minutes at start and show the PIN |
 | `--state-dir` | `/var/lib/fernsicht` as root, else `~/.config/fernsicht/host` | the host's key and paired clients |
 | `--control` | `/run/fernsicht/control.sock` for the service, else the user's runtime directory | the running host's control socket |
@@ -68,6 +69,7 @@ given).
 | `--view-only` | | send no mouse or keyboard input |
 | `--no-audio` | | do not play the host's sound |
 | `--no-gamepad` | | leave this machine's gamepads out |
+| `--no-clipboard` | | do not share this machine's clipboard with the host |
 | `--headless` | | no window: decode only and print the overlay |
 | `--record <file>` | | save the received video: `ffplay file.h264`; HEVC as `file.h265`; AV1 is raw OBUs, `ffplay -f obu file.obu` |
 | `--duration <s>` | until Ctrl+C | stop after this many seconds |

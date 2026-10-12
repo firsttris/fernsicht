@@ -117,6 +117,15 @@ pass them to the host instead (Wayland `keyboard-shortcuts-inhibit`; KDE asks on
 it; on X11 a keyboard grab). In a plain window Alt+Tab stays local, so you can always get out. When
 the desktop refuses, the “Tasten senden” menu still works.
 
+### Clipboard
+
+Text copied on one side can be pasted on the other, both ways, up to 256 KiB. When a session starts,
+this computer's clipboard goes to the host (it wins over what the host held). It takes a desktop
+that offers Wayland's clipboard protocol for managers (data control): KDE Plasma, Sway, Hyprland,
+COSMIC. GNOME does not offer it, and then there is no shared clipboard. Only sessions that may
+control the host share it; a view-only session and the web viewer do not. `--no-clipboard` (client
+and host) turns it off.
+
 ### Gamepads
 
 Up to four controllers on the client become virtual Xbox 360 controllers on the host (“Fernsicht

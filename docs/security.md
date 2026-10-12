@@ -72,6 +72,10 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
   it. It answers root, the service's own user and the user of the active session on the machine's
   seat, as logind reports it (`sd_seat_get_active`): another local or SSH user cannot open pairing.
   The same user's sound and monitor layout are the ones streamed.
+- The clipboard is that user's too: the host reaches it through their compositor's socket (Wayland
+  data control). Only a session that may control the desktop (input on) shares it; a view-only
+  session and the web viewer never do, and `--no-clipboard` turns it off. Its texts travel inside
+  the session's sealed packets.
 - `fernsicht-host-agent unpair <name>` or the app forgets a device; a session it has running ends at
   once, it is turned away from then on, and the app says why. `fernsicht-host-agent disconnect` ends
   the running session, whoever it is.

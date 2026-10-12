@@ -137,6 +137,10 @@ impl HostAgent {
             params,
         };
         let is_web = web.is_some();
+        // Only for a client that may control the desktop anyway.
+        let clipboard = (input.is_some() && !is_web)
+            .then(|| crate::clipboard::open(&self.cfg.clipboard))
+            .flatten();
         let threads =
             self.spawn_threads(&pipe, (source, encoder, bounds), codec, web, &mut input)?;
 
@@ -160,6 +164,7 @@ impl HostAgent {
             input,
             input_seen: Dedup::default(),
             input_errors: RepeatedError::default(),
+            clipboard,
             _gpu: gpu,
         };
         Ok((session, handshake_reply))

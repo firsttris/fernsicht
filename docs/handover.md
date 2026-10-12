@@ -274,6 +274,12 @@ Confirmed live (2026-10-10, according to the user):
     (or `fftest /dev/input/eventN` on the virtual pad, from
     linuxconsoletools) should rumble the client's pad.
 
+14. **Clipboard.** Built, tested against KWin (virtual) and headless Sway,
+    never used live. In a session from bazzite to zentrale (KDE on both):
+    copy text on one, paste on the other, both ways; what bazzite held
+    when the session started should be on zentrale. The host's log says
+    “clipboard shared”.
+
 ## Open tasks, by importance
 
 The findings of the code review (bugs, security, performance, clean-up) are listed with
