@@ -113,8 +113,11 @@ jobs:
           echo 'SUBSYSTEM=="input", KERNEL=="event*", MODE="0666"' |
             sudo tee /etc/udev/rules.d/99-fernsicht-test.rules
           sudo udevadm control --reload-rules
-          # A DualSense through uhid needs the kernel's hid-playstation:
-          # required where it loads.
+          # A DualSense through uhid needs the kernel's uhid and
+          # hid-playstation, which the runner's kernel keeps in its extra
+          # modules: required where they load.
+          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" ||
+            echo "::warning::no extra modules for $(uname -r)"
           sudo modprobe uhid || true
           if sudo modprobe hid-playstation && [ -e /dev/uhid ]; then
             sudo chmod 666 /dev/uhid
