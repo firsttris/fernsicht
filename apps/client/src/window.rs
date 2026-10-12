@@ -460,7 +460,15 @@ pub fn run(
             fernsicht_client::pad_events_while_focused(input.clone(), pads_focused.clone()),
         )
         .map_err(|e| log::warn!("no gamepads: {e}"))
-        .ok(),
+        .ok()
+        .map(|pads| {
+            log::info!("gamepads through {}", pads.backend());
+            // The host's games rumble the pads here.
+            let pads = Arc::new(pads);
+            let to = pads.clone();
+            input.set_rumble(Arc::new(move |r| to.rumble(r)));
+            pads
+        }),
         _ => None,
     };
     let mut app = App {

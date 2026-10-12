@@ -648,6 +648,18 @@ fn on_packet(
                 on_video(pipe, net, &h, payload, datagram_len, now);
             }
         }
+        Packet::Rumble(r) => {
+            if ours(r.session_id)
+                && let Some(input) = &cfg.input
+            {
+                input.rumble(fernsicht_input::Rumble {
+                    pad: r.pad,
+                    low: r.low,
+                    high: r.high,
+                    ms: u32::from(r.duration_ms),
+                });
+            }
+        }
         Packet::Bye(_) => {
             log::info!("host closed the session");
             return Ok(false);

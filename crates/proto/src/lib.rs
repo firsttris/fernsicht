@@ -58,6 +58,7 @@ pub enum Kind {
     SelectMonitor = 20,
     KeyframeRequest = 21,
     Nack = 22,
+    Rumble = 23,
 }
 
 impl Kind {
@@ -85,6 +86,7 @@ impl Kind {
             20 => Kind::SelectMonitor,
             21 => Kind::KeyframeRequest,
             22 => Kind::Nack,
+            23 => Kind::Rumble,
             _ => return None,
         })
     }
@@ -114,7 +116,8 @@ impl Kind {
             | Kind::Reject
             | Kind::Discover
             | Kind::SelectMonitor
-            | Kind::Nack => 0,
+            | Kind::Nack
+            | Kind::Rumble => 0,
         }
     }
 }
@@ -1483,6 +1486,48 @@ impl SelectMonitor {
     }
 }
 
+/// A gamepad's motors, host → client (D9): what a game on the host plays
+/// on the virtual pad `pad`, for the client's pad. `low` is the big,
+/// low-frequency motor, `high` the small one (0..65535), for
+/// `duration_ms`; all 0 stops them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rumble {
+    pub session_id: u32,
+    pub pad: u8,
+    pub low: u16,
+    pub high: u16,
+    pub duration_ms: u16,
+}
+
+impl Rumble {
+    pub const LEN: usize = PREFIX_LEN + 11;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::Rumble, 0);
+        w.u32(self.session_id);
+        w.u8(self.pad);
+        w.u16(self.low);
+        w.u16(self.high);
+        w.u16(self.duration_ms);
+        Self::LEN
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let m = Rumble {
+            session_id: r.u32()?,
+            pad: r.u8()?,
+            low: r.u16()?,
+            high: r.u16()?,
+            duration_ms: r.u16()?,
+        };
+        if m.pad >= MAX_PADS {
+            return Err(DecodeError::Invalid("rumble pad"));
+        }
+        Ok(m)
+    }
+}
+
 /// The client cannot show the stream until a keyframe comes, client → host:
 /// sent the moment it sees a gap, and again while none comes. Feedback's
 /// keyframe flag says the same at its own pace (and to hosts before this
@@ -1648,6 +1693,7 @@ pub enum Packet<'a> {
     SelectMonitor(SelectMonitor),
     KeyframeRequest(KeyframeRequest),
     Nack(Nack),
+    Rumble(Rumble),
 }
 
 impl<'a> Packet<'a> {
@@ -1785,6 +1831,13 @@ impl<'a> Packet<'a> {
                 Packet::SelectMonitor(m)
             }
             Kind::Nack => Packet::Nack(Nack::read(&mut r)?),
+            Kind::Rumble => {
+                let m = Rumble::read(&mut r)?;
+                if !r.is_empty() {
+                    return Err(DecodeError::Invalid("trailing bytes after rumble"));
+                }
+                Packet::Rumble(m)
+            }
             Kind::KeyframeRequest => {
                 let k = KeyframeRequest::read(flags, &mut r)?;
                 if !r.is_empty() {
@@ -2329,6 +2382,25 @@ mod tests {
         assert_eq!(both.best(&pref), Some(Codec::Hevc));
         assert_eq!(CodecSet::H264.best(&pref), Some(Codec::H264));
         assert_eq!(CodecSet::EMPTY.best(&pref), None);
+    }
+
+    #[test]
+    fn rumble_roundtrips_for_the_pads_there_are() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        let r = Rumble {
+            session_id: 7,
+            pad: 3,
+            low: 0xffff,
+            high: 0x1234,
+            duration_ms: 300,
+        };
+        let n = r.encode(&mut buf);
+        assert_eq!(n, Rumble::LEN);
+        assert_eq!(Packet::decode(&buf[..n]), Ok(Packet::Rumble(r)));
+        let n = Rumble { pad: MAX_PADS, ..r }.encode(&mut buf);
+        assert!(Packet::decode(&buf[..n]).is_err(), "no such pad");
+        let n = r.encode(&mut buf);
+        assert!(Packet::decode(&buf[..n + 1]).is_err(), "trailing bytes");
     }
 
     #[test]

@@ -37,6 +37,8 @@ struct Script {
     go_silent_after: Option<Duration>,
     /// Announce two monitors after the ack.
     monitors: bool,
+    /// Rumble pad 2 after the ack (and send one of another session).
+    rumble: bool,
 }
 
 impl Default for Script {
@@ -49,6 +51,7 @@ impl Default for Script {
             bye_after: None,
             go_silent_after: None,
             monitors: false,
+            rumble: false,
         }
     }
 }
@@ -154,6 +157,19 @@ fn serve(sock: UdpSocket, script: Script, stop: &AtomicBool, seen: &Mutex<Observ
                             let current = seen.selected.last().map_or(0, |m| m.index);
                             let n = Monitors::encode(SESSION, current, &list, &mut out);
                             sock.send_to(&out[..n], from).unwrap();
+                        }
+                        if script.rumble {
+                            for session_id in [SESSION ^ 1, SESSION] {
+                                let r = Rumble {
+                                    session_id,
+                                    pad: 1,
+                                    low: 0xc000,
+                                    high: 0x3000,
+                                    duration_ms: 250,
+                                };
+                                let n = r.encode(&mut out);
+                                sock.send_to(&out[..n], from).unwrap();
+                            }
                         }
                     }
                 }
@@ -278,6 +294,41 @@ fn monitors_are_listed_and_switched() {
         [SelectMonitor {
             session_id: SESSION,
             index: 1
+        }]
+    );
+}
+
+#[test]
+fn the_hosts_rumble_reaches_the_pads() {
+    use fernsicht_client::InputHandle;
+    let host = FakeHost::start(Script {
+        rumble: true,
+        ..Script::default()
+    });
+    let input = Arc::new(InputHandle::default());
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let to = got.clone();
+    input.set_rumble(Arc::new(move |r| to.lock().unwrap().push(r)));
+    run(
+        ClientConfig {
+            host: host.addr.clone(),
+            duration: Some(Duration::from_millis(400)),
+            host_timeout: Duration::from_millis(600),
+            input: Some(input),
+            ..ClientConfig::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    host.finish();
+    // The other session's rumble is not ours.
+    assert_eq!(
+        *got.lock().unwrap(),
+        [fernsicht_input::Rumble {
+            pad: 1,
+            low: 0xc000,
+            high: 0x3000,
+            ms: 250
         }]
     );
 }

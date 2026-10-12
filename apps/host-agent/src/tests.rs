@@ -647,3 +647,19 @@ fn intra_refresh_is_agreed_only_with_nvenc() {
     };
     assert!(!nvenc.negotiate(&plain).refresh);
 }
+
+#[test]
+fn rumble_goes_to_the_native_client_only() {
+    use crate::input::{rumble_out, rumble_packet};
+    let r = fernsicht_input::Rumble {
+        pad: 2,
+        low: 0xffff,
+        high: 1,
+        ms: 100_000,
+    };
+    let p = rumble_packet(7, r);
+    assert_eq!((p.session_id, p.pad, p.low, p.high), (7, 2, 0xffff, 1));
+    assert_eq!(p.duration_ms, u16::MAX, "long rumble clipped, not wrapped");
+    let (tx, _rx) = crossbeam_channel::bounded(1);
+    assert!(rumble_out(&crate::link::Link::Web(tx), 7).is_none());
+}

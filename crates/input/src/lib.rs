@@ -6,12 +6,17 @@
 //! - [`uinput`] (feature `uinput`, host): virtual keyboard and mice at
 //!   kernel level; works under every compositor and on the login screen.
 //! - [`gamepad`] (feature `gamepad`, client): the machine's gamepads,
-//!   read from evdev.
+//!   through SDL3 ([`sdl`]: its controller database, rumble) where it
+//!   loads, else read from evdev.
 //! - [`Recorder`]: a sink that only records, for tests.
 
+#[cfg(feature = "uinput")]
+pub mod ff;
 #[cfg(feature = "gamepad")]
 pub mod gamepad;
 mod queue;
+#[cfg(feature = "gamepad")]
+pub mod sdl;
 #[cfg(feature = "uinput")]
 pub mod uinput;
 
@@ -29,6 +34,21 @@ pub mod buttons {
     pub const EXTRA: u16 = 0x114;
 }
 
+/// A gamepad's motors (D9): what a game on the host asks of the virtual
+/// pad `pad`, played on the client's pad. `low` is the big, low-frequency
+/// motor (Linux's strong magnitude), `high` the small one (weak), both
+/// 0..65535, for `ms` milliseconds; all 0 stops it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rumble {
+    pub pad: u8,
+    pub low: u16,
+    pub high: u16,
+    pub ms: u32,
+}
+
+/// Where rumble from the host's pads goes (the session's link).
+pub type RumbleOut = std::sync::Arc<dyn Fn(Rumble) + Send + Sync>;
+
 /// Where input events end up on the host.
 pub trait InputSink: Send {
     fn inject(&mut self, event: &InputEvent) -> Result<(), String>;
@@ -36,6 +56,10 @@ pub trait InputSink: Send {
     /// Lets go of every key and button still held (session over, client
     /// gone): nothing may stay pressed on the host.
     fn release_all(&mut self);
+
+    /// Rumble games ask of the sink's gamepads goes to `out` (sinks
+    /// without pads ignore it).
+    fn on_rumble(&mut self, _out: RumbleOut) {}
 }
 
 /// Records events instead of injecting them (tests, `--input record`).

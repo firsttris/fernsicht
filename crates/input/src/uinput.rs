@@ -8,7 +8,8 @@
 //! - a relative mouse (motion, buttons, wheel) for games,
 //! - per client gamepad, created when it is first used: an Xbox 360 pad
 //!   (its USB ids and the `xpad` driver's layout), which Steam, SDL and
-//!   games know without configuration.
+//!   games know without configuration, with its rumble motors
+//!   ([`crate::ff`]: what games play goes to the client).
 //!
 //! Compositors spread an absolute pointer over the whole desktop (all
 //! monitors). Positions arrive relative to the streamed monitor, so they
@@ -27,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use fernsicht_proto::{BTN_MOUSE_FIRST, BTN_MOUSE_LAST, InputEvent, KEY_MAX, MAX_PADS, PadAxis};
 
-use crate::InputSink;
+use crate::{InputSink, RumbleOut, ff};
 
 // linux/input-event-codes.h
 const EV_SYN: u16 = 0x00;
@@ -125,6 +126,8 @@ struct Caps {
     keys: Vec<u16>,
     rel: Vec<u16>,
     abs: Vec<Abs>,
+    /// Rumble motors (force feedback, `FF_RUMBLE`).
+    rumble: bool,
 }
 
 /// How a device introduces itself.
@@ -167,7 +170,9 @@ fn ioctl(file: &File, request: libc::c_ulong, arg: libc::c_ulong) -> Result<(), 
 
 impl Device {
     fn create(path: &Path, name: &str, id: Id, caps: &Caps) -> Result<Self, String> {
+        // Read too: a pad with motors hands us the games' effects.
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(path)
@@ -205,13 +210,17 @@ impl Device {
                 ioctl(&file, UI_ABS_SETUP, &abs as *const _ as libc::c_ulong)?;
             }
         }
+        if caps.rumble {
+            set(UI_SET_EVBIT, &[ff::EV_FF])?;
+            set(ff::UI_SET_FFBIT, &[ff::FF_RUMBLE])?;
+        }
         let mut setup = UinputSetup {
             bustype: id.bustype,
             vendor: id.vendor,
             product: id.product,
             version: id.version,
             name: [0; 80],
-            ff_effects_max: 0,
+            ff_effects_max: if caps.rumble { ff::MAX_EFFECTS } else { 0 },
         };
         let n = name.len().min(79);
         setup.name[..n].copy_from_slice(&name.as_bytes()[..n]);
@@ -298,6 +307,9 @@ pub struct Uinput {
     pads: Vec<Option<Device>>,
     pad_held: BTreeSet<(u8, u16)>,
     pad_axes: BTreeMap<(u8, PadAxis), i32>,
+    /// Where the pads' rumble goes, and the threads taking it.
+    rumble: Option<RumbleOut>,
+    feedback: Vec<ff::Feedback>,
 }
 
 /// A virtual Xbox 360 pad.
@@ -339,6 +351,7 @@ fn create_pad(path: &Path, n: u8) -> Result<Device, String> {
             keys: PAD_BUTTONS.to_vec(),
             rel: Vec::new(),
             abs,
+            rumble: true,
         },
     )
 }
@@ -392,6 +405,7 @@ impl Uinput {
                 keys: mouse_buttons(),
                 rel: WHEELS.to_vec(),
                 abs: vec![Abs::pointer(ABS_X), Abs::pointer(ABS_Y)],
+                ..Caps::default()
             },
         )?;
         let relative = Device::create(
@@ -401,7 +415,7 @@ impl Uinput {
             &Caps {
                 keys: mouse_buttons(),
                 rel: [REL_X, REL_Y].into_iter().chain(WHEELS).collect(),
-                abs: Vec::new(),
+                ..Caps::default()
             },
         )?;
         Ok(Self {
@@ -415,6 +429,8 @@ impl Uinput {
             pads: (0..MAX_PADS).map(|_| None).collect(),
             pad_held: BTreeSet::new(),
             pad_axes: BTreeMap::new(),
+            rumble: None,
+            feedback: Vec::new(),
         })
     }
 
@@ -425,7 +441,18 @@ impl Uinput {
             .get_mut(usize::from(n))
             .ok_or_else(|| format!("no gamepad {n}"))?;
         if slot.is_none() {
-            *slot = Some(create_pad(&self.path, n)?);
+            let pad = create_pad(&self.path, n)?;
+            if let Some(out) = &self.rumble {
+                match pad
+                    .file
+                    .try_clone()
+                    .and_then(|f| ff::Feedback::start(f, n, out.clone()))
+                {
+                    Ok(f) => self.feedback.push(f),
+                    Err(e) => log::warn!("gamepad {}: no rumble: {e}", n + 1),
+                }
+            }
+            *slot = Some(pad);
             log::info!("gamepad {} connected", n + 1);
         }
         Ok(slot.as_mut().expect("just created"))
@@ -542,6 +569,10 @@ impl Uinput {
 }
 
 impl InputSink for Uinput {
+    fn on_rumble(&mut self, out: RumbleOut) {
+        self.rumble = Some(out);
+    }
+
     fn inject(&mut self, event: &InputEvent) -> Result<(), String> {
         // Where a button event goes (scrolling goes to the last moved one).
         let mut pointer = self.pointer;
@@ -624,6 +655,8 @@ impl InputSink for Uinput {
 impl Drop for Uinput {
     fn drop(&mut self) {
         self.release_all();
+        // Before the pads go: the threads read their descriptors.
+        self.feedback.clear();
     }
 }
 

@@ -10,14 +10,19 @@ publish.workspace = true
 [features]
 # Virtual keyboard and mice through /dev/uinput (host side).
 uinput = ["dep:libc", "dep:log"]
-# The client's gamepads, read from evdev (client side).
-gamepad = ["dep:libc", "dep:log", "dep:fernsicht-core"]
+# The client's gamepads, through SDL3 (loaded at runtime) or evdev (client
+# side).
+gamepad = ["dep:libc", "dep:log", "dep:fernsicht-core", "dep:libloading"]
 
 [dependencies]
 fernsicht-core = { workspace = true, optional = true }
 fernsicht-proto.workspace = true
 libc = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+libloading.workspace = true

@@ -96,7 +96,8 @@ Added after that:
 7. **Gaming mode, gamepads, bitrate adaptation, app settings.**
    - Native client: `--gaming` (a click captures the pointer, relative
      motion), Ctrl+Alt+Shift+M captures and releases.
-   - Gamepads: The client reads controllers directly via evdev
+   - Gamepads: The client reads controllers through SDL3, loaded at
+     runtime (`crates/input/src/sdl.rs`), else directly via evdev
      (`crates/input/src/gamepad.rs`). The browser uses the Gamepad API.
      The host creates one virtual Xbox 360 controller per player
      (`crates/input/src/uinput.rs`). Buttons map by position (A at the
@@ -267,6 +268,12 @@ Confirmed live (2026-10-10, according to the user):
     should look like the desktop, not washed out. An HDR monitor on the
     client still shows it tone-mapped to SDR.
 
+13. **Rumble (D9).** Built, tested against SDL's virtual pad and (in CI)
+    a uinput pad, never felt live. On a client with SDL3 (bazzite has it)
+    the log says “gamepads through SDL”; a game on the host that rumbles
+    (or `fftest /dev/input/eventN` on the virtual pad, from
+    linuxconsoletools) should rumble the client's pad.
+
 ## Open tasks, by importance
 
 The findings of the code review (bugs, security, performance, clean-up) are listed with
@@ -289,8 +296,8 @@ collected in [performance.md](performance.md).
    at 1080p over Wi-Fi not quite sharp). Bitrate and keyframe quality.
 4. **Reference measurement with Sunshine/Moonlight**
    ([latency-baseline.md](latency-baseline.md)).
-5. **Games, remaining:** rumble (force feedback back to the controller),
-   more than 4 controllers.
+5. **Games, remaining:** gyro and touchpad (need a virtual DualSense on
+   the host), rumble in the browser, more than 4 controllers.
 6. **NVIDIA as host: check live.** Screen capture with NVENC is built.
    The path: KMS DMA-BUF → Vulkan compute (RGB → NV12, BT.709, scaled) →
    memory imported by CUDA → NVENC. Code: `crates/gpu/src/convert.rs`,

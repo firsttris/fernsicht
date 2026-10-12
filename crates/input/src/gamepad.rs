@@ -25,23 +25,23 @@ use std::time::{Duration, Instant};
 
 use fernsicht_proto::{BTN_PAD_FIRST, BTN_PAD_LAST, InputEvent, MAX_PADS, PadAxis};
 
-const EV_KEY: u16 = 0x01;
-const EV_ABS: u16 = 0x03;
-const BTN_SOUTH: u16 = 0x130;
-const BTN_NORTH: u16 = 0x133;
-const BTN_WEST: u16 = 0x134;
-const BTN_TL2: u16 = 0x138;
-const BTN_TR2: u16 = 0x139;
-const BTN_DPAD_UP: u16 = 0x220;
-const BTN_DPAD_DOWN: u16 = 0x221;
-const BTN_DPAD_LEFT: u16 = 0x222;
-const BTN_DPAD_RIGHT: u16 = 0x223;
-const ABS_X: u16 = 0x00;
-const ABS_Y: u16 = 0x01;
-const ABS_Z: u16 = 0x02;
-const ABS_RX: u16 = 0x03;
-const ABS_RY: u16 = 0x04;
-const ABS_RZ: u16 = 0x05;
+pub(crate) const EV_KEY: u16 = 0x01;
+pub(crate) const EV_ABS: u16 = 0x03;
+pub(crate) const BTN_SOUTH: u16 = 0x130;
+pub(crate) const BTN_NORTH: u16 = 0x133;
+pub(crate) const BTN_WEST: u16 = 0x134;
+pub(crate) const BTN_TL2: u16 = 0x138;
+pub(crate) const BTN_TR2: u16 = 0x139;
+pub(crate) const BTN_DPAD_UP: u16 = 0x220;
+pub(crate) const BTN_DPAD_DOWN: u16 = 0x221;
+pub(crate) const BTN_DPAD_LEFT: u16 = 0x222;
+pub(crate) const BTN_DPAD_RIGHT: u16 = 0x223;
+pub(crate) const ABS_X: u16 = 0x00;
+pub(crate) const ABS_Y: u16 = 0x01;
+pub(crate) const ABS_Z: u16 = 0x02;
+pub(crate) const ABS_RX: u16 = 0x03;
+pub(crate) const ABS_RY: u16 = 0x04;
+pub(crate) const ABS_RZ: u16 = 0x05;
 const ABS_GAS: u16 = 0x09;
 const ABS_BRAKE: u16 = 0x0a;
 const ABS_HAT0X: u16 = 0x10;
@@ -349,82 +349,141 @@ struct OpenPad {
     state: PadState,
 }
 
-/// Reads the machine's gamepads on a thread until dropped.
+/// Reads the machine's gamepads on a thread until dropped: through SDL3
+/// where it loads ([`crate::sdl`]: its controller database, rumble),
+/// else from evdev.
 pub struct Gamepads {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// Which backend reads them ("SDL" or "evdev").
+    backend: &'static str,
+    /// Rumble goes to SDL's thread (none with evdev).
+    rumbles: Option<crate::sdl::Rumbles>,
 }
 
 impl Gamepads {
-    /// Watches `dir` (`/dev/input`) and hands every pad event to `sink`.
-    /// `skip_own`: leave out Fernsicht's own virtual devices.
+    /// Watches the machine's pads (evdev: in `dir`, `/dev/input`) and
+    /// hands every pad event to `sink`. `skip_own`: leave out Fernsicht's
+    /// own virtual devices.
     pub fn start(
         dir: PathBuf,
         skip_own: bool,
+        sink: impl FnMut(InputEvent) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let sdl = std::env::var_os("FERNSICHT_NO_SDL").is_none();
+        Self::spawn(dir, skip_own, sdl, sink)
+    }
+
+    /// [`Self::start`] with evdev only.
+    pub fn evdev(
+        dir: PathBuf,
+        skip_own: bool,
+        sink: impl FnMut(InputEvent) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn(dir, skip_own, false, sink)
+    }
+
+    fn spawn(
+        dir: PathBuf,
+        skip_own: bool,
+        sdl_wanted: bool,
         mut sink: impl FnMut(InputEvent) + Send + 'static,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let s = stop.clone();
+        let (rumbles, rumble_rx) = crate::sdl::rumble_channel();
+        let (ready_tx, ready) = std::sync::mpsc::channel();
         // The pads' input goes out from here: as hot as the network's.
         let thread = fernsicht_core::thread::spawn_hot("gamepads", move || {
-            let mut pads: Vec<OpenPad> = Vec::new();
-            let mut scanned: Option<Instant> = None;
-            let mut buf = [0u8; 24 * 64];
-            while !s.load(Ordering::Relaxed) {
-                if scanned.is_none_or(|t| t.elapsed() >= RESCAN) {
-                    scan(&dir, skip_own, &mut pads);
-                    scanned = Some(Instant::now());
-                }
-                if pads.is_empty() {
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-                let mut fds: Vec<libc::pollfd> = pads
-                    .iter()
-                    .map(|p| libc::pollfd {
-                        fd: p.file.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    })
-                    .collect();
-                // SAFETY: `fds` is a valid array of pollfd for the call.
-                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 100) };
-                let mut gone = Vec::new();
-                for (i, p) in pads.iter_mut().enumerate() {
-                    if fds[i].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-                        gone.push(i);
-                        continue;
-                    }
-                    if fds[i].revents & libc::POLLIN == 0 {
-                        continue;
-                    }
-                    match p.file.read(&mut buf) {
-                        Ok(n) => {
-                            for e in buf[..n].as_chunks::<24>().0 {
-                                let kind = u16::from_ne_bytes([e[16], e[17]]);
-                                let code = u16::from_ne_bytes([e[18], e[19]]);
-                                let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
-                                p.state
-                                    .translate(&p.map, p.slot, kind, code, value, &mut sink);
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(_) => gone.push(i),
-                    }
-                }
-                for i in gone.into_iter().rev() {
-                    let mut p = pads.remove(i);
-                    log::info!("gamepad {} unplugged", p.slot + 1);
-                    for ev in p.state.release(p.slot) {
-                        sink(ev);
-                    }
+            if sdl_wanted {
+                match crate::sdl::run(skip_own, &s, rumble_rx, &ready_tx, &mut sink) {
+                    Ok(()) => return,
+                    Err(e) => log::info!("gamepads from evdev: {e}"),
                 }
             }
+            let _ = ready_tx.send(Ok("evdev"));
+            evdev_loop(&dir, skip_own, &s, &mut sink);
         })?;
+        let backend = ready
+            .recv()
+            .map_err(|_| std::io::Error::other("the gamepad thread ended"))?
+            .map_err(std::io::Error::other)?;
         Ok(Self {
             stop,
             thread: Some(thread),
+            backend,
+            rumbles: (backend == "SDL").then_some(rumbles),
         })
+    }
+
+    pub fn backend(&self) -> &'static str {
+        self.backend
+    }
+
+    /// Plays `r` on the client's pad (SDL only; evdev pads stay still).
+    pub fn rumble(&self, r: crate::sdl::Rumble) {
+        if let Some(rumbles) = &self.rumbles
+            && rumbles.tx.send(r).is_ok()
+        {
+            rumbles.waker.wake();
+        }
+    }
+}
+
+/// Reads the pads in `dir` from evdev until `stop`.
+fn evdev_loop(dir: &Path, skip_own: bool, stop: &AtomicBool, sink: &mut impl FnMut(InputEvent)) {
+    let mut pads: Vec<OpenPad> = Vec::new();
+    let mut scanned: Option<Instant> = None;
+    let mut buf = [0u8; 24 * 64];
+    while !stop.load(Ordering::Relaxed) {
+        if scanned.is_none_or(|t| t.elapsed() >= RESCAN) {
+            scan(dir, skip_own, &mut pads);
+            scanned = Some(Instant::now());
+        }
+        if pads.is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        let mut fds: Vec<libc::pollfd> = pads
+            .iter()
+            .map(|p| libc::pollfd {
+                fd: p.file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        // SAFETY: `fds` is a valid array of pollfd for the call.
+        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 100) };
+        let mut gone = Vec::new();
+        for (i, p) in pads.iter_mut().enumerate() {
+            if fds[i].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                gone.push(i);
+                continue;
+            }
+            if fds[i].revents & libc::POLLIN == 0 {
+                continue;
+            }
+            match p.file.read(&mut buf) {
+                Ok(n) => {
+                    for e in buf[..n].as_chunks::<24>().0 {
+                        let kind = u16::from_ne_bytes([e[16], e[17]]);
+                        let code = u16::from_ne_bytes([e[18], e[19]]);
+                        let value = i32::from_ne_bytes([e[20], e[21], e[22], e[23]]);
+                        p.state
+                            .translate(&p.map, p.slot, kind, code, value, &mut *sink);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => gone.push(i),
+            }
+        }
+        for i in gone.into_iter().rev() {
+            let mut p = pads.remove(i);
+            log::info!("gamepad {} unplugged", p.slot + 1);
+            for ev in p.state.release(p.slot) {
+                sink(ev);
+            }
+        }
     }
 }
 
@@ -435,6 +494,22 @@ impl Drop for Gamepads {
             let _ = t.join();
         }
     }
+}
+
+/// Whether a device name is one of Fernsicht's virtual devices (the
+/// host's pads, if client and host share a machine).
+pub fn is_own(name: &str) -> bool {
+    name.starts_with("Fernsicht")
+}
+
+/// Whether the evdev node at `path` (`/dev/input/event12`) is one of ours,
+/// by the kernel's name for it (sysfs).
+pub fn is_own_device(path: &str) -> bool {
+    let Some(node) = Path::new(path).file_name() else {
+        return false;
+    };
+    let name = Path::new("/sys/class/input").join(node).join("device/name");
+    std::fs::read_to_string(name).is_ok_and(|n| is_own(n.trim()))
 }
 
 /// Opens pads that appeared since the last look.
@@ -468,7 +543,7 @@ fn scan(dir: &Path, skip_own: bool, pads: &mut Vec<OpenPad>) {
             continue;
         };
         let Some(probe) = probe(&file) else { continue };
-        if skip_own && probe.name.starts_with("Fernsicht") {
+        if skip_own && is_own(&probe.name) {
             continue;
         }
         let map = Mapping::new(&probe.abs, xpad_layout(&path, probe.vendor, probe.product));

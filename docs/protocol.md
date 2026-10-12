@@ -33,6 +33,7 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 | Monitors (19) / SelectMonitor (20) | host → client / back | the host's monitors and which is shown; the client's choice |
 | KeyframeRequest (21) | client → host | the client cannot show the stream: the last frame it completed and its round-trip time; sent at once, again while no keyframe comes |
 | Nack (22) | client → host | the shards of one frame FEC cannot repair (FEC group and index, up to 64) |
+| Rumble (23) | host → client | a pad's motors, as a game on the host plays them: pad, low- and high-frequency strength, duration |
 
 Limits are enforced while parsing: frames at most 8 MiB, at most 1,024 shards per FEC group, pointer
 images at most 256×256, at most 64 input events per packet, at most 8 monitors. The format is covered

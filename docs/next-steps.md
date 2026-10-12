@@ -44,7 +44,8 @@ From the [performance](performance.md) page, in its recommended order:
 ## 4. Features
 
 - **Clipboard and file transfer.** The buttons are in the toolbar but do nothing yet.
-- **Rumble** (force feedback back to the controller) and more than four controllers.
+- **Gyro and touchpad** of PlayStation pads (a virtual DualSense on the host, through uhid), rumble
+  in the web viewer, and more than four controllers.
 - **A visible hint when the pointer is captured**, and how to release it.
 - **PipeWire portal capture** as a second capture backend: no root needed, works where KMS cannot
   (e.g. some multi-GPU setups), at the cost of a portal dialog and a little latency.

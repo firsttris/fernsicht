@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use fernsicht_input::InputSink;
 use fernsicht_input::uinput::Uinput;
+use fernsicht_input::{InputSink, Rumble, RumbleOut};
 
 use crate::config::InputKind;
 use crate::shared::Shared;
@@ -60,4 +60,35 @@ impl InputSink for FollowScreen {
     fn release_all(&mut self) {
         self.uinput.release_all();
     }
+
+    fn on_rumble(&mut self, out: RumbleOut) {
+        self.uinput.on_rumble(out);
+    }
+}
+
+/// A rumble of the session's pads as the packet that carries it.
+pub(crate) fn rumble_packet(session_id: u32, r: Rumble) -> fernsicht_proto::Rumble {
+    fernsicht_proto::Rumble {
+        session_id,
+        pad: r.pad,
+        low: r.low,
+        high: r.high,
+        duration_ms: u16::try_from(r.ms).unwrap_or(u16::MAX),
+    }
+}
+
+/// Where the session's pads rumble to: the native client (browsers get
+/// none: the web viewer has no use for the packet yet).
+pub(crate) fn rumble_out(link: &crate::link::Link, session_id: u32) -> Option<RumbleOut> {
+    if matches!(link, crate::link::Link::Web(_)) {
+        return None;
+    }
+    let link = link.clone();
+    Some(Arc::new(move |r| {
+        let mut buf = [0u8; fernsicht_proto::Rumble::LEN];
+        let n = rumble_packet(session_id, r).encode(&mut buf);
+        if let Err(e) = link.send(&buf[..n]) {
+            log::debug!("rumble: {e}");
+        }
+    }))
 }

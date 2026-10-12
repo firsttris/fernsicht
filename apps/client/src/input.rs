@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use fernsicht_input::{InputEvent, InputQueue};
+use fernsicht_input::{InputEvent, InputQueue, Rumble, RumbleOut};
 use fernsicht_proto::{InputHeader, MAX_DATAGRAM};
 use fernsicht_secure::session::Transport;
 
@@ -22,6 +22,17 @@ pub struct InputHandle {
     stream: Mutex<Option<(u32, u32)>>,
     /// Where events go while a session runs.
     link: Mutex<Option<InputLink>>,
+    /// Where the host's rumble goes: the window's gamepads.
+    rumble: Mutex<Option<RumbleTo>>,
+}
+
+/// [`RumbleOut`] with a `Debug` for [`InputHandle`]'s.
+struct RumbleTo(RumbleOut);
+
+impl std::fmt::Debug for RumbleTo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RumbleTo")
+    }
 }
 
 /// The session's way to the host, for sending input from any thread
@@ -54,6 +65,22 @@ impl InputLink {
 }
 
 impl InputHandle {
+    /// Rumble from the host goes to `out` (the window's gamepads).
+    pub fn set_rumble(&self, out: RumbleOut) {
+        if let Ok(mut r) = self.rumble.lock() {
+            *r = Some(RumbleTo(out));
+        }
+    }
+
+    /// The host's game rumbles pad `r.pad`.
+    pub(crate) fn rumble(&self, r: Rumble) {
+        if let Ok(slot) = self.rumble.lock()
+            && let Some(RumbleTo(out)) = slot.as_ref()
+        {
+            out(r);
+        }
+    }
+
     /// Queues `event` and, while a session runs, sends it right away: the
     /// network thread wakes only every few milliseconds.
     pub fn push(&self, event: InputEvent) {

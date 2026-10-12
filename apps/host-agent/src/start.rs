@@ -123,6 +123,12 @@ impl HostAgent {
         let web = web.map(|setup| (setup, crate::web::out_channel()));
         let web_tx = web.as_ref().map(|(_, (tx, _))| tx);
         let link = link_for(&self.socket, peer, params.session_id, crypto, web_tx);
+        if let (Some(input), Some(out)) = (
+            input.as_mut(),
+            crate::input::rumble_out(&link, params.session_id),
+        ) {
+            input.on_rumble(out);
+        }
         let frame_slot = Arc::new(Slot::new());
         let pipe = Pipe {
             shared: &shared,

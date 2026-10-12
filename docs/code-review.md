@@ -891,7 +891,7 @@ D2 (no keyframe bursts on NVIDIA hosts, a bridge to D1), D1, D8, D10, D3, D7 (fi
 flag for plain-HTTP origins, with a hint in the viewer: real certificates need a server of ours),
 D4, D9.
 D6, D2, D1, D10 and D3 are done; D8 was measured and set aside; D7 has its first step, D4 its
-first two (10 bit, HDR tone-mapped; HDR displays are open; below).
+first two (10 bit, HDR tone-mapped; HDR displays are open); D9 has mapping and rumble (below).
 
 D6 is done. KMS does not tell where in the pointer image the pointer's tip is, so the host learns
 it: once the pointer rested after absolute input, the tip is where input put it, against the
@@ -1019,6 +1019,21 @@ spells it out and the renderer test checks the shader against it. The overlay sa
 compositor's colour management; to be seen on a real HDR monitor), HLG, mastering metadata, and
 the web viewer (it gets the stream tagged as it is, in 8 bit; untested in browsers). Not seen live:
 an HDR desktop captured (bazzite's and zentrale's monitors have not been tried in HDR).
+
+D9, first step (2026-10-12): SDL3 for the client's gamepads, and rumble. The client loads
+`libSDL3.so.0` at runtime (`fernsicht_input::sdl`; evdev stays the fallback where SDL3 is
+missing): one thread waits in `SDL_WaitEventTimeout`, reads every pad's standardised buttons and
+axes, and puts them on the evdev codes the existing `PadState` translates, so deduplication and
+the release of an unplugged pad stay as they were. SDL names pads from its database, so our own
+virtual pads are told apart by the kernel's name behind `SDL_GetGamepadPath`. Rumble: the host's
+virtual Xbox 360 pads offer `FF_RUMBLE` with 16 effects; a thread per pad answers the uploads
+(`UI_BEGIN_FF_UPLOAD`/`UI_END_FF_UPLOAD`, `linux/uinput.h`) and turns `EV_FF` play and stop into a
+`Rumble` packet (kind 23) to the native client, which plays it with `SDL_RumbleGamepad`. Tests: a
+virtual SDL gamepad (`SDL_AttachVirtualJoystick`) presses, pulls a trigger, is rumbled and
+unplugged; in CI a uinput pad gets a rumble effect uploaded through `EVIOCSFF` and played, as a
+game does; the fake host's rumble reaches the pads. Open: gyro and touchpad (they need a virtual
+DualSense on the host, through uhid, as inputtino does), rumble in the web viewer
+(`vibrationActuator`), SDL3 in the AppImage (Ubuntu 24.04 has none; Fedora, Bazzite and Arch do).
 
 ## E. Clean code and consistency
 
