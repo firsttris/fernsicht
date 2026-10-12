@@ -919,7 +919,9 @@ and 3.6 ms glass-to-glass (without the display) with Vulkan Video on both sides 
 NVENC and NVDEC. On the RX 7800 XT (RADV) the same tests run: 1.7 ms from the DMA-BUF for H.264 and
 HEVC, keyframes 1.2 frames' worth (H.264) and below one (HEVC), decoding 0.8–1 ms. AV1 is not
 offered: FFmpeg 8.1's Vulkan AV1 encoder writes the aligned surface size as the frame size
-(1920×1088 on RADV), and AV1 has no cropping. Two details from FFmpeg's source: the video profile comes from `sw_pix_fmt`
+(1920×1088 on RADV), and AV1 has no cropping. So `auto` stays with VAAPI on AMD as well: from the
+screen, Vulkan Video's HEVC (1.71 ms, p95 1.77) is only a little faster than VAAPI's AV1 (1.75 ms,
+p95 2.53), and AV1 needs 10–20 % less bitrate for the same picture. Two details from FFmpeg's source: the video profile comes from `sw_pix_fmt`
 (`vulkan_encode.c`), and HEVC's picture order count is sized to the GOP, at most 16 bits
 (`vulkan_encode_h265.c`), so the "endless" GOP is 2^15 frames. NVIDIA's driver refuses the
 ultra-low-latency tuning, so the encoder takes the lowest-latency one the driver offers. `auto`

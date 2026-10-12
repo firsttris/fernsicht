@@ -19,6 +19,18 @@ Status as of 2026-10-10, commit `ed802fd`, CI and GPU runner green.
   Bazzite ships FFmpeg 8, libva and WebKitGTK 4.1.
 - **Self-hosted runner:** Both machines have one for the GPU tests
   (`.github/workflows/gpu.yml`, [gpu-runner.md](gpu-runner.md)).
+- **bazzite's GTX 1080 throws GPU errors.** The kernel log shows NVIDIA Xid 13
+  ("Graphics Exception: EXTRA/MISSING_MACRO_DATA", always at the same offsets of
+  the 3D class) and Xid 32 (invalid push buffer), also from Brave, VS Code, the
+  screen locker and `vulkaninfo`, right after boot too. Work in the faulted
+  channel never finishes: a test waiting for it times out or hangs (in FFmpeg's
+  own waits for ever, until CI's step limit). Since the runner started
+  (2026-10-10) every GPU run on it collects a few; most tests survive them. Not
+  the clocks: with the GPU held at P0 under full load they came as often (tried
+  2026-10-12). No PCIe errors (AER counters 0, x16). A red or hung NVIDIA run
+  is worth a rerun before blaming the code; `journalctl -k | grep Xid` tells
+  whether one came with it. Possible remedies: another 580 driver, another
+  card.
 
 ## What is done
 
