@@ -269,8 +269,8 @@ Confirmed live (2026-10-10, according to the user):
     client still shows it tone-mapped to SDR.
 
 13. **Rumble (D9).** Built, tested against SDL's virtual pad and (in CI)
-    a uinput pad, never felt live. On a client with SDL3 (bazzite has it)
-    the log says “gamepads through SDL”; a game on the host that rumbles
+    a uinput pad, never felt live. On a client with SDL3 (the AppImage
+    carries it, `packaging/sdl3.sh`; never run from a release yet) the log says “gamepads through SDL”; a game on the host that rumbles
     (or `fftest /dev/input/eventN` on the virtual pad, from
     linuxconsoletools) should rumble the client's pad.
 

@@ -1036,7 +1036,14 @@ virtual SDL gamepad (`SDL_AttachVirtualJoystick`) presses, pulls a trigger, is r
 unplugged; in CI a uinput pad gets a rumble effect uploaded through `EVIOCSFF` and played, as a
 game does; the fake host's rumble reaches the pads. Open: gyro and touchpad (they need a virtual
 DualSense on the host, through uhid, as inputtino does), rumble in the web viewer
-(`vibrationActuator`), SDL3 in the AppImage (Ubuntu 24.04 has none; Fedora, Bazzite and Arch do).
+(`vibrationActuator`).
+
+D9, SDL3 in the AppImage (2026-10-12): the release builds SDL 3.4.18 itself
+(`packaging/sdl3.sh`: pinned tarball and sha256, only joystick, gamepad, HIDAPI, haptic and sensor;
+libudev loaded at runtime, so it needs nothing beyond glibc; 3 MB) and puts it in the AppImage's
+`usr/lib`. The client loads the copy in `../lib` beside itself first, then the system's, so the
+AppImage has SDL's database and rumble on Ubuntu too and the same SDL everywhere. The minimal build
+passes the virtual-pad test (`crates/input/tests/sdl.rs`).
 
 ## E. Clean code and consistency
 

@@ -133,11 +133,11 @@ X-Box 360 pad 1” …), which Steam and games use without setup. `--no-gamepad`
 Like keyboard and mouse they follow the focus: while another window has it, the pads do nothing on
 the host (buttons are let go, sticks centred).
 
-The client reads them through SDL3 where it is installed (Fedora, Bazzite, Arch and others have
-it): SDL's controller database knows the layout of hundreds of pads, so A is the bottom button on
-any of them. When a game on the host rumbles its pad, the client's pad rumbles too (SDL only).
-Without SDL3 the client reads the pads from the kernel (evdev) as before, without rumble; the log
-says which (“gamepads through SDL”).
+The client reads them through SDL3, which the AppImage carries (a client built from source uses
+the system's): SDL's controller database knows the layout of hundreds of pads, so A is the bottom
+button on any of them. When a game on the host rumbles its pad, the client's pad rumbles too (SDL
+only). Without SDL3 the client reads the pads from the kernel (evdev) as before, without rumble;
+the log says which (“gamepads through SDL”).
 
 ## Settings
 

@@ -23,7 +23,7 @@ web viewer.
    shared computer appears in the list. Then pair (see section 4, “Pair and
    connect”) and connect.
 
-The AppImage bundles its own libraries (FFmpeg, WebKit). It takes the
+The AppImage bundles its own libraries (FFmpeg, SDL3 for gamepads, WebKit). It takes the
 graphics drivers (Mesa/VAAPI, NVIDIA, Vulkan) from the system, so that
 hardware encoding matches the installed drivers. Its FFmpeg (8.1) is built
 for it with only what Fernsicht uses (`packaging/ffmpeg.sh`): the

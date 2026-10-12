@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -152,6 +153,36 @@ impl Event {
     }
 }
 
+/// The SDL3 to load, in order: the AppImage's, beside the program in
+/// `../lib` (packaging/sdl3.sh), then the system's by name.
+fn library_paths(exe: Option<&Path>) -> Vec<PathBuf> {
+    let bundled = exe
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(|root| root.join("lib/libSDL3.so.0"));
+    bundled
+        .into_iter()
+        .chain([PathBuf::from("libSDL3.so.0")])
+        .collect()
+}
+
+/// The first of `paths` that loads, or every reason none did.
+fn load_first(paths: &[PathBuf]) -> Result<libloading::Library, String> {
+    let mut errors = Vec::new();
+    for path in paths {
+        // A bundled copy that is not there is no error worth naming.
+        if path.is_absolute() && !path.exists() {
+            continue;
+        }
+        // SAFETY: SDL3's initialisers run no code that depends on us.
+        match unsafe { libloading::Library::new(path) } {
+            Ok(lib) => return Ok(lib),
+            Err(e) => errors.push(format!("{}: {e}", path.display())),
+        }
+    }
+    Err(format!("no SDL3 ({})", errors.join("; ")))
+}
+
 fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
     API.get_or_init(|| {
@@ -159,8 +190,8 @@ fn api() -> Result<&'static Api, String> {
         // (SDL_init.h, SDL_gamepad.h, SDL_events.h, SDL_hints.h,
         // SDL_error.h, SDL_stdinc.h).
         unsafe {
-            let lib = libloading::Library::new("libSDL3.so.0")
-                .map_err(|e| format!("no SDL3 (libSDL3.so.0): {e}"))?;
+            let exe = std::env::current_exe().ok();
+            let lib = load_first(&library_paths(exe.as_deref()))?;
             macro_rules! sym {
                 ($name:literal) => {
                     *lib.get($name)
@@ -410,6 +441,20 @@ pub(crate) fn rumble_channel() -> (Rumbles, Receiver<Rumble>) {
 mod tests {
     use super::*;
     use crate::gamepad::scale;
+
+    #[test]
+    fn the_appimages_sdl_comes_first() {
+        assert_eq!(
+            library_paths(Some(Path::new("/tmp/.mount_x/usr/bin/fernsicht-client"))),
+            [
+                PathBuf::from("/tmp/.mount_x/usr/lib/libSDL3.so.0"),
+                PathBuf::from("libSDL3.so.0")
+            ]
+        );
+        assert_eq!(library_paths(None), [PathBuf::from("libSDL3.so.0")]);
+        let none = load_first(&[PathBuf::from("/nonexistent/lib/libSDL3.so.0")]);
+        assert_eq!(none.err().as_deref(), Some("no SDL3 ()"));
+    }
 
     #[test]
     fn buttons_keep_their_place() {

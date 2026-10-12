@@ -31,11 +31,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: System packages (VAAPI, WebKitGTK for the bundler)
+      - name: System packages (VAAPI, udev for SDL, WebKitGTK for the bundler)
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            libva-dev libdrm-dev \
+            libva-dev libdrm-dev libudev-dev cmake \
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev patchelf file
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable branch, 2026-09-11
@@ -57,6 +57,12 @@ jobs:
           path: target/ffmpeg
           key: ffmpeg-ubuntu-24.04-${{ hashFiles('packaging/ffmpeg.sh') }}
       - run: ./packaging/ffmpeg.sh target/ffmpeg
+      # SDL3 for the client's gamepads (appimage.sh takes it from here).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/sdl3
+          key: sdl3-ubuntu-24.04-${{ hashFiles('packaging/sdl3.sh') }}
+      - run: ./packaging/sdl3.sh target/sdl3
       # The programs link against it, and the bundler takes it along.
       - run: ./packaging/appimage.sh
         env:

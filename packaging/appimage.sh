@@ -13,6 +13,9 @@ if [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null 2>&1; then
 fi
 
 pnpm install --frozen-lockfile
+# SDL3 for the client's gamepads, loaded at runtime, so the bundler does not
+# see it (packaging/sdl3.sh; a prefix already built is kept).
+./packaging/sdl3.sh target/sdl3
 cargo build --release --locked -p fernsicht-host-agent --features vaapi,kms,nvidia,vulkan
 cargo build --release --locked -p fernsicht-client --features vaapi,nvidia,vulkan,window
 
@@ -47,6 +50,10 @@ for bin in fernsicht-client fernsicht-host-agent; do
         fi
     done
 done
+
+# SDL3 goes next to them: the client looks for it in ../lib beside itself
+# first (crates/input/src/sdl.rs).
+cp -L ../../target/sdl3/lib/libSDL3.so.0 "$appdir/usr/lib/"
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 out=target/release/bundle/appimage/Fernsicht-$version-x86_64.AppImage
