@@ -24,3 +24,8 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+# How early a compositor's commit shows on the plane (D8); needs KMS.
+[[example]]
+name = "commit_lead"
+required-features = ["kms"]
