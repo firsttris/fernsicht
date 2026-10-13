@@ -1,8 +1,9 @@
 name: Release
 
 # A tag vX.Y.Z (from the "Bump version" button or pushed from a checkout)
-# runs the checks, builds Fernsicht.AppImage (the app, the stream window, the
-# host and the web viewer in one file) and creates the GitHub release with it.
+# runs the checks (unless main's CI already ran them), builds
+# Fernsicht.AppImage (the app, the stream window, the host and the web viewer
+# in one file) and creates the GitHub release with it.
 # Run by hand on a branch it only checks and builds (no release), e.g. to try
 # the packaging.
 on:
@@ -18,12 +19,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A release commit from "Bump version" changes only the version numbers:
+  # main's CI already tested the code, so the checks are not run again.
+  tested:
+    uses: firsttris/workflows/.github/workflows/tested-on-main.yml@ccr-161f105b-9ns022
+    permissions:
+      actions: read
+      contents: read
+
   checks:
+    needs: tested
+    if: needs.tested.outputs.tested != 'true'
     uses: ./.github/workflows/ci.yml
 
   build:
     name: Build · AppImage
-    needs: checks
+    needs: [tested, checks]
+    # The checks either passed or were not needed.
+    if: ${{ !cancelled() && needs.tested.result == 'success' && needs.checks.result != 'failure' }}
     # An old Ubuntu: the AppImage runs on distributions with this glibc or
     # newer. Its FFmpeg (6.1) is too old for Vulkan Video, so the AppImage
     # carries one of its own (packaging/ffmpeg.sh).
@@ -32,11 +45,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: System packages (VAAPI, udev for SDL, WebKitGTK for the bundler)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends \
-            libva-dev libdrm-dev libudev-dev cmake \
-            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          recommends: "false"
+          packages: >-
+            libva-dev libdrm-dev libudev-dev cmake
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev
             libjavascriptcoregtk-4.1-dev patchelf file
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable branch, 2026-09-11
         with:
