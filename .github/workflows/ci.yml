@@ -1,6 +1,8 @@
 name: CI
 
 # Third-party actions are pinned to a commit, with the release in a comment.
+# System packages come through apt-install (firsttris/workflows), which keeps
+# them in the Actions cache: the runners' Ubuntu mirror is sometimes very slow.
 
 on:
   push:
@@ -67,10 +69,11 @@ jobs:
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: shellcheck packaging/*.sh scripts/*.sh
       - name: FFmpeg and VAAPI headers (feature "vaapi")
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q libavcodec-dev libavformat-dev libavutil-dev \
-            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: >-
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev
+            libavdevice-dev libswscale-dev libswresample-dev libva-dev
       - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo bench --workspace --no-run
       # The oldest Rust the crates promise to build with (rust-version).
@@ -104,9 +107,12 @@ jobs:
       # a writable /dev/uinput: the hardware-facing tests run for real here
       # (they would make sound or type on a desktop, so they need these
       # variables to run at all).
-      - name: libopus, a sound server and uinput
+      - name: libopus and a sound server
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: libopus0 pulseaudio
+      - name: Sound server and uinput
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q libopus0 pulseaudio
           pulseaudio --start --exit-idle-time=-1
           sudo chmod 666 /dev/uinput
           # The gamepad test reads its virtual pad back from /dev/input.
@@ -139,18 +145,24 @@ jobs:
         with:
           path: ~/sdl3
           key: sdl3-${{ runner.os }}-${{ hashFiles('packaging/sdl3.sh') }}
+      - name: SDL3's build dependencies
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: libudev-dev cmake
       - name: SDL3 (packaging/sdl3.sh)
         run: |
-          sudo apt-get install -y -q libudev-dev cmake
           ./packaging/sdl3.sh ~/sdl3
           echo "LD_LIBRARY_PATH=$HOME/sdl3/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
           echo "FERNSICHT_REQUIRE_SDL=1" >> "$GITHUB_ENV"
       # Two desktops for the clipboard tests: headless Sway (wlroots' data
       # control; KWin's is tried by hand), one for the host, one for the
       # client.
+      - name: Sway
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: sway
       - name: Two headless Wayland compositors
         run: |
-          sudo apt-get install -y -q sway
           export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
           for i in 1 2; do
             env -u WAYLAND_DISPLAY WLR_BACKENDS=headless WLR_RENDERER=pixman \
@@ -200,10 +212,11 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: FFmpeg and VAAPI headers (feature "vaapi")
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q libavcodec-dev libavformat-dev libavutil-dev \
-            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev libva-dev
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: >-
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev
+            libavdevice-dev libswscale-dev libswresample-dev libva-dev
       # Builds the hardware tests; without a GPU they skip themselves (and
       # NVENC/NVDEC must fail cleanly without the NVIDIA driver).
       - run: scripts/annotate-failures.sh cargo test -p fernsicht-codec --features vaapi,nvidia
@@ -216,7 +229,9 @@ jobs:
       # The validation layers check every Vulkan call, including
       # synchronization; any message they print fails the job.
       - name: Software Vulkan (llvmpipe) and the validation layers
-        run: sudo apt-get install -y -q mesa-vulkan-drivers vulkan-validationlayers
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: mesa-vulkan-drivers vulkan-validationlayers
       - name: Vulkan renderer, validated
         shell: bash
         env:
@@ -340,9 +355,10 @@ jobs:
             apps/desktop
             .
       - name: WebKitGTK (Tauri)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev
             libjavascriptcoregtk-4.1-dev librsvg2-dev
       - run: cargo fmt --check
       - run: cargo clippy --all-targets

@@ -141,6 +141,9 @@ only the joystick, gamepad and sensor parts, about 3 MB, cached the same way). L
 `./packaging/appimage.sh` builds the AppImage in the dev container, against its FFmpeg; building SDL3
 there needs cmake and the libudev headers.
 
+The release commit changes only version numbers, so when `main`'s CI already passed for the commit
+before it, **Release** skips its own run of the CI and goes straight to the build.
+
 ## Tips
 
 Drops on keyframes (`RcvbufErrors` in `/proc/net/snmp`) mean the UDP buffers are too small. The host
