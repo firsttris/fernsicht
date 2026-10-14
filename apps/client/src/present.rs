@@ -195,7 +195,13 @@ pub struct AppStats {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AppLine {
-    Failed { failure: crate::Failure },
+    Failed {
+        failure: crate::Failure,
+    },
+    /// How the session reaches the host, once at the start.
+    Path {
+        path: fernsicht_internet::candidates::Rung,
+    },
     Stats(AppStats),
 }
 

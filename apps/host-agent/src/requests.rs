@@ -70,6 +70,7 @@ impl HostAgent {
             // Browsers get 8 bit: WebRTC has no say on bit depth.
             ten_bit: fernsicht_proto::CodecSet::EMPTY,
             screen: fernsicht_core::colour::Colour::SDR,
+            relayed: false,
         };
         let who = format!("Browser {}", req.browser.ip());
         match self.start_session(params, req.browser, None, Some(setup)) {
@@ -124,8 +125,9 @@ impl HostAgent {
         msg: &[u8],
         from: SocketAddr,
         session: &mut Option<Session>,
-        // Whether a refusal may be logged (rate-limited per address).
-        log_refusal: bool,
+        // Whether a refusal may be logged (rate-limited per address), and
+        // whether the client comes through a relay.
+        (log_refusal, relayed): (bool, bool),
         out: &mut [u8],
     ) {
         let Some(sec) = &self.cfg.security else {
@@ -142,7 +144,7 @@ impl HostAgent {
                 message: reply,
             }
             .encode(out);
-            let _ = self.socket.send_to(&out[..n], from);
+            let _ = self.sockets.send_to(&out[..n], from);
             return;
         }
         let responder = match Responder::read(&sec.identity, msg) {
@@ -160,7 +162,7 @@ impl HostAgent {
                 );
             }
             let n = RejectReason::NotPaired.encode(out);
-            let _ = self.socket.send_to(&out[..n], from);
+            let _ = self.sockets.send_to(&out[..n], from);
             return;
         };
         let Some((hello, sent_ms)) = Hello::decode_with_time(&responder.payload) else {
@@ -175,7 +177,13 @@ impl HostAgent {
         if let Some(old) = session.take() {
             self.replace_session(old, &from.to_string(), out);
         }
-        let params = self.negotiate(&hello);
+        let params = SessionParams {
+            relayed,
+            ..self.negotiate(&hello)
+        };
+        if relayed {
+            log::info!("{from}: through a relay");
+        }
         match self.start_session(params, from, Some(responder), None) {
             Ok((mut s, Some(reply))) => {
                 // Noted only now: had the start failed, a later try with
@@ -189,7 +197,7 @@ impl HostAgent {
                     message: &reply,
                 }
                 .encode(out);
-                let _ = self.socket.send_to(&out[..n], from);
+                let _ = self.sockets.send_to(&out[..n], from);
                 s.handshake = Some((msg.to_vec(), reply));
                 *session = Some(s);
             }
@@ -215,7 +223,7 @@ impl HostAgent {
     /// try would open screen and encoder again) and says why.
     pub(crate) fn refuse_unavailable(&self, to: SocketAddr, out: &mut [u8]) {
         let n = RejectReason::Unavailable.encode(out);
-        let _ = self.socket.send_to(&out[..n], to);
+        let _ = self.sockets.send_to(&out[..n], to);
     }
 
     /// Answers "which hosts are there?" with name, key, OS and GPU. Only
@@ -238,7 +246,7 @@ impl HostAgent {
             gpu: clip(&self.cfg.description.gpu, MAX_ANNOUNCE_INFO),
         };
         let n = a.encode(out);
-        let _ = self.socket.send_to(&out[..n], from);
+        let _ = self.sockets.send_to(&out[..n], from);
     }
 
     /// Pairing messages (only while pairing mode is open).
@@ -254,7 +262,7 @@ impl HostAgent {
         };
         let send = |step: u8, message: &[u8], out: &mut [u8]| {
             let n = Pair { step, message }.encode(out);
-            let _ = self.socket.send_to(&out[..n], from);
+            let _ = self.sockets.send_to(&out[..n], from);
         };
         match p.step {
             1 => {
@@ -274,7 +282,7 @@ impl HostAgent {
                     Ok(pin) => pin,
                     Err(reason) => {
                         let n = reason.encode(out);
-                        let _ = self.socket.send_to(&out[..n], from);
+                        let _ = self.sockets.send_to(&out[..n], from);
                         return;
                     }
                 };
@@ -309,7 +317,7 @@ impl HostAgent {
                     log::warn!("{from}: pairing refused: pairing closed meanwhile");
                     *ex = None;
                     let n = RejectReason::PairingClosed.encode(out);
-                    let _ = self.socket.send_to(&out[..n], from);
+                    let _ = self.sockets.send_to(&out[..n], from);
                     return;
                 }
                 let Some(state) = e.state.take() else { return };

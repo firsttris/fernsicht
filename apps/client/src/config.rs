@@ -56,6 +56,10 @@ pub struct ClientConfig {
     /// Whose clipboard the session shares with the host (with input only).
     /// Off by default here: the program turns it on.
     pub clipboard: fernsicht_clipboard::Place,
+    /// A socket already connected to the host, found over the internet
+    /// (its NAT mapping is what makes the path work); `None`: one is
+    /// opened to `host`.
+    pub socket: Option<Arc<std::net::UdpSocket>>,
 }
 
 impl Default for ClientConfig {
@@ -83,6 +87,7 @@ impl Default for ClientConfig {
             security: None,
             record: None,
             clipboard: fernsicht_clipboard::Place::Off,
+            socket: None,
         }
     }
 }

@@ -10,6 +10,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use hmac::{Hmac, Mac};
 
+/// Cloudflare's public STUN server (free, anycast): the default.
+pub const DEFAULT_SERVER: &str = "stun.cloudflare.com:3478";
+
 /// The fixed value in every STUN header (RFC 8489, section 5).
 pub const MAGIC_COOKIE: u32 = 0x2112_A442;
 /// Bytes of the header: type, length, cookie, transaction ID.
@@ -459,6 +462,24 @@ pub fn binding_request(transaction: TransactionId) -> Vec<u8> {
         .finish()
 }
 
+/// The addresses of STUN servers (`host:port`), IPv4 and IPv6, two of
+/// each at most per server. Looks them up (DNS): not for a loop that must
+/// not wait.
+pub fn resolve(servers: &[String]) -> Vec<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    let mut out = Vec::new();
+    for s in servers {
+        let Ok(addrs) = s.to_socket_addrs() else {
+            log::debug!("STUN server {s}: not found");
+            continue;
+        };
+        let addrs: Vec<SocketAddr> = addrs.collect();
+        out.extend(addrs.iter().filter(|a| a.is_ipv4()).take(2));
+        out.extend(addrs.iter().filter(|a| a.is_ipv6()).take(2));
+    }
+    out
+}
+
 /// What a datagram on a socket that carries several protocols is, by its
 /// first byte (RFC 7983, section 7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -661,6 +682,12 @@ mod tests {
         let mut top_bits = good;
         top_bits[0] |= 0x80;
         assert_eq!(Message::parse(&top_bits), Err(Error::NotStun));
+    }
+
+    #[test]
+    fn servers_are_looked_up() {
+        let found = resolve(&["127.0.0.1:3478".into(), "not a host".into()]);
+        assert_eq!(found, ["127.0.0.1:3478".parse::<SocketAddr>().unwrap()]);
     }
 
     #[test]

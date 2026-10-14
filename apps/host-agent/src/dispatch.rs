@@ -32,6 +32,8 @@ const REFUSAL_LOGS_TOTAL: f64 = 2.0;
 /// The control loop's state between datagrams.
 pub(crate) struct Loop {
     pub(crate) session: Option<Session>,
+    /// Connections over the internet being set up.
+    pub(crate) punching: crate::internet::punching::Punching,
     pairing: Option<PairingExchange>,
     announce_budget: PerSource,
     handshake_budget: PerSource,
@@ -49,6 +51,7 @@ impl HostAgent {
         let now = Instant::now();
         Loop {
             session: None,
+            punching: Default::default(),
             pairing: None,
             announce_budget: PerSource::new(ANNOUNCE_PER_SOURCE, ANNOUNCE_TOTAL, now),
             handshake_budget: PerSource::new(HANDSHAKES_PER_SOURCE, HANDSHAKES_TOTAL, now),
@@ -136,6 +139,7 @@ impl HostAgent {
                 // The stream starts now, with a picture of its own.
                 s.shared.keyframe_requested.store(true, Ordering::Relaxed);
                 log::debug!("session {:08x}: client confirmed", s.params.session_id);
+                self.send_rendezvous(s);
             }
         }
         Some((packet, authentic))
@@ -156,9 +160,17 @@ impl HostAgent {
             Packet::Handshake(h) if !h.reply => {
                 if l.handshake_budget.take(from.ip(), Instant::now()) {
                     let log_refusal = l.refusal_logs.take(from.ip(), Instant::now());
-                    self.on_handshake(h.message, from, &mut l.session, log_refusal, &mut l.out);
+                    let relayed = l.punching.is_relayed(from, Instant::now());
+                    self.on_handshake(
+                        h.message,
+                        from,
+                        &mut l.session,
+                        (log_refusal, relayed),
+                        &mut l.out,
+                    );
                 }
             }
+            Packet::Punch(p) => self.on_punch(l, p, from),
             Packet::Pair(p) => self.on_pair(p, from, &mut l.pairing, &mut l.out),
             Packet::Discover(d) => {
                 if l.announce_budget.take(from.ip(), Instant::now()) {
@@ -247,7 +259,7 @@ impl HostAgent {
         }
         let Some(s) = l.session.as_ref() else { return };
         let n = self.hello_ack(&s.params, s.codec).encode(&mut l.out);
-        let _ = self.socket.send_to(&l.out[..n], from);
+        let _ = self.sockets.send_to(&l.out[..n], from);
     }
 
     /// The pong for the client's clock sync: plain in the insecure mode,
@@ -268,7 +280,7 @@ impl HostAgent {
         };
         let n = pong.encode(&mut l.out);
         if self.cfg.security.is_none() {
-            let _ = self.socket.send_to(&l.out[..n], from);
+            let _ = self.sockets.send_to(&l.out[..n], from);
         } else if authentic && let Some(s) = l.session.as_ref() {
             let _ = s.link.send(&l.out[..n]);
         }

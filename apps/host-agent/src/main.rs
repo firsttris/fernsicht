@@ -98,6 +98,19 @@ struct Args {
     /// KMS: connector, e.g. DP-1 (default: first active display).
     #[arg(long)]
     kms_connector: Option<String>,
+    /// The rendezvous service for connections over the internet, e.g.
+    /// https://fernsicht-rendezvous.NAME.workers.dev (docs/internet.md),
+    /// for this run; without it, the one set in the app, if any.
+    #[arg(long)]
+    rendezvous: Option<String>,
+    /// STUN servers (host:port) to ask for this computer's public address
+    /// when a client connects over the internet (repeatable).
+    #[arg(long, default_values_t = [fernsicht_host_agent::DEFAULT_STUN.to_string()])]
+    stun: Vec<String>,
+    /// Upper bound for a session's bitrate through a relay (TURN), kbit/s:
+    /// relayed traffic may cost money.
+    #[arg(long, default_value_t = 15_000)]
+    relay_max_bitrate: u32,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -274,6 +287,8 @@ fn main() -> anyhow::Result<()> {
         web: (!args.no_web).then(|| args.web.clone()),
         web_root: args.web_root.clone().or_else(installed_viewer),
         encoder,
+        stun: args.stun.clone(),
+        relay_max_kbps: args.relay_max_bitrate,
         ..HostConfig::default()
     };
     let dir = args.state_dir.clone().unwrap_or_else(default_state_dir);
@@ -295,6 +310,13 @@ fn main() -> anyhow::Result<()> {
     let mut settings = fernsicht_host_agent::HostSettings::load(dir.join("settings.json"));
     if args.no_gpu_boost {
         settings = settings.without_gpu_boost();
+    }
+    if let Some(url) = &args.rendezvous {
+        anyhow::ensure!(
+            fernsicht_internet::rendezvous::is_service_url(url),
+            "--rendezvous {url}: not a rendezvous service address (https://…)"
+        );
+        settings = settings.with_rendezvous(Some(url.clone()));
     }
     // SAFETY: geteuid has no preconditions.
     let root = unsafe { libc::geteuid() } == 0;

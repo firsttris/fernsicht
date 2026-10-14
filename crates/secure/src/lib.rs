@@ -183,6 +183,10 @@ pub struct Peer {
     pub address: Option<String>,
     /// Unix time of the pairing.
     pub paired_at: u64,
+    /// Where the host can be found over the internet: its rendezvous
+    /// service, as the host said in a session (clients only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendezvous: Option<String>,
 }
 
 /// The devices this one is paired with.
@@ -305,12 +309,14 @@ mod tests {
             key,
             address: None,
             paired_at: 1,
+            rendezvous: None,
         });
         t.add(Peer {
             name: "bazzite (neu)".into(),
             key,
             address: Some("192.168.178.20:47800".into()),
             paired_at: 2,
+            rendezvous: None,
         });
         assert_eq!(t.peers.len(), 1, "same key replaces");
         t.save(&path).unwrap();

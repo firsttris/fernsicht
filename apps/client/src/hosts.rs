@@ -95,6 +95,28 @@ pub fn remember_address(trusted: &Trusted, key: &PublicKey, addr: &str) -> Optio
     Some(next)
 }
 
+/// The paired hosts with `key`'s rendezvous service set to `url` (empty:
+/// none), as the host said in a session; `None` if nothing changes or the
+/// address is not one.
+pub fn remember_rendezvous(trusted: &Trusted, key: &PublicKey, url: &str) -> Option<Trusted> {
+    let url = Some(url.to_owned()).filter(|u| !u.is_empty());
+    if url
+        .as_deref()
+        .is_some_and(|u| !fernsicht_internet::rendezvous::is_service_url(u))
+    {
+        return None;
+    }
+    if trusted.get(key)?.rendezvous == url {
+        return None;
+    }
+    let mut next = trusted.clone();
+    next.peers
+        .iter_mut()
+        .filter(|p| p.key == *key)
+        .for_each(|p| p.rendezvous = url.clone());
+    Some(next)
+}
+
 /// How long pairing waits for the host.
 pub const PAIR_TIMEOUT: Duration = Duration::from_secs(10);
 

@@ -33,6 +33,9 @@ pub struct RunSummary {
     pub cursor_positions: u64,
     pub cursor_shapes: u64,
     pub audio: AudioSummary,
+    /// The host's rendezvous service, as it said in the session (empty:
+    /// none); `None` if it said nothing.
+    pub rendezvous: Option<String>,
 }
 
 /// How the sound went.

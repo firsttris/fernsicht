@@ -33,7 +33,7 @@ window = [
     "dep:x11-dl",
 ]
 # TypeScript types of what goes to the app and the web viewer (ts-rs).
-ts = ["dep:ts-rs", "fernsicht-render/ts"]
+ts = ["dep:ts-rs", "fernsicht-render/ts", "fernsicht-internet/ts"]
 
 [dependencies]
 anyhow.workspace = true
@@ -50,6 +50,7 @@ fernsicht-gpu = { workspace = true, optional = true }
 fernsicht-core.workspace = true
 fernsicht-input = { workspace = true, features = ["gamepad"] }
 fernsicht-clipboard.workspace = true
+fernsicht-internet.workspace = true
 fernsicht-net.workspace = true
 libc.workspace = true
 fernsicht-proto.workspace = true

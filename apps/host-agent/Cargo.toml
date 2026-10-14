@@ -23,7 +23,7 @@ vulkan = ["fernsicht-codec/vulkan"]
 # Screen capture over KMS (needs CAP_SYS_ADMIN at runtime).
 kms = ["fernsicht-capture/kms"]
 # TypeScript types of what goes to the app and the web viewer (ts-rs).
-ts = ["dep:ts-rs"]
+ts = ["dep:ts-rs", "fernsicht-internet/ts"]
 
 [dependencies]
 anyhow.workspace = true
@@ -36,6 +36,7 @@ fernsicht-codec.workspace = true
 fernsicht-core.workspace = true
 fernsicht-input = { workspace = true, features = ["uinput"] }
 fernsicht-clipboard.workspace = true
+fernsicht-internet.workspace = true
 fernsicht-net.workspace = true
 fernsicht-proto.workspace = true
 fernsicht-secure.workspace = true

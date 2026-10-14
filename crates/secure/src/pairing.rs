@@ -181,6 +181,7 @@ impl ClientPairing {
             key,
             address: None,
             paired_at: crate::unix_now(),
+            rendezvous: None,
         })
     }
 }
@@ -257,6 +258,7 @@ impl HostPairing {
                 key,
                 address: None,
                 paired_at: crate::unix_now(),
+                rendezvous: None,
             },
             seal(&self.key, 4, &self.aad, b"ok"),
         ))

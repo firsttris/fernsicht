@@ -22,6 +22,7 @@ pub mod discover;
 mod failure;
 mod hosts;
 mod input;
+pub mod internet;
 mod monitors;
 mod network;
 mod present;
@@ -56,7 +57,7 @@ pub use cursor::{LocalPointer, PointerShare, system_cursor};
 pub use failure::{Failure, FailureCode, failure_of};
 pub use hosts::{
     DEFAULT_PORT, PAIR_TIMEOUT, default_state_dir, find_host, is_address, pair, printable,
-    reject_text, remember_address, with_default_port,
+    reject_text, remember_address, remember_rendezvous, with_default_port,
 };
 pub use input::{
     InputHandle, MAX_CHORD, chord_events, pad_events_while_focused, parse_keys_command,
@@ -93,7 +94,7 @@ pub fn run_with(
     stop: Arc<AtomicBool>,
     make_presenter: PresenterFactory,
 ) -> anyhow::Result<RunSummary> {
-    let socket = open_socket(&cfg.host)?;
+    let socket = open_socket(&cfg)?;
     let (decode_tx, decode_rx) = bounded::<ReceivedFrame>(DECODE_QUEUE);
     let need_keyframe = Arc::new(AtomicBool::new(true));
     let gpu_lost = Arc::new(AtomicBool::new(false));
@@ -156,9 +157,16 @@ pub fn run_with(
 
 /// The socket to the host: a short read timeout (the network thread also
 /// sends), marked as urgent, with received bursts coalesced.
-fn open_socket(host: &str) -> anyhow::Result<UdpSocket> {
-    let socket =
-        fernsicht_net::socket::connect_udp(host).with_context(|| format!("connect {host}"))?;
+fn open_socket(cfg: &ClientConfig) -> anyhow::Result<UdpSocket> {
+    let host = &cfg.host;
+    // A path found over the internet comes with its socket (the NAT's
+    // mapping belongs to it).
+    let socket = match &cfg.socket {
+        Some(s) => s.try_clone().context("the prepared socket")?,
+        None => {
+            fernsicht_net::socket::connect_udp(host).with_context(|| format!("connect {host}"))?
+        }
+    };
     socket.set_read_timeout(Some(Duration::from_millis(2)))?;
     // Input, feedback and pings: small and urgent (WMM voice on Wi-Fi).
     if let Err(e) =
@@ -259,5 +267,6 @@ fn summary(
         cursor_positions,
         cursor_shapes,
         audio,
+        rendezvous: net.rendezvous,
     }
 }

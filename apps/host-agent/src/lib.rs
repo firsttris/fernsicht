@@ -22,6 +22,7 @@ mod encode;
 mod health;
 mod http;
 mod input;
+pub mod internet;
 mod layout;
 mod limits;
 mod link;
@@ -33,6 +34,7 @@ mod security;
 mod send;
 mod session;
 mod shared;
+mod sockets;
 mod start;
 mod still;
 #[cfg(test)]
@@ -45,15 +47,15 @@ pub use backends::{
     CODEC_PREFERENCE, TEST_PATTERN_SIZE, auto_encoder, choose_encoder, codec_candidates,
 };
 pub use config::{
-    AudioKind, CaptureKind, EncoderKind, HostConfig, HostDescription, HostSettings, InputKind,
-    SessionParams,
+    AudioKind, CaptureKind, DEFAULT_STUN, EncoderKind, HostConfig, HostDescription, HostSettings,
+    InputKind, SessionParams,
 };
 pub use security::{HostSecurity, PAIRING_ATTEMPTS, PAIRING_ATTEMPTS_TOTAL, PAIRING_OPEN_FOR};
 pub use shared::HostStats;
 #[cfg(feature = "ts")]
 pub use web::export_viewer_types;
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -84,10 +86,15 @@ impl std::error::Error for EncoderHung {}
 
 pub struct HostAgent {
     cfg: HostConfig,
-    socket: Arc<UdpSocket>,
+    sockets: sockets::Sockets,
     stats: Arc<HostStats>,
     /// The current session, for the control socket.
     status: control::StatusCell,
+    /// How the host stands with its rendezvous service, for the control
+    /// socket.
+    internet: internet::InternetCell,
+    /// The thread talking to the rendezvous service, while the host runs.
+    signaling: Option<internet::signaling::Signaling>,
     web: Option<WebServer>,
 }
 
@@ -101,11 +108,11 @@ struct WebServer {
 
 impl HostAgent {
     pub fn bind(cfg: HostConfig) -> anyhow::Result<Self> {
-        let socket = socket::bind_udp(&cfg.bind).with_context(|| format!("bind {}", cfg.bind))?;
-        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let sockets =
+            sockets::Sockets::bind(&cfg.bind).with_context(|| format!("bind {}", cfg.bind))?;
         // Small and urgent by default (pointer, sound, answers); video
         // marks its own datagrams.
-        if let Err(e) = socket::set_dscp(&socket, socket::Dscp::Interactive) {
+        if let Err(e) = sockets.set_dscp(socket::Dscp::Interactive) {
             log::debug!("no DSCP marking: {e}");
         }
         // Clocks a crashed earlier run left raised go back first.
@@ -132,9 +139,11 @@ impl HostAgent {
         };
         Ok(Self {
             cfg,
-            socket: Arc::new(socket),
+            sockets,
             stats: Arc::default(),
             status: Arc::default(),
+            internet: Arc::default(),
+            signaling: None,
             web,
         })
     }
@@ -150,7 +159,7 @@ impl HostAgent {
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.socket.local_addr()
+        self.sockets.local_addr()
     }
 
     /// Serves sessions until `stop` is set.
@@ -162,6 +171,17 @@ impl HostAgent {
         let mut l = self.new_loop();
         let control_stop = Arc::new(AtomicBool::new(false));
         let control = self.serve_control(&control_stop)?;
+        // The rendezvous service, for clients over the internet (idle while
+        // none is set).
+        if let Some(sec) = &self.cfg.security {
+            self.signaling = Some(internet::signaling::spawn(
+                self.cfg.settings.clone(),
+                sec.identity.clone(),
+                self.cfg.stun.clone(),
+                self.internet.clone(),
+                control_stop.clone(),
+            )?);
+        }
 
         while !stop.load(Ordering::Relaxed) && !l.wedged {
             self.end_if_over(&mut l);
@@ -178,10 +198,17 @@ impl HostAgent {
                     self.on_web_request(req, &mut l.session);
                 }
             }
+            self.internet_tick(&mut l);
             let Some((len, from)) = self.receive(&mut buf) else {
                 continue;
             };
             let recv_us = now_us();
+            // STUN answers share the port (RFC 7983's first byte).
+            if fernsicht_internet::stun::demux(&buf[..len]) == fernsicht_internet::stun::Demux::Stun
+            {
+                self.on_stun(&mut l, &buf[..len], from);
+                continue;
+            }
             let outer = match Packet::decode(&buf[..len]) {
                 Ok(p) => p,
                 Err(e) => {
@@ -201,6 +228,9 @@ impl HostAgent {
         if let Some(t) = control {
             let _ = t.join();
         }
+        if let Some(s) = self.signaling.take() {
+            s.join();
+        }
         if let Some(w) = self.web.take() {
             w.stop.store(true, Ordering::Relaxed);
             let _ = w.thread.join();
@@ -219,7 +249,10 @@ impl HostAgent {
         let t = control::serve(
             path,
             sec.clone(),
-            self.status.clone(),
+            control::Reports {
+                session: self.status.clone(),
+                internet: self.internet.clone(),
+            },
             self.cfg.settings.clone(),
             stop.clone(),
         )
@@ -228,10 +261,10 @@ impl HostAgent {
         Ok(Some(t))
     }
 
-    /// The next datagram, if one came before the socket's timeout.
+    /// The next datagram, if one came within the control loop's tick.
     fn receive(&self, buf: &mut [u8]) -> Option<(usize, SocketAddr)> {
-        match self.socket.recv_from(buf) {
-            Ok(r) => Some(r),
+        match self.sockets.recv_from(buf, Duration::from_millis(100)) {
+            Ok(r) => r,
             Err(e)
                 if matches!(
                     e.kind(),

@@ -32,6 +32,9 @@ fernsicht-clipboard.workspace = true
 fernsicht-codec.workspace = true
 # tests/gpu.rs asks the GPU what it does with Vulkan Video.
 fernsicht-gpu.workspace = true
+# tests/internet.rs runs the rendezvous service and a STUN server.
+fernsicht-internet.workspace = true
+fernsicht-rendezvous.workspace = true
 serde_json.workspace = true
 str0m.workspace = true
 

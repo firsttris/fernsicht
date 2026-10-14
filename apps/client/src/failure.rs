@@ -26,6 +26,9 @@ pub enum FailureCode {
     NoAnswer,
     /// The session's host went quiet.
     HostSilent,
+    /// Over the internet: the rendezvous service does not know the host,
+    /// or no path to it answered.
+    Unreachable,
     /// This computer's GPU stopped responding during the session.
     GpuLost,
     /// The password prompt was dismissed (sharing this computer).

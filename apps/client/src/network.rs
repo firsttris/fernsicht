@@ -68,6 +68,8 @@ pub(crate) struct NetOutcome {
     pub(crate) session: Option<(u32, Codec)>,
     pub(crate) clock_offset_us: i64,
     pub(crate) rtt_us: Option<u64>,
+    /// The host's rendezvous service as it said (empty: none).
+    pub(crate) rendezvous: Option<String>,
 }
 
 /// A reassembled frame on its way to the decoder.
@@ -143,6 +145,8 @@ struct Net {
     out: [u8; MAX_DATAGRAM],
     /// The clipboard, shared once the session runs (with input).
     clipboard: Option<crate::clipboard::SessionClipboard>,
+    /// The host's rendezvous service as it said.
+    rendezvous: Option<String>,
 }
 
 pub(crate) fn network_loop(
@@ -205,6 +209,7 @@ pub(crate) fn network_loop(
         session: net.session,
         clock_offset_us: net.clock.offset_at(now_us()),
         rtt_us: net.clock.rtt_us(),
+        rendezvous: net.rendezvous,
     })
 }
 
@@ -284,6 +289,7 @@ fn start(cfg: &ClientConfig) -> anyhow::Result<Net> {
         refresh: false,
         out: [0; MAX_DATAGRAM],
         clipboard: None,
+        rendezvous: None,
     })
 }
 
@@ -680,6 +686,12 @@ fn on_packet(
                     high: r.high,
                     ms: u32::from(r.duration_ms),
                 });
+            }
+        }
+        Packet::Rendezvous(r) => {
+            // Once a session (it comes sealed, so it is the host's word).
+            if ours(r.session_id) && net.rendezvous.is_none() {
+                net.rendezvous = Some(r.url.to_owned());
             }
         }
         Packet::Bye(_) => {

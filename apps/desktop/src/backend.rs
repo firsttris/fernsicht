@@ -518,6 +518,7 @@ impl Backend {
             &self.control_path(),
             &Request::Set {
                 gpu_boost: Some(on),
+                rendezvous: None,
             },
         )
         .map(drop)
@@ -604,6 +605,7 @@ mod tests {
             key: PublicKey([key; 32]),
             address: Some(addr.into()),
             paired_at: 0,
+            rendezvous: None,
         }
     }
 
