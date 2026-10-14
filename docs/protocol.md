@@ -34,6 +34,8 @@ into IP fragments. Once a session is secure, every packet travels inside a **Sea
 | KeyframeRequest (21) | client → host | the client cannot show the stream: the last frame it completed and its round-trip time; sent at once, again while no keyframe comes |
 | Nack (22) | client → host | the shards of one frame FEC cannot repair (FEC group and index, up to 64) |
 | Rumble (23) | host → client | a pad's motors, as a game on the host plays them: pad, low- and high-frequency strength, duration |
+| Punch (26) | both | a hole punching probe over the internet: the token from the sealed offer and answer, and whether it is the answer to a probe (of the same size) ([over the internet](internet.md)) |
+| Rendezvous (27) | host → client, sealed | where the host can be found over the internet: its rendezvous service's address (empty: none), once a session is confirmed |
 | Clipboard (24) / ClipboardAck (25) | both | a piece of a clipboard text (its serial, length and offset; up to 1 KiB, 256 KiB a text); how much of a text arrived without gaps. Pieces not acknowledged within 300 ms go again from there; a newer text replaces one on its way |
 
 Limits are enforced while parsing: frames at most 8 MiB, at most 1,024 shards per FEC group, pointer
@@ -168,6 +170,13 @@ so an answer only shows where the host may be and is tried first when connecting
 host's new address only after a session with it went through. A host answers each asking address at
 most 20 times a second and all of them 200 times, so a flood from one machine cannot silence it for
 the others.
+
+## Other protocols on the port
+
+Over the internet the host's port also carries STUN (asking a server for the host's public
+address) and the client's socket TURN. They are told apart by the first byte, as RFC 7983 does for
+WebRTC: 0–3 is STUN, 64–79 TURN's ChannelData, `0xF5` a Fernsicht packet
+([over the internet](internet.md#candidates)).
 
 ## Sessions
 

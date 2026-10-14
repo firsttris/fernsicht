@@ -1,20 +1,18 @@
 # Remote access
 
-Fernsicht is built for the LAN. Over the internet it works today through a VPN that makes your
-devices look like one network; built-in NAT traversal is planned ([design](internet.md)).
+Fernsicht is built for the LAN. Over the internet there are two ways:
 
-## What is missing for the internet
+- **Built in: your own rendezvous service** (a free Cloudflare Worker, or a small service on your
+  own server). The host registers there; a paired device that does not find the host at home
+  connects through it, directly where the networks allow (hole punching, IPv6) and through a relay
+  where they do not. No VPN, no port forwarding. How to set it up and how it works:
+  [over the internet](internet.md). Not seen live between two homes yet.
+- **A VPN** that makes your devices look like one network (below). The web viewer goes over the
+  internet only this way for now: the host tells the browser its LAN address only, and its page
+  and the PIN travel over plain `http://`.
 
-- **Discovery** is a broadcast and only reaches the local network.
-- **NAT:** the router in front of the host lets nothing in from outside. There is no rendezvous
-  server yet that would set up a connection through both routers (hole punching), as Parsec or
-  Moonlight with Sunshine do.
-- **Web viewer:** the host only tells the browser its LAN address, so WebRTC only connects in the
-  same network. Its page and the PIN travel over plain `http://`; fine in the LAN, not over the
-  internet.
-
-What already holds up: the app's connection is end-to-end encrypted (Noise) and only lets paired
-devices in, and FEC, bitrate adaptation and HEVC/AV1 help on mobile and foreign Wi-Fi.
+Either way the app's connection is end-to-end encrypted (Noise) and only lets paired devices in,
+and FEC, bitrate adaptation and HEVC/AV1 help on mobile and foreign Wi-Fi.
 
 ## Tailscale (recommended)
 

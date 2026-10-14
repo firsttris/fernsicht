@@ -1,10 +1,14 @@
-# Over the internet (design)
+# Over the internet
 
-!!! note "Status: design"
-    Nothing on this page is built yet. Today Fernsicht works in the LAN or through a VPN
-    ([remote access](remote-access.md)). This page is the plan for connecting two devices anywhere,
-    without a VPN and without setting up the router, the way remote desktop tools do. It settles the
-    open decision from the [next steps](next-steps.md#5-beyond-the-lan).
+!!! note "Status: built, not yet seen live"
+    The rendezvous service (a Cloudflare Worker and a Rust service), hole punching over IPv4 and
+    IPv6 and the TURN relay are built and tested on one machine (host, client, service, STUN and a
+    real coturn; the Worker in `wrangler dev`). Port forwarding by the router and the web viewer
+    over the internet are the [stages](#stages) still to come. Nobody has connected two real homes
+    with it yet ([handover](handover.md#what-nobody-has-seen-live-yet)).
+
+This page is how Fernsicht connects two devices anywhere, without a VPN and without setting up
+the router, the way remote desktop tools do.
 
 ## The goal
 
@@ -114,20 +118,26 @@ sequenceDiagram
    about where it is.
 3. **Answer.** The host gathers its own candidates and answers, sealed for the client, with a random
    **punch token**.
-4. **Punching.** For 5 s, every 50 ms at first and less often later, both sides send a small
+4. **Punching.** For 5 s, every 100 ms in the first second and every 500 ms after (18 rounds at
+   most), both sides send a small
    **Punch** packet (a new packet kind carrying the punch token) to each of the other's candidates.
    Each side's punches open its own NAT or firewall for the other; a side that receives a Punch with
    the right token answers it over the same path with a Punch of the same size. A Punch carries
    nothing else, a wrong token gets no answer, and the host punches only towards a paired client's
-   candidates, at most a few dozen packets per connection, so nobody can point it at a stranger.
+   candidates (at most 8), so nobody can point it at a stranger.
 5. **Choosing.** The client takes the most preferred path (the ladder above) that answered within
    150 ms of the first answer, and starts the session there with its Handshake, as today. This is
    ICE's split into checking paths and then nominating one: the handshake goes over one path only,
    so its replay check (a handshake not newer than the last one is refused) stays as it is. The
-   relayed path is only tried after 1.5 s without a direct answer, so a relay is never chosen where
-   a direct path would have worked a moment later.
-6. **The session** then runs as today. The client stores the path's address only once the session
-   went through, as it does with discovery answers.
+   relay is only tried after 1.5 s without a direct answer ([the relay](#the-relay)), so it is never
+   chosen where a direct path would have worked a moment later.
+6. **The session** then runs as today, on the socket the probes went out on (the NAT's mapping
+   belongs to it). An address found over the internet is a NAT's for this connection only: the
+   client does not keep it as the host's address.
+
+Before all this the client asks the host's last address directly (a discovery question, 0.4 s):
+at home or over a VPN the host answers, and the session starts there as before, without the
+service.
 
 A running session keeps its NAT mappings open on its own (video one way, feedback the other). If a
 path breaks during a session (the phone moves from Wi-Fi to mobile data), the client reconnects
@@ -140,29 +150,33 @@ sees a picture, an input or a key that matters.
 
 ### Identity
 
-- A host registers under its **rendezvous ID**: `BLAKE2s("fernsicht rendezvous v1" ‖ public key)`.
+- A host registers under its **rendezvous ID**: `SHA-256("fernsicht rendezvous v1" ‖ public key)`
+  in hex (SHA-256, so that the Worker computes it with Web Crypto).
   A client knows the host's public key from pairing, so it can compute the ID, and nobody has to
   remember a number.
 - **The host proves it holds the key** when it registers, using the X25519 key it already has (no
   second key pair): the service sends a fresh ephemeral X25519 public key and a nonce; the host
-  answers with `HMAC(DH(host secret, ephemeral), nonce)`; the service computes the same from
+  answers with `HMAC-SHA256(DH(host secret, ephemeral), "fernsicht rendezvous proof v1" ‖ nonce ‖
+  host key)`; the service computes the same from
   `DH(ephemeral secret, host public key)`. Only the holder of the host's key can register under its
   ID, so nobody can take over a host's place or squat on its ID.
 - A **client does not register.** It does not need to be reachable; it only asks.
 
 ### Signaling messages
 
-The host keeps one WebSocket open to the service. A client makes one HTTPS request per connection,
-which the service holds open until the host answers (at most 10 s).
+The host keeps a WebSocket open at `/v1/host/<ID>` (and pings it every 30 s). A client opens one
+at `/v1/connect/<ID>` per connection, sends its offer and waits for the answer (at most 10 s). The
+messages are JSON (`crates/internet/src/signal.rs`):
 
 | Message | From → to | Content |
 |---|---|---|
-| `register` | host → service | rendezvous ID, public key |
+| `register` | host → service | its public key (the path names the ID) |
 | `challenge` / `proof` | service ↔ host | the key proof above |
-| `connect` | client → service | rendezvous ID, a sealed **offer** |
-| `offer` | service → host | the sealed offer, a connection ID |
-| `answer` | host → service → client | the sealed **answer** |
-| `turn-credentials` | host → service → host | short-lived TURN credentials ([relay](#the-relay)) |
+| `registered` | service → host | whether the service hands out relay credentials |
+| `connect` | client → service | a sealed **offer** |
+| `offer` | service → host | the sealed offer, a connection number, fresh TURN credentials |
+| `answer` / `refuse` | host → service | the sealed **answer** for a connection, or no answer |
+| `answer` / `error` | service → client | the answer, or why not (`offline`, `timeout`, `refused`, `rateLimited`, …) |
 
 The **offer and the answer** are the two messages of a Noise IK handshake (the same pattern as the
 session's, with the prologue `fernsicht rendezvous v1`), so that:
@@ -180,7 +194,7 @@ generated from them with ts-rs, like the app's bindings.
 
 The decision from the [next steps](next-steps.md#open-decisions) is **both**:
 
-- **A Cloudflare Worker with a Durable Object** (`services/rendezvous-worker`, TypeScript). One
+- **A Cloudflare Worker with a Durable Object** (`web/rendezvous-worker`, TypeScript). One
   Durable Object per rendezvous ID holds the host's WebSocket (with the hibernation API, so an idle
   host costs no running time) and passes offers and answers. It fits Cloudflare's free plan by a
   wide margin: a connection is a handful of requests and a few kilobytes, against 100,000 requests
@@ -201,19 +215,25 @@ service can still come later.
 Setting it up with Cloudflare takes a few minutes:
 
 1. **A Cloudflare account** (free; no own domain needed).
-2. **Deploy the Worker**, either with the **“Deploy to Cloudflare” button** in the README and on this
-   page (it copies the repository to one's GitHub account and deploys the Worker with its Durable
-   Object; their configuration is in the repository's `wrangler.jsonc`), or by hand:
+2. **Deploy the Worker**, either with the button
+
+    [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/firsttris/fernsicht/tree/main/web/rendezvous-worker)
+
+    (it copies `web/rendezvous-worker` to one's GitHub account and deploys the Worker with its
+    Durable Object; the folder stands on its own, its configuration is its `wrangler.jsonc`), or by
+    hand:
 
     ```sh
-    cd services/rendezvous-worker
-    npx wrangler login
-    npx wrangler deploy
+    git clone https://github.com/firsttris/fernsicht
+    cd fernsicht/web/rendezvous-worker
+    npx wrangler@4 login
+    npx wrangler@4 deploy
     ```
 
     Either way the Worker gets an address like `https://fernsicht-rendezvous.<name>.workers.dev`.
 3. **Optionally the relay:** create a TURN key in the Cloudflare dashboard (Realtime → TURN) and
-   give it to the Worker as secrets (`npx wrangler secret put TURN_KEY_ID`, `TURN_API_TOKEN`).
+   give it to the Worker as secrets (`npx wrangler@4 secret put TURN_KEY_ID`, then
+   `TURN_API_TOKEN`).
    Without them everything works except the relay: networks that allow no direct path cannot
    connect.
 4. **Enter the address on the host**, in the app (“Dieser Rechner” → “Verbindung über das
@@ -221,28 +241,29 @@ Setting it up with Cloudflare takes a few minutes:
    app shows whether that worked (“Erreichbar über das Internet”) and whether the Worker can hand
    out relay credentials.
 
-With the Rust service, step 2 is running `fernsicht-rendezvous` on a VPS behind HTTPS, and step 3
-is coturn with a shared secret given to both.
+With the Rust service, step 2 is running `fernsicht-rendezvous --listen 127.0.0.1:8080` on a VPS
+behind a reverse proxy for HTTPS (Caddy, nginx), and step 3 coturn with `use-auth-secret`: the
+service gets its URLs and secret (`--turn-url turn:turn.example.org:3478?transport=udp` and
+`FERNSICHT_TURN_SECRET`) and hands out credentials coturn checks.
 
 ### The clients learn the address from the host
 
-The address belongs to the host and is entered only there. **Clients learn it from the host**:
+The address belongs to the host and is entered only there. **Clients learn it from the host in
+every session:** once the session is confirmed, the host sends it in a sealed `Rendezvous` packet
+([protocol](protocol.md)), so a client that paired before the address was set, or before it
+changed, picks it up the next time it connects. Pairing itself stays as it is (devices of
+different versions still pair); a device paired at home learns the address in its first session
+there.
 
-- **at pairing:** the host's sealed message in step 2 of pairing carries its rendezvous address
-  next to its key and name ([security](security.md#pairing-with-a-pin));
-- **in every session:** the HelloAck carries it, so a client that paired before the address was
-  set, or before it changed, picks it up the next time it connects (in the LAN, or over the old
-  address while it still works).
-
-A client stores it with the paired host and uses it whenever the host is not found otherwise. A
-laptop or phone paired once at home therefore connects from anywhere without being set up; only
-the host was. Since the address arrives inside a sealed message from the host, nobody else can
+A client stores it with the paired host and uses it whenever the host does not answer at its
+last address. A laptop or phone used once at home therefore connects from anywhere without being
+set up; only the host was. `fernsicht-client --rendezvous <url>` names one by hand. Since the address arrives inside a sealed message from the host, nobody else can
 point a client at a different service (and a different service could do no more than drop
 messages anyway).
 
 ### Limits
 
-The service keeps everything small and bounded: messages of at most 4 KiB, at most 10 connects per
+The service keeps everything small and bounded: messages of at most 16 KiB, at most 10 connects per
 minute per rendezvous ID and per client address, an offer waits at most 10 s, a host whose proof
 fails is disconnected. The host itself handles at most a few offers a second; opening one is a
 Noise operation and costs microseconds.
@@ -252,10 +273,17 @@ Noise operation and costs microseconds.
 Where no direct path works, the stream goes through a TURN server. TURN relays any UDP payload, so
 the native protocol passes unchanged, inside ChannelData (4 bytes more per datagram).
 
-- **The client allocates** the relay address: the client is the one in a hostile network (a
-  hotel, a company, a mobile network), and the host is in a home network. TURN permissions are by IP
+- **The client allocates** the relay address, after 1.5 s without a direct answer: the client is
+  the one in a hostile network (a hotel, a company, a mobile network), and the host is in a home
+  network. It tells the host the relayed address with a second offer, binds a channel to each of
+  the host's candidates, and probes through the relay; the host probes back to the relayed
+  address. TURN permissions are by IP
   address only, not by port (RFC 8656, section 9), so the host reaches the relay even through a NAT
   that gives every destination its own port. One allocation is enough in nearly every case.
+- **In the client** a thread sits between the session's socket and the TURN server: it wraps what
+  the session sends in ChannelData, unwraps what comes back, and refreshes the allocation and the
+  channel. The network thread stays as it is; the relay costs a hop through the kernel's loopback.
+  `fernsicht-client --relay-only` goes through the relay at once, to check it.
 - **Credentials** are short-lived (a few hours), handed out by the rendezvous service, never built
   into the app:
     - with Cloudflare's TURN service, the Worker keeps the API token as a secret and asks Cloudflare
@@ -274,7 +302,7 @@ the native protocol passes unchanged, inside ChannelData (4 bytes more per datag
 - **Cost:** Cloudflare's TURN service includes 1,000 GB a month for free, then $0.05 per GB. A
   session at 15 Mbit/s moves about 7 GB an hour, so the free amount covers well over 100 hours of
   relayed sessions a month. A VPS with coturn usually includes several terabytes.
-- **The app says so:** the session overlay and the device list show “direkt” or “über Relay”.
+- **The app says so:** the session's toolbar shows “P2P” or “Relay”.
 
 ## Port forwarding by the router
 
@@ -337,13 +365,12 @@ their sizes, as any router on the way does.
 
 ## Stages
 
-1. **This design.**
+1. **This design.** Done.
 2. **Rendezvous, STUN and hole punching**, with IPv6 candidates: the Rust service and the Worker,
    the host's registration, the client's connect, the Punch packet, choosing a path, the address
-   handed to clients at pairing and in HelloAck, the deploy button and its instructions. Covers
-   most home networks and IPv6.
-3. **The relay:** a TURN client in the client (allocation, permissions, ChannelData), credentials
-   from the service, the relay's bitrate limit, “über Relay” in the app.
+   handed to clients in every session. Done.
+3. **The relay:** a TURN client in the client (allocation, channels, ChannelData), credentials
+   from the service, the relay's bitrate limit, “Relay” in the app. Done.
 4. **Port forwarding by the router** (PCP, NAT-PMP, UPnP IGD) as an option, with Discover answered
    only locally.
 5. **The web viewer over the internet:** HTTPS through a tunnel, the host's candidates, ICE servers.

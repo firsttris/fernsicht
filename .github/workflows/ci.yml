@@ -107,10 +107,11 @@ jobs:
       # a writable /dev/uinput: the hardware-facing tests run for real here
       # (they would make sound or type on a desktop, so they need these
       # variables to run at all).
-      - name: libopus and a sound server
+      # coturn: the relay end-to-end test runs through a real TURN server.
+      - name: libopus, a sound server and coturn
         uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
         with:
-          packages: libopus0 pulseaudio
+          packages: libopus0 pulseaudio coturn
       - name: Sound server and uinput
         run: |
           pulseaudio --start --exit-idle-time=-1
@@ -192,6 +193,7 @@ jobs:
           FERNSICHT_REQUIRE_OPUS: "1"
           FERNSICHT_PULSE_TEST: "1"
           FERNSICHT_UINPUT_TEST: "1"
+          FERNSICHT_REQUIRE_TURN: "1"
       - run: cargo llvm-cov report --summary-only --ignore-filename-regex 'main\.rs$|crates/gpu/' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

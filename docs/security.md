@@ -80,6 +80,27 @@ WireGuard and IPsec do. Packets that fail to open are dropped silently.
   once, it is turned away from then on, and the app says why. `fernsicht-host-agent disconnect` ends
   the running session, whoever it is.
 
+## Over the internet
+
+With a rendezvous service ([over the internet](internet.md)) the same sessions run between homes;
+nothing about them changes. What is added, and why it holds:
+
+- **The service passes sealed messages only.** A client's offer and the host's answer are a Noise
+  IK exchange of their own (`secure::exchange`, bound to its purpose by a prologue): the service
+  sees neither the client's identity (its key travels encrypted), nor the candidates, the punch
+  token or the relay's credentials. A malicious service can drop or delay messages, nothing else.
+- **Only the key holder registers.** The host proves its key (X25519 agreement with an ephemeral
+  key of the service, an HMAC over a fresh nonce); nobody can take its place at the service.
+- **The host answers only paired devices**, and only fresh offers (the client's clock, newer than
+  the last accepted, within 10 minutes). Anyone else learns nothing about where it is.
+- **Probes are bounded.** A host sends probes only to the candidates of a paired device's sealed
+  offer (at most 8, 18 rounds), and answers a probe only with the right token, with a packet of the
+  same size: it cannot be used to send packets at someone else.
+- **The relay sees encrypted packets**, and its credentials go only to paired devices, through the
+  host, short-lived. A relayed session's bitrate is limited.
+- **The service's address** reaches clients only inside a sealed session packet, so nobody can
+  point a client elsewhere (and another service could only drop messages).
+
 ## The web viewer
 
 - A browser is not paired: the PIN opens one session, once, within 5 minutes, with the same attempt

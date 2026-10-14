@@ -236,6 +236,11 @@ fn coturn(secret: &str) -> Option<(Child, u16)> {
 fn a_client_reaches_its_host_through_a_turn_relay() {
     let _serial = exclusive();
     let Some((mut turnserver, port)) = coturn("north") else {
+        // CI installs it: there a missing coturn is a failure, not a skip.
+        assert!(
+            std::env::var_os("FERNSICHT_REQUIRE_TURN").is_none(),
+            "FERNSICHT_REQUIRE_TURN is set, but coturn (turnserver) does not start"
+        );
         eprintln!("coturn (turnserver) not installed: the relay is not checked");
         return;
     };

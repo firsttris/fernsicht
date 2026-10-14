@@ -164,4 +164,9 @@ host): “Grafikkarte während Sitzungen hochtakten” (raise the GPU's clocks d
 two frames a GPU clocks down and the next frame takes longer to encode; while a session runs the
 host keeps it at full clocks and restores everything afterwards (AMD and Intel). Below it, “Gekoppelte Geräte” (paired devices) lists the devices that may connect to this
 computer; “Entfernen” (remove) forgets one, ends its session if it has one, and it has to be
-paired again.
+paired again. “Verbindung über das Internet” (connecting over the internet) takes the address of
+the host's own rendezvous service, so that paired devices reach this computer from anywhere
+([over the internet](internet.md#everyone-runs-their-own)); below it the host says how it stands
+with it: off, connecting, reachable (with or without a relay), or why not. Devices learn the
+address in their next session with this computer. In a session over the internet the toolbar
+shows “Relay” instead of “P2P” when it runs through a relay.

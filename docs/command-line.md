@@ -17,7 +17,7 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 
 | Option | Default | |
 |---|---|---|
-| `--bind <addr>` | `0.0.0.0:47800` | UDP address to listen on |
+| `--bind <addr>` | `0.0.0.0:47800` | UDP address to listen on; with `0.0.0.0` the host listens on IPv6 (`[::]`) on the same port too |
 | `--max-width`, `--max-height` | `3840`, `2160` | upper bound for the stream size; a client asking for the host's size gets the screen's, scaled down to fit |
 | `--max-fps` | `144` | upper bound for the frame rate a client may ask for |
 | `--max-bitrate` | `80000` | upper bound for the bitrate, kbit/s |
@@ -37,6 +37,9 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 | `--no-web` | | no web viewer |
 | `--web-root` | `../share/fernsicht/viewer` next to the program | the built web viewer (`web/viewer/dist`) |
 | `--no-gpu-boost` | | leave the GPU's clocks alone during sessions |
+| `--rendezvous <url>` | the one set in the app | the rendezvous service for connections over the internet, for this run ([over the internet](internet.md)) |
+| `--stun <host:port>` | `stun.cloudflare.com:3478` | STUN servers asked for this computer's public address when a client connects over the internet (repeatable) |
+| `--relay-max-bitrate` | `15000` | upper bound for a session's bitrate through a relay (TURN), kbit/s |
 | `--pace-mbit` | `400` | highest pacing rate in Mbit/s for what goes beyond a 64 KiB burst (keyframes); the host paces at the rate the client measures the path deliver, up to this |
 | `--loss <f>` | `0` | drop this fraction of outgoing video packets (testing, e.g. `0.01`) |
 
@@ -75,8 +78,23 @@ given).
 | `--duration <s>` | until Ctrl+C | stop after this many seconds |
 | `--state-dir` | `~/.config/fernsicht` | this device's key and paired hosts |
 | `--loss <f>` | `0` | drop this fraction of incoming video packets (testing) |
+| `--rendezvous <url>` | the one the host named | the host's rendezvous service, for connecting over the internet when the host does not answer at its address ([over the internet](internet.md)) |
+| `--stun <host:port>` | `stun.cloudflare.com:3478` | STUN servers asked for this device's public address (repeatable) |
+| `--relay-only` | | over the internet, go through the relay (TURN) at once, without a direct path: to check the relay |
 
 The window's keys are on the [app page](app.md#a-session).
+
+## Rendezvous service: `fernsicht-rendezvous`
+
+The self-hosted rendezvous service for connections over the internet ([over the
+internet](internet.md#two-implementations)); the Cloudflare Worker does the same without a server.
+It speaks plain HTTP: put it behind a reverse proxy for HTTPS.
+
+| Option | Default | |
+|---|---|---|
+| `--listen <addr>` | `127.0.0.1:8080` | where to listen |
+| `--turn-url <url>` | | a TURN server to hand out credentials for, e.g. `turn:turn.example.org:3478?transport=udp` (repeatable); needs `FERNSICHT_TURN_SECRET`, coturn's `static-auth-secret` |
+| `--turn-ttl <s>` | `14400` | how long handed out TURN credentials stay valid |
 
 ## Examples
 
@@ -94,6 +112,11 @@ fernsicht-client zentrale --headless --duration 10 --record ~/test.h265
 
 # Loss on purpose: what FEC hides
 fernsicht-client zentrale --loss 0.01 --duration 10
+
+# Over the internet: the host registers at its service, the client finds it there
+fernsicht-host-agent --rendezvous https://fernsicht-rendezvous.name.workers.dev
+fernsicht-client zentrale            # from anywhere, once it was used at home
+fernsicht-client zentrale --relay-only --duration 10   # check the relay
 ```
 
 The overlay in the terminal:
