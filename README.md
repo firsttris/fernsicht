@@ -9,6 +9,7 @@ AMD, Intel and NVIDIA · Wayland and X11 · AV1, HEVC and H.264 in hardware · e
 [![CI](https://github.com/firsttris/fernsicht/actions/workflows/ci.yml/badge.svg)](https://github.com/firsttris/fernsicht/actions/workflows/ci.yml)
 [![GPU](https://github.com/firsttris/fernsicht/actions/workflows/gpu.yml/badge.svg)](https://github.com/firsttris/fernsicht/actions/workflows/gpu.yml)
 [![Release](https://img.shields.io/github/v/release/firsttris/fernsicht?logo=github&label=release)](https://github.com/firsttris/fernsicht/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-firsttris.github.io%2Ffernsicht-4f46e5?logo=materialformkdocs&logoColor=white)](https://firsttris.github.io/fernsicht/)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Vulkan](https://img.shields.io/badge/Vulkan-zero--copy-a41e22?logo=vulkan&logoColor=white)](https://firsttris.github.io/fernsicht/video.html)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
