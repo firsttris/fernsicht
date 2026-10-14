@@ -109,6 +109,7 @@ fn monitors_are_switched_on_request() {
         peer: socket.local_addr().unwrap(),
         socket,
         session_id: 1,
+        relayed: false,
         crypto: None,
         confirmed: Arc::new(AtomicBool::new(true)),
         gso: Arc::new(AtomicBool::new(true)),
@@ -196,6 +197,7 @@ fn params(codecs: CodecSet) -> SessionParams {
         refresh: false,
         ten_bit: CodecSet::EMPTY,
         screen: Colour::SDR,
+        relayed: false,
     }
 }
 
@@ -500,6 +502,7 @@ fn handshake_times_outlive_a_restart_and_reset_on_pairing() {
         name: "bazzite".into(),
         address: None,
         paired_at: 0,
+        rendezvous: None,
     });
     assert!(open().handshake_is_new(&client, 5));
     std::fs::remove_dir_all(&dir).unwrap();
@@ -638,6 +641,7 @@ fn the_pointer_hotspot_is_learnt_from_where_input_put_it() {
         peer: socket.local_addr().unwrap(),
         socket: socket.clone(),
         session_id: 1,
+        relayed: false,
         crypto: None,
         confirmed: Arc::new(AtomicBool::new(true)),
         gso: Arc::new(AtomicBool::new(true)),

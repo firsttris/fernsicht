@@ -508,14 +508,18 @@ fn for_the_app_the_client_prints_json_and_stops_when_stdin_closes() {
         started.elapsed() < Duration::from_secs(5),
         "stopped when stdin closed, not after 60 s"
     );
-    let stats: Vec<String> = lines
+    let json: Vec<String> = lines
         .join()
         .unwrap()
         .into_iter()
         .filter(|l| l.starts_with('{'))
         .collect();
+    // First how the session reaches the host (here: the LAN), then the
+    // overlay once a second.
+    assert_eq!(json.first().map(String::as_str), Some(r#"{"path":"lan"}"#));
+    let stats = &json[1..];
     assert!(!stats.is_empty(), "one JSON line per second");
-    for l in &stats {
+    for l in stats {
         assert!(
             l.contains("\"glassToGlassUs\"") && l.contains("\"stagesUs\""),
             "{l}"

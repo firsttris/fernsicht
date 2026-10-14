@@ -84,7 +84,8 @@ the [installation guide](https://firsttris.github.io/fernsicht/installation.html
 | 🎞️ **AV1, HEVC, H.264** | Each session takes the best codec both sides do in hardware; switchable in the settings; 10-bit desktops stream in 10 bit (HEVC Main 10, AV1) without banding; HDR desktops are recognised and tone-mapped for the client's display |
 | 🔊 **Sound** | What the host plays, Opus with 5 ms frames, a 15 ms jitter buffer that hides loss |
 | 🔐 **Pairing and encryption** | Pair once with a PIN (SPAKE2, no offline guessing), Noise IK per session, ChaCha20-Poly1305 for every packet, only paired devices get in |
-| 🌐 **Web viewer** | The host serves it itself: any browser in the LAN, PIN once, WebRTC with AV1 or H.264; on phones with gestures, touchpad mode, pinch zoom and the on-screen keyboard |
+| 🌐 **Web viewer** | The host serves it itself: any browser in the LAN, PIN once, WebRTC with AV1 or H.264; on phones with gestures, touchpad mode, pinch zoom and the on-screen keyboard; over the internet through a tunnel with HTTPS |
+| 🌍 **Over the internet** | Your own rendezvous service (a free Cloudflare Worker, or self-hosted): paired devices find the host from anywhere without a VPN or port forwarding; direct by hole punching and IPv6, through a TURN relay only where nothing else gets through; the service sees nothing of the session |
 | 📶 **Bad networks** | Forward error correction sized from the measured loss, bitrate adaptation before packets are lost (queue delay, ECN marks); 1 % loss costs no frame |
 | 🧰 **Host as a service** | systemd unit, encoder picked for the GPU, GPU clocks raised during sessions, pairing and status from the app or the command line |
 
@@ -130,7 +131,7 @@ the overlay: capture, encode, network, decode, display.
 | Remote desktop comfort (find, pair, click) | ✅ | ➖ pairing per client, made for games | ✅ | ✅ |
 | Browser client | ✅ built into the host | ❌ | ❌ | ➖ web client |
 | Account or cloud | none | none | required | optional relay server |
-| Over the internet | via VPN for now ([how](https://firsttris.github.io/fernsicht/remote-access.html)) | port forwarding | ✅ | ✅ |
+| Over the internet | ✅ your own rendezvous service (a free Cloudflare Worker), or a VPN ([how](https://firsttris.github.io/fernsicht/internet.html)) | port forwarding | ✅ | ✅ |
 | Windows/macOS | ❌ | ✅ | ✅ | ✅ |
 
 A latency comparison with Sunshine/Moonlight on the same machines is planned
@@ -157,9 +158,18 @@ Tested on a GTX 1080.
 <details>
 <summary><b>Can I use it over the internet?</b></summary>
 
-Today through a VPN such as Tailscale or WireGuard (or Cloudflare WARP): then it works as in the LAN.
-Built-in NAT traversal is on the [roadmap](https://firsttris.github.io/fernsicht/next-steps.html).
-See [remote access](https://firsttris.github.io/fernsicht/remote-access.html).
+Yes. Deploy your own rendezvous service once (a Cloudflare Worker on the free plan, or a small
+service on your own server) and enter its address on the host in the app; paired devices then
+reach the host from anywhere, without a VPN or port forwarding. The picture goes directly between
+the devices (hole punching, IPv6), through a relay (TURN) only where no direct path works. See
+[over the internet](https://firsttris.github.io/fernsicht/internet.html); not seen live between two
+homes yet.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/firsttris/fernsicht/tree/main/web/rendezvous-worker)
+
+The web viewer goes over the internet through a tunnel with HTTPS (a Cloudflare Tunnel). A VPN such
+as Tailscale or WireGuard works too
+([remote access](https://firsttris.github.io/fernsicht/remote-access.html)).
 </details>
 
 <details>

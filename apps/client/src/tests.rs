@@ -171,6 +171,7 @@ fn hosts_are_found_by_name_or_address() {
         key: Identity::generate().public,
         address: Some("192.168.178.87:47800".into()),
         paired_at: 0,
+        rendezvous: None,
     });
     assert!(find_host(&t, "zentrale").is_some());
     assert!(find_host(&t, "192.168.178.87").is_some());
@@ -186,6 +187,7 @@ fn a_name_cannot_pose_as_an_address_or_another_device() {
         key: Identity::generate().public,
         address: Some(address.into()),
         paired_at: 0,
+        rendezvous: None,
     };
     let mut t = Trusted::default();
     // Paired first: a host that calls itself like the other's address.
@@ -218,6 +220,7 @@ fn an_address_is_kept_only_after_a_session_with_it() {
         key,
         address: Some("192.168.178.87:47800".into()),
         paired_at: 0,
+        rendezvous: None,
     });
     // Nothing new, or not a paired host: nothing to keep.
     assert!(remember_address(&t, &key, "192.168.178.87:47800").is_none());

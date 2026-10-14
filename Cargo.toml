@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/host-agent", "apps/client", "tests/e2e"]
+members = ["crates/*", "apps/host-agent", "apps/client", "apps/rendezvous", "tests/e2e"]
 # Fuzz targets need nightly and cargo-fuzz (fuzz/README.md); the desktop app
 # needs WebKitGTK and the built UI (apps/desktop/Cargo.toml).
 exclude = ["fuzz", "apps/desktop"]
@@ -26,10 +26,13 @@ fernsicht-input = { path = "crates/input" }
 fernsicht-audio = { path = "crates/audio" }
 fernsicht-secure = { path = "crates/secure" }
 fernsicht-clipboard = { path = "crates/clipboard" }
+fernsicht-internet = { path = "crates/internet" }
 fernsicht-host-agent = { path = "apps/host-agent" }
 fernsicht-client = { path = "apps/client" }
+fernsicht-rendezvous = { path = "apps/rendezvous" }
 
 anyhow = "1"
+base64 = "0.22"
 chacha20poly1305 = "0.10"
 ash = "0.38"
 ash-window = "0.13"
@@ -46,10 +49,17 @@ naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 raw-window-handle = "0.6"
 env_logger = "0.11"
 getrandom = "0.3"
+hmac = "0.12"
+md-5 = "0.10"
 reed-solomon-simd = "3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
 snow = "0.10"
+# TLS for the rendezvous service's WebSockets; ring as the one crypto
+# provider (no C toolchain for aws-lc).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # WebRTC for the web viewer; pure-Rust crypto (no C toolchain for aws-lc).
 str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
 spake2 = "0.4"
@@ -66,6 +76,11 @@ wayland-protocols = { version = "0.32", features = ["client", "unstable", "stagi
 # The clipboard on compositors that offer only wlroots' data control.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 x11-dl = "2.21"
+# Key agreement for the rendezvous service's key proof.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# WebSockets to the rendezvous service (and its own server side).
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 # test-only
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

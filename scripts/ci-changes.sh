@@ -23,7 +23,7 @@ files=$(git diff --name-only "$base" HEAD)
 # The workflows and the scripts they run concern both parts. The desktop
 # app and the generated TypeScript types sit between them.
 shared='^(\.github/|scripts/)'
-rust='^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/|apps/(client|host-agent|desktop)/|tests/|fuzz/|packaging/|dev/)'
+rust='^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/|apps/(client|host-agent|desktop|rendezvous)/|tests/|fuzz/|packaging/|dev/)'
 web='^(web/|apps/desktop/|package\.json$|pnpm-(lock|workspace)\.yaml$|biome\.json$)'
 # What the GPU runners test: the GPU crates, the host's encoder and the
 # client's decoder and window, the GPU tests and what builds them. Network,

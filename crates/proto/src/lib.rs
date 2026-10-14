@@ -61,6 +61,8 @@ pub enum Kind {
     Rumble = 23,
     Clipboard = 24,
     ClipboardAck = 25,
+    Punch = 26,
+    Rendezvous = 27,
 }
 
 impl Kind {
@@ -91,6 +93,8 @@ impl Kind {
             23 => Kind::Rumble,
             24 => Kind::Clipboard,
             25 => Kind::ClipboardAck,
+            26 => Kind::Punch,
+            27 => Kind::Rendezvous,
             _ => return None,
         })
     }
@@ -108,6 +112,7 @@ impl Kind {
             Kind::Announce => FLAG_PAIRING | FLAG_BUSY,
             Kind::KeyframeRequest => FLAG_HAS_FRAME,
             Kind::HelloAck => FLAG_ACK_REFRESH,
+            Kind::Punch => FLAG_PUNCH_REPLY,
             Kind::Hello | Kind::Pair | Kind::Monitors => 0xFF,
             Kind::ClockPing
             | Kind::ClockPong
@@ -123,7 +128,8 @@ impl Kind {
             | Kind::Nack
             | Kind::Rumble
             | Kind::Clipboard
-            | Kind::ClipboardAck => 0,
+            | Kind::ClipboardAck
+            | Kind::Rendezvous => 0,
         }
     }
 }
@@ -1692,6 +1698,61 @@ impl ClipboardAck {
     }
 }
 
+/// The token every [`Punch`] carries.
+pub const PUNCH_TOKEN_LEN: usize = 16;
+
+const FLAG_PUNCH_REPLY: u8 = 0x01;
+
+/// Hole punching over the internet, both ways, unauthenticated: a probe
+/// sent to each address the other side may be reached at, carrying the
+/// random token both learnt from the sealed offer and answer through the
+/// rendezvous service. A side that gets a probe with the right token
+/// answers it (`reply`) over the same path, with a packet of the same
+/// size: nothing to amplify, and a wrong token gets no answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Punch {
+    pub token: [u8; PUNCH_TOKEN_LEN],
+    pub reply: bool,
+}
+
+impl Punch {
+    pub const LEN: usize = PREFIX_LEN + PUNCH_TOKEN_LEN;
+
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut w = Writer::new(&mut buf[..Self::LEN]);
+        w.prefix(Kind::Punch, if self.reply { FLAG_PUNCH_REPLY } else { 0 });
+        w.bytes(&self.token);
+        Self::LEN
+    }
+}
+
+/// Longest rendezvous service address a host hands out.
+pub const MAX_RENDEZVOUS_URL: usize = 256;
+
+/// Where the host can be found over the internet, host → client, sealed
+/// only: the address of its rendezvous service (empty: none set). Sent
+/// when a session starts, so a client paired before the address was set,
+/// or before it changed, learns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rendezvous<'a> {
+    pub session_id: u32,
+    pub url: &'a str,
+}
+
+impl Rendezvous<'_> {
+    /// Panics if the address is longer than [`MAX_RENDEZVOUS_URL`].
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        assert!(self.url.len() <= MAX_RENDEZVOUS_URL, "rendezvous address");
+        let len = PREFIX_LEN + 4 + 2 + self.url.len();
+        let mut w = Writer::new(&mut buf[..len]);
+        w.prefix(Kind::Rendezvous, 0);
+        w.u32(self.session_id);
+        w.u16(self.url.len() as u16);
+        w.bytes(self.url.as_bytes());
+        len
+    }
+}
+
 /// A gamepad's motors, host → client (D9): what a game on the host plays
 /// on the virtual pad `pad`, for the client's pad. `low` is the big,
 /// low-frequency motor, `high` the small one (0..65535), for
@@ -1903,6 +1964,8 @@ pub enum Packet<'a> {
     /// A piece of a clipboard text, and its bytes.
     Clipboard(ClipboardChunk, &'a [u8]),
     ClipboardAck(ClipboardAck),
+    Punch(Punch),
+    Rendezvous(Rendezvous<'a>),
 }
 
 impl<'a> Packet<'a> {
@@ -2062,6 +2125,30 @@ impl<'a> Packet<'a> {
                 }
                 Packet::Rumble(m)
             }
+            Kind::Punch => {
+                let mut token = [0u8; PUNCH_TOKEN_LEN];
+                token.copy_from_slice(r.take_slice(PUNCH_TOKEN_LEN)?);
+                if !r.is_empty() {
+                    return Err(DecodeError::Invalid("trailing bytes after punch"));
+                }
+                Packet::Punch(Punch {
+                    token,
+                    reply: flags & FLAG_PUNCH_REPLY != 0,
+                })
+            }
+            Kind::Rendezvous => {
+                let session_id = r.u32()?;
+                let n = usize::from(r.u16()?);
+                if n > MAX_RENDEZVOUS_URL {
+                    return Err(DecodeError::Invalid("rendezvous address too long"));
+                }
+                let url = std::str::from_utf8(r.take_slice(n)?)
+                    .map_err(|_| DecodeError::Invalid("rendezvous address"))?;
+                if !r.is_empty() {
+                    return Err(DecodeError::Invalid("trailing bytes after rendezvous"));
+                }
+                Packet::Rendezvous(Rendezvous { session_id, url })
+            }
             Kind::KeyframeRequest => {
                 let k = KeyframeRequest::read(flags, &mut r)?;
                 if !r.is_empty() {
@@ -2120,6 +2207,12 @@ mod tests {
         }
         .encode(&mut buf);
         add(n, &buf);
+        let n = Rendezvous {
+            session_id: 7,
+            url: "https://r.example.workers.dev",
+        }
+        .encode(&mut buf);
+        add(n, &buf);
         for p in packets {
             assert!(Packet::decode(&p).is_ok(), "valid as sent");
             let mut odd = p.clone();
@@ -2131,6 +2224,63 @@ mod tests {
                 p[2]
             );
         }
+    }
+
+    #[test]
+    fn punches_roundtrip_and_keep_their_size() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        for reply in [false, true] {
+            let p = Punch {
+                token: [0x5a; PUNCH_TOKEN_LEN],
+                reply,
+            };
+            let n = p.encode(&mut buf);
+            assert_eq!(n, Punch::LEN, "a reply is as long as the probe");
+            assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Punch(p));
+            assert!(Packet::decode(&buf[..n - 1]).is_err());
+        }
+        let n = Punch {
+            token: [1; PUNCH_TOKEN_LEN],
+            reply: false,
+        }
+        .encode(&mut buf);
+        buf[3] = 0x02;
+        assert_eq!(
+            Packet::decode(&buf[..n]).unwrap_err(),
+            DecodeError::Invalid("unknown flags")
+        );
+        let mut long = buf[..n].to_vec();
+        long[3] = 0;
+        long.push(0);
+        assert!(Packet::decode(&long).is_err(), "trailing bytes");
+    }
+
+    #[test]
+    fn rendezvous_addresses_roundtrip_within_bounds() {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        for url in ["", "https://fernsicht-rendezvous.someone.workers.dev"] {
+            let r = Rendezvous { session_id: 9, url };
+            let n = r.encode(&mut buf);
+            assert_eq!(Packet::decode(&buf[..n]).unwrap(), Packet::Rendezvous(r));
+        }
+        let long = "x".repeat(MAX_RENDEZVOUS_URL);
+        let n = Rendezvous {
+            session_id: 9,
+            url: &long,
+        }
+        .encode(&mut buf);
+        assert!(Packet::decode(&buf[..n]).is_ok());
+        // A length beyond the limit, or past the end, or not UTF-8.
+        buf[8..10].copy_from_slice(&(MAX_RENDEZVOUS_URL as u16 + 1).to_le_bytes());
+        assert!(Packet::decode(&buf[..n + 1]).is_err());
+        let n = Rendezvous {
+            session_id: 9,
+            url: "ab",
+        }
+        .encode(&mut buf);
+        assert!(Packet::decode(&buf[..n - 1]).is_err());
+        buf[n - 1] = 0xff;
+        assert!(Packet::decode(&buf[..n]).is_err());
     }
 
     fn video_header() -> VideoHeader {

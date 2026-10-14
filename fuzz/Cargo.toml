@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 fernsicht-proto = { path = "../crates/proto" }
 fernsicht-net = { path = "../crates/net" }
 fernsicht-codec = { path = "../crates/codec" }
+fernsicht-internet = { path = "../crates/internet" }
 
 [[bin]]
 name = "proto_decode"
@@ -37,6 +38,13 @@ bench = false
 [[bin]]
 name = "synthetic_decode"
 path = "fuzz_targets/synthetic_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stun_turn"
+path = "fuzz_targets/stun_turn.rs"
 test = false
 doc = false
 bench = false

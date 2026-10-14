@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use crate::backends::{NVIDIA, render_nodes};
 use crate::security::HostSecurity;
 
+/// The STUN server asked unless told otherwise.
+pub const DEFAULT_STUN: &str = fernsicht_internet::stun::DEFAULT_SERVER;
+
 #[derive(Clone, Debug)]
 pub struct HostConfig {
     pub bind: String,
@@ -49,12 +52,22 @@ pub struct HostConfig {
     pub web: Option<String>,
     /// The built viewer (`web/viewer/dist`) the web server serves.
     pub web_root: Option<PathBuf>,
+    /// Public names the web viewer is reached at through a tunnel (e.g.
+    /// `fernsicht.example.org`, or `*.trycloudflare.com`): browsers there
+    /// come over the internet.
+    pub web_public: Vec<String>,
     /// Settings the desktop's user changes while the host runs.
     pub settings: Arc<HostSettings>,
     /// Where the GPU's clock settings are noted during a session, so a
     /// crashed host can put them back (`gpu-power.json` in the state directory).
     /// `None`: not noted.
     pub power_record: Option<PathBuf>,
+    /// STUN servers (`host:port`) the host asks for its public address
+    /// when a client connects over the internet.
+    pub stun: Vec<String>,
+    /// The highest bitrate of a session through a relay, kbit/s: relayed
+    /// traffic may cost money.
+    pub relay_max_kbps: u32,
 }
 
 /// Host settings the desktop's user may change while the host runs (over
@@ -62,23 +75,38 @@ pub struct HostConfig {
 #[derive(Debug, Default)]
 pub struct HostSettings {
     gpu_boost: AtomicBool,
+    /// The rendezvous service's address, for connections over the internet
+    /// (`docs/internet.md`); `None`: LAN and VPN only.
+    rendezvous: std::sync::Mutex<Option<String>>,
+    /// Ask the router to forward the host's port (PCP, NAT-PMP, UPnP).
+    port_mapping: AtomicBool,
     path: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct SettingsFile {
     gpu_boost: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rendezvous: Option<String>,
+    #[serde(default)]
+    port_mapping: bool,
 }
 
 impl HostSettings {
     /// From `path` (`settings.json`); what is missing or broken takes the
-    /// defaults: GPU boost on.
+    /// defaults: GPU boost on, no rendezvous service.
     pub fn load(path: PathBuf) -> Self {
         let file = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| serde_json::from_str::<SettingsFile>(&t).ok());
+        let rendezvous = file
+            .as_ref()
+            .and_then(|f| f.rendezvous.clone())
+            .filter(|u| fernsicht_internet::rendezvous::is_service_url(u));
         Self {
-            gpu_boost: AtomicBool::new(file.is_none_or(|f| f.gpu_boost)),
+            gpu_boost: AtomicBool::new(file.as_ref().is_none_or(|f| f.gpu_boost)),
+            rendezvous: std::sync::Mutex::new(rendezvous),
+            port_mapping: AtomicBool::new(file.as_ref().is_some_and(|f| f.port_mapping)),
             path: Some(path),
         }
     }
@@ -94,16 +122,72 @@ impl HostSettings {
         Self { path: None, ..self }
     }
 
+    /// The rendezvous service for this run only; the stored setting stays
+    /// (`--rendezvous`).
+    pub fn with_rendezvous(self, url: Option<String>) -> Self {
+        *self.rendezvous.lock().unwrap_or_else(|e| e.into_inner()) = url;
+        Self { path: None, ..self }
+    }
+
+    /// Port forwarding by the router on for this run only; the stored
+    /// setting stays (`--port-mapping`).
+    pub fn with_port_mapping(self) -> Self {
+        self.port_mapping.store(true, Ordering::Relaxed);
+        Self { path: None, ..self }
+    }
+
+    /// Ask the router to forward the host's port.
+    pub fn port_mapping(&self) -> bool {
+        self.port_mapping.load(Ordering::Relaxed)
+    }
+
+    pub fn set_port_mapping(&self, on: bool) -> std::io::Result<()> {
+        self.port_mapping.store(on, Ordering::Relaxed);
+        self.save()
+    }
+
+    /// The rendezvous service's address, if one is set.
+    pub fn rendezvous(&self) -> Option<String> {
+        self.rendezvous
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn set_gpu_boost(&self, on: bool) -> std::io::Result<()> {
         self.gpu_boost.store(on, Ordering::Relaxed);
+        self.save()
+    }
+
+    /// Sets (or with `None` clears) the rendezvous service; an address that
+    /// is not one is refused.
+    pub fn set_rendezvous(&self, url: Option<String>) -> std::io::Result<()> {
+        let url = url.map(|u| u.trim().trim_end_matches('/').to_owned());
+        if let Some(u) = &url
+            && !fernsicht_internet::rendezvous::is_service_url(u)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("not a rendezvous service address: {u}"),
+            ));
+        }
+        *self.rendezvous.lock().unwrap_or_else(|e| e.into_inner()) = url;
+        self.save()
+    }
+
+    fn save(&self) -> std::io::Result<()> {
         let Some(path) = &self.path else {
             return Ok(());
         };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_string(&SettingsFile { gpu_boost: on })
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string(&SettingsFile {
+            gpu_boost: self.gpu_boost(),
+            rendezvous: self.rendezvous(),
+            port_mapping: self.port_mapping(),
+        })
+        .map_err(std::io::Error::other)?;
         std::fs::write(path, json)
     }
 }
@@ -262,8 +346,11 @@ impl Default for HostConfig {
             description: HostDescription::default(),
             web: None,
             web_root: None,
+            web_public: Vec::new(),
             settings: Arc::default(),
             power_record: None,
+            stun: vec![DEFAULT_STUN.into()],
+            relay_max_kbps: 15_000,
         }
     }
 }
@@ -285,4 +372,7 @@ pub struct SessionParams {
     /// What the screen holds (its depth, HDR or not); the stream takes it
     /// in 10 bit where the client decodes that.
     pub screen: Colour,
+    /// The client is reached through a TURN relay: smaller datagrams (the
+    /// relay's path is not known) and a lower bitrate.
+    pub relayed: bool,
 }

@@ -46,7 +46,7 @@ step "Desktop app: format, clippy, tests (and the generated TypeScript)"
 shellcheck=${SHELLCHECK:-$(command -v shellcheck || true)}
 if [[ -n "$shellcheck" ]]; then
     step "Shell scripts"
-    "$shellcheck" packaging/*.sh scripts/*.sh dev/*.sh dev/runner/*.sh
+    "$shellcheck" packaging/*.sh scripts/*.sh dev/*.sh dev/runner/*.sh tests/nat/*.sh
 fi
 mkdocs=${MKDOCS:-$(command -v mkdocs || true)}
 if [[ -n "$mkdocs" ]]; then

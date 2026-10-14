@@ -11,6 +11,10 @@
 //!                                  ends that device's session)
 //! {"cmd":"disconnect"}           → {"ok":true} (ends the running session)
 //! {"cmd":"set","gpu_boost":true} → {"ok":true} (kept in the state directory)
+//! {"cmd":"set","rendezvous":"https://…"} → {"ok":true} (the rendezvous
+//!                                  service; "" for none; kept too)
+//! {"cmd":"set","port_mapping":true} → {"ok":true} (ask the router to
+//!                                  forward the port; kept too)
 //! ```
 //!
 //! Who may ask: root, the user the host runs as, and the user at the
@@ -43,7 +47,14 @@ pub enum Request {
         device: Option<String>,
     },
     Set {
+        #[serde(default)]
         gpu_boost: Option<bool>,
+        /// The rendezvous service's address; empty: none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rendezvous: Option<String>,
+        /// Ask the router to forward the host's port.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port_mapping: Option<bool>,
     },
 }
 
@@ -60,6 +71,10 @@ pub struct Status {
     pub pairing: Option<u64>,
     /// The GPU is clocked up during sessions.
     pub gpu_boost: bool,
+    /// How the host stands with its rendezvous service (connections over
+    /// the internet).
+    #[serde(default)]
+    pub internet: crate::internet::InternetStatus,
 }
 
 /// A device paired with the host.
@@ -98,6 +113,13 @@ pub struct SessionStatus {
 /// Shared between the host's loop (writes) and the socket (reads).
 pub type StatusCell = Arc<Mutex<Option<SessionStatus>>>;
 
+/// What the host's loop and its threads report, for the socket to read.
+#[derive(Clone, Debug, Default)]
+pub struct Reports {
+    pub session: StatusCell,
+    pub internet: crate::internet::InternetCell,
+}
+
 /// Where the control socket goes by default: `/run/fernsicht` as root,
 /// the user's runtime directory otherwise.
 pub fn default_path() -> PathBuf {
@@ -131,7 +153,7 @@ pub fn handle(
     uid: u32,
     allowed: &[u32],
     sec: &HostSecurity,
-    session: &StatusCell,
+    reports: &Reports,
     settings: &HostSettings,
 ) -> Value {
     if !allowed.contains(&uid) {
@@ -156,9 +178,14 @@ pub fn handle(
                     paired_at: p.paired_at,
                 })
                 .collect(),
-            session: session.lock().ok().and_then(|s| s.clone()),
+            session: reports.session.lock().ok().and_then(|s| s.clone()),
             pairing: sec.pairing_remaining().map(|d| d.as_secs()),
             gpu_boost: settings.gpu_boost(),
+            internet: reports
+                .internet
+                .lock()
+                .map(|i| i.clone())
+                .unwrap_or_default(),
         }),
         Request::Pair => {
             let pin = fernsicht_secure::pairing::new_pin();
@@ -170,11 +197,33 @@ pub fn handle(
         }
         Request::Set {
             gpu_boost: Some(on),
+            rendezvous: None,
+            port_mapping: None,
         } => match settings.set_gpu_boost(on) {
             Ok(()) => done(),
             Err(e) => failed(&format!("saving the setting: {e}")),
         },
-        Request::Set { gpu_boost: None } => failed("which setting?"),
+        Request::Set {
+            gpu_boost: None,
+            rendezvous: None,
+            port_mapping: Some(on),
+        } => match settings.set_port_mapping(on) {
+            Ok(()) => done(),
+            Err(e) => failed(&format!("saving the setting: {e}")),
+        },
+        Request::Set {
+            gpu_boost: None,
+            rendezvous: Some(url),
+            port_mapping: None,
+        } => {
+            // Empty: none (LAN and VPN only).
+            let url = Some(url.trim().to_owned()).filter(|u| !u.is_empty());
+            match settings.set_rendezvous(url) {
+                Ok(()) => done(),
+                Err(e) => failed(&e.to_string()),
+            }
+        }
+        Request::Set { .. } => failed("one setting at a time"),
         Request::StopPairing => {
             sec.close_pairing();
             done()
@@ -242,7 +291,7 @@ pub fn allowed_uids() -> Vec<u32> {
 pub fn serve(
     path: &Path,
     sec: Arc<HostSecurity>,
-    session: StatusCell,
+    reports: Reports,
     settings: Arc<HostSettings>,
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -264,7 +313,7 @@ pub fn serve(
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let allowed = allowed_uids();
-                        answer(stream, &allowed, &sec, &session, &settings, REQUEST_TIME);
+                        answer(stream, &allowed, &sec, &reports, &settings, REQUEST_TIME);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -289,7 +338,7 @@ fn answer(
     stream: UnixStream,
     allowed: &[u32],
     sec: &HostSecurity,
-    session: &StatusCell,
+    reports: &Reports,
     settings: &HostSettings,
     within: Duration,
 ) {
@@ -300,13 +349,13 @@ fn answer(
     // Who it is comes first: a caller who may not ask is answered without
     // reading anything.
     if !allowed.contains(&uid) {
-        let _ = writeln!(w, "{}", handle("", uid, allowed, sec, session, settings));
+        let _ = writeln!(w, "{}", handle("", uid, allowed, sec, reports, settings));
         return;
     }
     let Some(line) = read_line_within(&stream, within) else {
         return;
     };
-    let reply = handle(line.trim(), uid, allowed, sec, session, settings);
+    let reply = handle(line.trim(), uid, allowed, sec, reports, settings);
     let _ = writeln!(w, "{reply}");
 }
 
@@ -370,6 +419,7 @@ mod tests {
             key: Identity::generate().public,
             address: None,
             paired_at: 5,
+            rendezvous: None,
         });
         HostSecurity::new(Identity::generate(), "zentrale", t, None)
     }
@@ -383,7 +433,7 @@ mod tests {
             ours,
             &[],
             &sec(),
-            &StatusCell::default(),
+            &Reports::default(),
             &HostSettings::default(),
             Duration::from_secs(5),
         );
@@ -412,7 +462,7 @@ mod tests {
             ours,
             &[me],
             &sec(),
-            &StatusCell::default(),
+            &Reports::default(),
             &HostSettings::default(),
             Duration::from_millis(200),
         );
@@ -428,7 +478,7 @@ mod tests {
             1000,
             &[1000],
             &s,
-            &StatusCell::default(),
+            &Reports::default(),
             &HostSettings::default(),
         );
         assert_eq!(r["ok"], true);
@@ -439,7 +489,7 @@ mod tests {
     #[test]
     fn status_pair_and_unpair() {
         let s = sec();
-        let cell: StatusCell = Arc::default();
+        let cell = Reports::default();
         let st = handle(
             r#"{"cmd":"status"}"#,
             1000,
@@ -496,7 +546,7 @@ mod tests {
             Value::Null
         );
 
-        *cell.lock().unwrap() = Some(SessionStatus {
+        *cell.session.lock().unwrap() = Some(SessionStatus {
             client: "bazzite".into(),
             address: "192.168.178.20:5000".into(),
             width: 2560,
@@ -539,7 +589,7 @@ mod tests {
     #[test]
     fn the_gpu_boost_setting_is_kept() {
         let s = sec();
-        let cell: StatusCell = Arc::default();
+        let cell = Reports::default();
         let dir = std::env::temp_dir().join(format!("fernsicht-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("settings.json");
@@ -581,9 +631,52 @@ mod tests {
     }
 
     #[test]
+    fn the_rendezvous_service_is_set_checked_and_kept() {
+        let s = sec();
+        let cell = Reports::default();
+        let dir = std::env::temp_dir().join(format!("fernsicht-rendezvous-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("settings.json");
+        let set = HostSettings::load(file.clone());
+        let ask = |req: &str| handle(req, 1000, &[1000], &s, &cell, &set);
+        assert_eq!(ask(r#"{"cmd":"status"}"#)["internet"]["state"], "off");
+        let r = ask(r#"{"cmd":"set","rendezvous":"https://r.someone.workers.dev/"}"#);
+        assert_eq!(r["ok"], true);
+        assert_eq!(
+            set.rendezvous().as_deref(),
+            Some("https://r.someone.workers.dev")
+        );
+        let back = HostSettings::load(file.clone());
+        assert_eq!(back.rendezvous(), set.rendezvous(), "kept on disk");
+        assert!(back.gpu_boost(), "the other setting stays");
+        // Not an address: refused, the old one stays.
+        assert_eq!(ask(r#"{"cmd":"set","rendezvous":"ftp://x"}"#)["ok"], false);
+        assert!(set.rendezvous().is_some());
+        // Both at once: one at a time.
+        let both = r#"{"cmd":"set","gpu_boost":true,"rendezvous":""}"#;
+        assert_eq!(ask(both)["ok"], false);
+        // Empty: none.
+        assert_eq!(ask(r#"{"cmd":"set","rendezvous":""}"#)["ok"], true);
+        assert_eq!(set.rendezvous(), None);
+        assert_eq!(HostSettings::load(file).rendezvous(), None);
+        // What the signaling thread reports shows in the status.
+        *cell.internet.lock().unwrap() = crate::internet::InternetStatus {
+            url: Some("https://x.example".into()),
+            state: crate::internet::InternetState::Registered,
+            relay: true,
+            error: None,
+            forwarding: Default::default(),
+        };
+        let st = ask(r#"{"cmd":"status"}"#);
+        assert_eq!(st["internet"]["state"], "registered");
+        assert_eq!(st["internet"]["relay"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn strangers_and_nonsense_are_turned_away() {
         let s = sec();
-        let cell: StatusCell = Arc::default();
+        let cell = Reports::default();
         let r = handle(
             r#"{"cmd":"pair"}"#,
             1001,
@@ -631,7 +724,7 @@ mod tests {
         let t = serve(
             &path,
             s.clone(),
-            Arc::default(),
+            Reports::default(),
             Arc::default(),
             stop.clone(),
         )

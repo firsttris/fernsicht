@@ -342,11 +342,42 @@ pub const BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Binds a UDP socket with [`BUFFER_BYTES`] send/receive buffers.
 pub fn bind_udp(addr: impl ToSocketAddrs) -> io::Result<UdpSocket> {
+    bind_with(addr, false)
+}
+
+/// Binds an IPv6 UDP socket that takes IPv6 only (`IPV6_V6ONLY`), beside
+/// an IPv4 socket on the same port; otherwise as [`bind_udp`].
+pub fn bind_udp_v6_only(addr: impl ToSocketAddrs) -> io::Result<UdpSocket> {
+    bind_with(addr, true)
+}
+
+/// A UDP socket on any port that reaches IPv4 and IPv6 (an IPv6 socket
+/// that takes IPv4 mapped into IPv6), else an IPv4 one where IPv6 is off.
+/// Send to it with [`for_socket`].
+pub fn bind_udp_dual_stack() -> io::Result<UdpSocket> {
+    bind_with((Ipv6Addr::UNSPECIFIED, 0), false).or_else(|_| bind_udp((Ipv4Addr::UNSPECIFIED, 0)))
+}
+
+/// `to` as `socket` can send to it: an IPv4 address mapped into IPv6 for
+/// an IPv6 socket.
+pub fn for_socket(socket: &UdpSocket, to: SocketAddr) -> SocketAddr {
+    match (socket.local_addr(), to) {
+        (Ok(SocketAddr::V6(_)), SocketAddr::V4(v4)) => {
+            SocketAddr::new(std::net::IpAddr::V6(v4.ip().to_ipv6_mapped()), v4.port())
+        }
+        _ => to,
+    }
+}
+
+fn bind_with(addr: impl ToSocketAddrs, v6_only: bool) -> io::Result<UdpSocket> {
     let addr: SocketAddr = addr
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address"))?;
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+    if addr.is_ipv6() {
+        socket.set_only_v6(v6_only)?;
+    }
     // Past rmem_max/wmem_max where allowed (the host service has
     // CAP_NET_ADMIN); otherwise best effort, capped by them.
     if !force_buffer(&socket, libc::SO_RCVBUFFORCE) {
@@ -416,6 +447,18 @@ pub fn connect_udp(host: &str) -> io::Result<UdpSocket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dual_stack_socket_reaches_ipv4() {
+        let s = bind_udp_dual_stack().unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let to = for_socket(&s, peer.local_addr().unwrap());
+        s.send_to(b"hi", to).unwrap();
+        let mut buf = [0u8; 4];
+        let (n, from) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hi");
+        assert_eq!(from.port(), s.local_addr().unwrap().port());
+    }
 
     #[test]
     fn the_usable_buffer_is_half_what_linux_reports() {

@@ -289,6 +289,19 @@ Confirmed live (2026-10-10, according to the user):
     gyro aiming or touchpad controls (or `evtest` on “Fernsicht DualSense
     pad 1 Motion Sensors”) follows the pad's movements.
 
+16. **Over the internet.** Built, tested on one machine (host, client,
+    the Rust rendezvous service, a STUN server and coturn; the Worker
+    in `wrangler dev`) and through real NATs played by network
+    namespaces (`tests/nat/run.sh`), never between two homes. Deploy the Worker
+    (button in the README, or `npx wrangler@4 deploy` in
+    `web/rendezvous-worker`), enter its address on the zentrale in the
+    app's settings (“Verbindung über das Internet”; the line below says
+    “Erreichbar über das Internet”), connect once from bazzite at home
+    (that teaches it the address), then from a phone's hotspot:
+    `fernsicht-client zentrale` should log “over the internet” and
+    “reached the host at … (Punched)”. With a TURN key set on the
+    Worker, `--relay-only` checks the relay.
+
 ## Open tasks, by importance
 
 The findings of the code review (bugs, security, performance, clean-up) are listed with

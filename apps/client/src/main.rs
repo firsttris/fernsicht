@@ -8,8 +8,10 @@ use fernsicht_client::discover::{broadcast_targets, discover};
 use fernsicht_client::{
     AppLine, AudioOutput, ClientConfig, ClientSecurity, CodecChoice, DEFAULT_PORT, DecoderChoice,
     Failure, FailureCode, Identity, OverlayOutput, Peer, RunSummary, Trusted, default_state_dir,
-    failure_of, find_host, pair, printable, remember_address, run, with_default_port,
+    failure_of, find_host, pair, printable, remember_address, remember_rendezvous, run,
+    with_default_port,
 };
+use fernsicht_internet::candidates::Rung;
 use fernsicht_render::overlay::ms;
 
 /// Fernsicht client: shows the host's screen in a window (build feature
@@ -102,6 +104,19 @@ struct Args {
     /// smooth instead of sharp, and no bitrate bursts. Good on Wi-Fi.
     #[arg(long)]
     smooth: bool,
+    /// The host's rendezvous service, for connecting over the internet
+    /// (docs/internet.md). Default: the one the host named in the last
+    /// session, if any.
+    #[arg(long)]
+    rendezvous: Option<String>,
+    /// STUN servers (host:port) to ask for this device's public address
+    /// when connecting over the internet (repeatable).
+    #[arg(long, default_values_t = [fernsicht_internet::stun::DEFAULT_SERVER.to_string()])]
+    stun: Vec<String>,
+    /// Over the internet, go through the relay (TURN) right away, without
+    /// trying a direct path: to check the relay.
+    #[arg(long)]
+    relay_only: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -307,7 +322,24 @@ fn stream(args: Args, dir: &std::path::Path) -> anyhow::Result<()> {
     };
     let identity =
         Identity::load_or_create(&dir.join("client.json")).map_err(anyhow::Error::msg)?;
-    let cfg = session_config(&args, &wanted, &host, identity);
+    let mut cfg = session_config(&args, &wanted, &host, identity.clone());
+    let reached = reach(&args, &host, &identity, &cfg.host)?;
+    let path = match &reached {
+        Some(r) => {
+            cfg.host = r.host.to_string();
+            cfg.socket = Some(Arc::new(r.socket.try_clone()?));
+            r.path
+        }
+        None => direct_path(&cfg.host),
+    };
+    if args.app
+        && let Ok(line) = serde_json::to_string(&AppLine::Path { path })
+    {
+        println!("{line}");
+    }
+    // The relay's thread lives as long as the session.
+    let _relay = reached.and_then(|r| r.relay);
+    let over_internet = cfg.socket.is_some();
     let stop = Arc::new(AtomicBool::new(false));
     // Before any thread starts: Ctrl+C (or SIGTERM) ends the session with a
     // goodbye, so nothing stays pressed on the host.
@@ -348,8 +380,11 @@ fn stream(args: Args, dir: &std::path::Path) -> anyhow::Result<()> {
     // list meanwhile.
     if s.session_id.is_some() {
         let path = dir.join("hosts.json");
+        // An address over the internet is a NAT's for this connection
+        // only: not kept.
+        let address = (!over_internet).then_some(target.as_str());
         if let Ok(now) = Trusted::load(&path)
-            && let Some(next) = remember_address(&now, &host.key, &target)
+            && let Some(next) = remember(&now, &host.key, address, s.rendezvous.as_deref())
             && let Err(e) = next.save(&path)
         {
             log::warn!("remembering the host's address: {e}");
@@ -357,6 +392,70 @@ fn stream(args: Args, dir: &std::path::Path) -> anyhow::Result<()> {
     }
     print_summary(&s);
     Ok(())
+}
+
+/// The paired hosts with what a session with `key` taught: where it was,
+/// and its rendezvous service; `None` if nothing changes.
+fn remember(
+    trusted: &Trusted,
+    key: &fernsicht_client::PublicKey,
+    address: Option<&str>,
+    rendezvous: Option<&str>,
+) -> Option<Trusted> {
+    let after_address = address.and_then(|a| remember_address(trusted, key, a));
+    let base = after_address.as_ref().unwrap_or(trusted);
+    rendezvous
+        .and_then(|url| remember_rendezvous(base, key, url))
+        .or(after_address)
+}
+
+/// How a session to `target` (without the internet path) goes: the LAN
+/// or a VPN, or a public address.
+fn direct_path(target: &str) -> Rung {
+    let addr = std::net::ToSocketAddrs::to_socket_addrs(target)
+        .ok()
+        .and_then(|mut a| a.next());
+    addr.map_or(Rung::Lan, |addr| {
+        fernsicht_internet::candidates::rung(
+            &fernsicht_internet::candidates::Candidate {
+                kind: fernsicht_internet::candidates::Kind::Host,
+                addr,
+            },
+            false,
+        )
+    })
+}
+
+/// Over the internet, if the host has a rendezvous service and does not
+/// answer at `target` (the LAN, a VPN) right now; `None`: as before.
+fn reach(
+    args: &Args,
+    host: &Peer,
+    identity: &Identity,
+    target: &str,
+) -> anyhow::Result<Option<fernsicht_client::internet::Reached>> {
+    let Some(url) = args.rendezvous.clone().or_else(|| host.rendezvous.clone()) else {
+        return Ok(None);
+    };
+    if !args.relay_only
+        && fernsicht_client::internet::answers_directly(
+            target,
+            &host.key,
+            Duration::from_millis(400),
+        )
+    {
+        return Ok(None);
+    }
+    log::info!(
+        "{} does not answer at {target}: over the internet",
+        host.name
+    );
+    let options = fernsicht_client::internet::Options {
+        stun: args.stun.clone(),
+        relay_only: args.relay_only,
+    };
+    let reached = fernsicht_client::internet::over_internet(&url, &host.key, identity, &options)?;
+    Ok(Some(reached))
 }
 
 /// The session `args` ask for with the paired `host`.

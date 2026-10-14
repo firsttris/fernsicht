@@ -97,6 +97,13 @@ impl Link {
             return FecConfig::default().shard_size;
         };
         let datagram = socket::datagram_for(socket::path_mtu(l.peer), l.peer.is_ipv6());
+        // Through a relay the path's MTU is not known (and ChannelData adds
+        // 4 bytes): datagrams of a size every path carries.
+        let datagram = if l.relayed {
+            datagram.min(RELAYED_DATAGRAM)
+        } else {
+            datagram
+        };
         let shard = fernsicht_net::fec::shard_size_for(datagram);
         if datagram < MAX_DATAGRAM {
             log::info!(
@@ -136,12 +143,19 @@ impl Link {
     }
 }
 
+/// The largest datagram sent through a TURN relay: IPv6's minimum MTU
+/// (1,280) less the headers on the way (IPv6, UDP, ChannelData) with room
+/// to spare, as WebRTC sizes its packets.
+pub(crate) const RELAYED_DATAGRAM: usize = 1200;
+
 /// Our UDP protocol, sealed when the session is secure.
 #[derive(Clone)]
 pub(crate) struct UdpLink {
     pub(crate) socket: Arc<UdpSocket>,
     pub(crate) peer: SocketAddr,
     pub(crate) session_id: u32,
+    /// The client is reached through a TURN relay.
+    pub(crate) relayed: bool,
     pub(crate) crypto: Option<Arc<Transport>>,
     /// The client proved it holds the session's keys (its first sealed
     /// packet came). Until then nothing is sent: a replayed handshake from

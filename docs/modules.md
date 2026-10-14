@@ -3,9 +3,9 @@
 The repository is a Cargo workspace for the Rust side and a pnpm workspace for the web side.
 
 ```text
-crates/   core · proto · net · capture · gpu · codec · render · input · audio · secure
-apps/     host-agent · client · client-ui · desktop
-web/      ui · viewer · e2e
+crates/   core · proto · net · capture · gpu · codec · render · input · audio · secure · internet
+apps/     host-agent · client · client-ui · desktop · rendezvous
+web/      ui · viewer · e2e · rendezvous-worker
 tests/    e2e (host and client through an impaired network)
 fuzz/     cargo-fuzz targets
 dev/      Distrobox containers for Bazzite, GPU runner setup
@@ -26,8 +26,10 @@ flowchart BT
     input["input"] --> proto
     audio["audio"] --> core
     secure["secure"]
-    host["apps/host-agent"] --> net & codec & input & audio & secure
-    client["apps/client"] --> net & render & input & audio & secure
+    internet["internet"] --> proto & secure
+    host["apps/host-agent"] --> net & codec & input & audio & secure & internet
+    client["apps/client"] --> net & render & input & audio & secure & internet
+    rendezvous["apps/rendezvous"] --> internet & secure
     desktop["apps/desktop"] --> client & host & secure
 ```
 
@@ -46,14 +48,16 @@ flowchart BT
 | `input` | Input events, the duplicate filter, `uinput` devices on the host (mouse, keyboard, Xbox 360 pads with rumble), DualSense pads through `uhid` (gyro, touchpad), gamepads on the client (SDL3, else evdev) |
 | `clipboard` | The clipboard: a Wayland desktop's through data control (`ext-data-control-v1`, else wlroots' `zwlr-data-control`), and a text across the link in acknowledged pieces |
 | `audio` | Capture and playback through PipeWire's PulseAudio interface, Opus (48 kHz stereo, 5 ms frames, low delay), the client's jitter buffer, a test tone; libopus and libpulse are loaded at runtime |
-| `secure` | Device keys (X25519), the list of paired devices, pairing with SPAKE2, Noise IK sessions, the replay window ([security](security.md)) |
+| `secure` | Device keys (X25519), the list of paired devices, pairing with SPAKE2, Noise IK sessions, the replay window, the one-shot sealed exchange of the rendezvous offer and answer ([security](security.md)) |
+| `internet` | Connections over the internet ([over the internet](internet.md)): STUN and TURN messages (`stun.rs`, RFC 8489/8656), a TURN client as a state machine (`turn.rs`), candidates and the path ladder (`candidates.rs`), the punching schedule and path choice (`punch.rs`), the rendezvous protocol, key proof and sealed offer/answer (`signal.rs`), its WebSocket client (`rendezvous.rs`) |
 
 ## Apps
 
 | App | What it does |
 |---|---|
-| `apps/host-agent` | `fernsicht-host-agent`: the control loop (`lib.rs`, its steps in `dispatch.rs`) and its answers (`requests.rs`), starting a session (`start.rs`) and its threads (`capture.rs`, `encode.rs`, `send.rs`, `audio.rs`), the way to the client (`link.rs`: our UDP protocol or a browser's WebRTC), keys and pairing (`security.rs`), the control socket (`control.rs`), the web viewer and WebRTC (`web/`), the monitor arrangement for input mapping (`layout.rs`), GPU clocks during sessions (`power.rs`) |
-| `apps/client` | `fernsicht-client`: the network thread (`network.rs`), decoding and presenting (`present.rs`), sound (`audio.rs`), hosts and pairing (`hosts.rs`), discovery (`discover.rs`), the pointer (`cursor.rs`), the window with its keys and system-shortcut lock (`window.rs`, `shortcuts.rs`) |
+| `apps/host-agent` | `fernsicht-host-agent`: the control loop (`lib.rs`, its steps in `dispatch.rs`) and its answers (`requests.rs`), starting a session (`start.rs`) and its threads (`capture.rs`, `encode.rs`, `send.rs`, `audio.rs`), the way to the client (`link.rs`: our UDP protocol or a browser's WebRTC), keys and pairing (`security.rs`), the control socket (`control.rs`), the web viewer and WebRTC (`web/`), the monitor arrangement for input mapping (`layout.rs`), GPU clocks during sessions (`power.rs`), its UDP sockets on IPv4 and IPv6 (`sockets.rs`), connections over the internet (`internet/`: the rendezvous thread, STUN and punching in the control loop) |
+| `apps/client` | `fernsicht-client`: the network thread (`network.rs`), decoding and presenting (`present.rs`), sound (`audio.rs`), hosts and pairing (`hosts.rs`), discovery (`discover.rs`), the pointer (`cursor.rs`), the window with its keys and system-shortcut lock (`window.rs`, `shortcuts.rs`), reaching a host over the internet (`internet/`: punching through the rendezvous service, the TURN relay's thread) |
+| `apps/rendezvous` | `fernsicht-rendezvous`: the self-hosted rendezvous service (a thread per WebSocket, the key proof, rate limits, coturn's REST credentials); `tests/conformance` is what every rendezvous service must do |
 | `web/client-ui` | The app's interface (React 19, TanStack Router and Query, Tailwind, shadcn-style components); demo data in a browser, the real backend in the app |
 | `apps/desktop` | The Tauri app around `client-ui`: devices, pairing, sessions through the client (`backend.rs`), sharing this computer from the AppImage (`share.rs`). Its own Cargo workspace (it needs WebKitGTK) |
 
@@ -64,6 +68,7 @@ flowchart BT
 | `web/ui` | Shared components: the session view with toolbar and menus, the latency overlay, primitives, demo data |
 | `web/viewer` | The web viewer: connect page, WebRTC session, pointer, mouse, keyboard, gamepads, touch gestures (`lib/touch.ts`), on-screen keyboard (`lib/textkeys.ts`), fullscreen with Keyboard Lock |
 | `web/e2e` | Playwright tests (desktop, phone, phone in landscape, accessibility with axe) and the screenshot script |
+| `web/rendezvous-worker` | The rendezvous service as a Cloudflare Worker: a Durable Object per host with WebSocket hibernation (`src/index.ts`), its logic free of the runtime (`src/lib/room.ts`), the key proof with Web Crypto (`src/lib/crypto.ts`), Cloudflare's TURN credentials (`src/lib/turn.ts`) |
 
 ## Build features
 

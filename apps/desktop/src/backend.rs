@@ -20,6 +20,7 @@ use fernsicht_client::{
     AppLine, AppStats, DEFAULT_PORT, Failure, FailureCode, Identity, Trusted, pair,
 };
 use fernsicht_host_agent::control::{self, Request};
+use fernsicht_internet::candidates::Rung;
 use serde::{Deserialize, Serialize};
 
 /// A device as the UI's `Device` type has it.
@@ -135,6 +136,8 @@ pub struct SessionState {
     pub device_name: Option<String>,
     /// The client's latest overlay and the host's monitors.
     pub stats: Option<AppStats>,
+    /// How the session reaches the host (LAN, direct, through a relay).
+    pub path: Option<Rung>,
     /// Why it ended, if it failed.
     pub error: Option<Failure>,
 }
@@ -160,6 +163,7 @@ struct Running {
     /// Closing it ends the client (it runs with `--app`).
     stdin: Option<ChildStdin>,
     stats: Arc<Mutex<Option<AppStats>>>,
+    path: Arc<Mutex<Option<Rung>>>,
     /// Why it failed, as the client said on its last line.
     failure: Arc<Mutex<Option<Failure>>>,
     log: Arc<Mutex<VecDeque<String>>>,
@@ -399,10 +403,11 @@ impl Backend {
             .spawn()
             .with_context(|| format!("starting {}", self.client.display()))?;
         let stats = Arc::new(Mutex::new(None));
+        let path = Arc::new(Mutex::new(None));
         let failure = Arc::new(Mutex::new(None));
         let log = Arc::new(Mutex::new(VecDeque::new()));
         let stdout = child.stdout.take().expect("piped");
-        let (into, failed) = (stats.clone(), failure.clone());
+        let (into, failed, way) = (stats.clone(), failure.clone(), path.clone());
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 match serde_json::from_str::<AppLine>(&line) {
@@ -411,6 +416,9 @@ impl Backend {
                     }
                     Ok(AppLine::Failed { failure }) => {
                         *failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure);
+                    }
+                    Ok(AppLine::Path { path }) => {
+                        *way.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
                     }
                     Err(_) => {}
                 }
@@ -437,6 +445,7 @@ impl Backend {
                 stdin: child.stdin.take(),
                 child,
                 stats,
+                path,
                 failure,
                 log,
             });
@@ -459,6 +468,7 @@ impl Backend {
             device_id: Some(r.device_id.clone()),
             device_name: Some(r.device_name.clone()),
             stats: r.stats.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            path: *r.path.lock().unwrap_or_else(|e| e.into_inner()),
             error: exited.filter(|s| !s.success()).map(|_| r.error()),
         }
     }
@@ -518,6 +528,34 @@ impl Backend {
             &self.control_path(),
             &Request::Set {
                 gpu_boost: Some(on),
+                rendezvous: None,
+                port_mapping: None,
+            },
+        )
+        .map(drop)
+    }
+
+    /// Sets this computer's host's rendezvous service (empty: none).
+    pub fn set_rendezvous(&self, url: &str) -> anyhow::Result<()> {
+        control::request(
+            &self.control_path(),
+            &Request::Set {
+                gpu_boost: None,
+                rendezvous: Some(url.trim().to_owned()),
+                port_mapping: None,
+            },
+        )
+        .map(drop)
+    }
+
+    /// Asks this computer's host to have its router forward its port.
+    pub fn set_port_mapping(&self, on: bool) -> anyhow::Result<()> {
+        control::request(
+            &self.control_path(),
+            &Request::Set {
+                gpu_boost: None,
+                rendezvous: None,
+                port_mapping: Some(on),
             },
         )
         .map(drop)
@@ -604,6 +642,7 @@ mod tests {
             key: PublicKey([key; 32]),
             address: Some(addr.into()),
             paired_at: 0,
+            rendezvous: None,
         }
     }
 

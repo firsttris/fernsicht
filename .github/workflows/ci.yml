@@ -67,7 +67,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
-      - run: shellcheck packaging/*.sh scripts/*.sh
+      - run: shellcheck packaging/*.sh scripts/*.sh tests/nat/*.sh
       - name: FFmpeg and VAAPI headers (feature "vaapi")
         uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
         with:
@@ -107,10 +107,11 @@ jobs:
       # a writable /dev/uinput: the hardware-facing tests run for real here
       # (they would make sound or type on a desktop, so they need these
       # variables to run at all).
-      - name: libopus and a sound server
+      # coturn: the relay end-to-end test runs through a real TURN server.
+      - name: libopus, a sound server and coturn
         uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
         with:
-          packages: libopus0 pulseaudio
+          packages: libopus0 pulseaudio coturn
       - name: Sound server and uinput
         run: |
           pulseaudio --start --exit-idle-time=-1
@@ -192,6 +193,7 @@ jobs:
           FERNSICHT_REQUIRE_OPUS: "1"
           FERNSICHT_PULSE_TEST: "1"
           FERNSICHT_UINPUT_TEST: "1"
+          FERNSICHT_REQUIRE_TURN: "1"
       - run: cargo llvm-cov report --summary-only --ignore-filename-regex 'main\.rs$|crates/gpu/' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -259,7 +261,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [proto_decode, reassembler, fec_roundtrip, synthetic_decode]
+        target: [proto_decode, reassembler, fec_roundtrip, synthetic_decode, stun_turn]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable branch, 2026-09-11
@@ -298,6 +300,27 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
       - run: cargo test -p fernsicht-e2e --release --test soak -- --ignored
+
+  # Connections over the internet through real NATs: network namespaces
+  # with nftables routers, coturn and the rendezvous service
+  # (docs/internet.md, “Testing”). Root for the namespaces.
+  nat:
+    name: Rust · through real NATs
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable branch, 2026-09-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: nftables, coturn, libopus
+        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        with:
+          packages: nftables conntrack coturn libopus0
+      - run: cargo build -p fernsicht-host-agent -p fernsicht-client -p fernsicht-rendezvous
+      - run: sudo tests/nat/run.sh
 
   # ── Desktop app ───────────────────────────────────────────────────────
   # Its own Cargo workspace (WebKitGTK, the built UI); its test drives a real

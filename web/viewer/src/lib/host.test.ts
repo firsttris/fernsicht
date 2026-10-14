@@ -7,6 +7,7 @@ import {
   connectionPhase,
   currentSession,
   fetchHostInfo,
+  gathered,
   frameTiming,
   holdSession,
   type HostStats,
@@ -35,6 +36,45 @@ describe("host API", () => {
     expect(await fetchHostInfo()).toBeNull();
     installFakes(() => "offline");
     expect(await fetchHostInfo()).toBeNull();
+    // Over the internet: STUN servers, only `stun:` ones.
+    installFakes(() => ({
+      status: 200,
+      body: { name: "zentrale", pairing: false, stun: ["stun:stun.example:3478", "turn:x", 3] },
+    }));
+    expect(await fetchHostInfo()).toEqual({
+      name: "zentrale",
+      pairing: false,
+      stun: ["stun:stun.example:3478"],
+    });
+  });
+
+  it("over the internet, offers its public address with STUN", async () => {
+    const api = installFakes(() => ({
+      status: 200,
+      body: { answer, width: 1920, height: 1080, fps: 60 },
+    }));
+    const r = await connect("482913", "zentrale", ["stun:stun.example:3478"]);
+    if (!("session" in r)) throw new Error(r.error);
+    expect(FakePeerConnection.last!.config).toEqual({
+      iceServers: [{ urls: ["stun:stun.example:3478"] }],
+    });
+    // The offer sent is the one with the gathered addresses.
+    expect(JSON.parse(api.mock.calls[0]![1]!.body as string).offer.sdp).toContain("srflx");
+    r.session.close();
+  });
+
+  it("gives up waiting for addresses after a while", async () => {
+    vi.useFakeTimers();
+    const pc = new FakePeerConnection() as unknown as RTCPeerConnection;
+    let done = false;
+    void gathered(pc, 500).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(499);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(true);
+    vi.useRealTimers();
   });
 
   it("offers to receive picture and sound and sends the PIN", async () => {

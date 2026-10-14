@@ -52,12 +52,19 @@ pub(crate) fn codecs_in_offer(sdp: &str) -> CodecSet {
 const H264: [(u8, u8, u32); 2] = [(114, 115, 0x64_00_1f), (108, 109, 0x42_e0_1f)];
 
 /// Prepares WebRTC for `offer`: a UDP socket on `local_ip` and our answer.
-pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSetup, SdpAnswer)> {
+/// A browser over the internet comes with its socket and the host's
+/// public address: full ICE then, so that the host's checks open its NAT
+/// for the browser's (ICE lite only answers).
+pub(crate) fn accept(
+    offer: SdpOffer,
+    local_ip: IpAddr,
+    public: Option<super::PublicPath>,
+) -> anyhow::Result<(WebSetup, SdpAnswer)> {
     static CRYPTO: Once = Once::new();
     CRYPTO.call_once(|| str0m::crypto::from_feature_flags().install_process_default());
     let browser_codecs = codecs_in_offer(&offer.to_sdp_string());
     let mut cfg = RtcConfig::new()
-        .set_ice_lite(true)
+        .set_ice_lite(public.is_none())
         .clear_codecs()
         .enable_opus(true, false)
         .enable_av1(true)
@@ -71,7 +78,10 @@ pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSe
             .add_h264(pt.into(), Some(rtx.into()), true, profile);
     }
     let mut rtc = cfg.build(Instant::now());
-    let socket = UdpSocket::bind((local_ip, 0))?;
+    let (socket, reflexive) = match public {
+        Some(p) => (p.socket, p.reflexive),
+        None => (UdpSocket::bind((local_ip, 0))?, None),
+    };
     // Mostly video (WMM video on Wi-Fi).
     if let Err(e) = fernsicht_net::socket::set_dscp(&socket, fernsicht_net::socket::Dscp::Video) {
         log::debug!("no DSCP marking: {e}");
@@ -79,6 +89,15 @@ pub(crate) fn accept(offer: SdpOffer, local_ip: IpAddr) -> anyhow::Result<(WebSe
     let candidate = Candidate::host(socket.local_addr()?, "udp")
         .map_err(|e| anyhow::anyhow!("candidate: {e}"))?;
     rtc.add_local_candidate(candidate);
+    if let Some(addr) = reflexive {
+        let base = socket.local_addr()?;
+        match Candidate::server_reflexive(addr, base, "udp") {
+            Ok(c) => {
+                rtc.add_local_candidate(c);
+            }
+            Err(e) => log::debug!("no reflexive candidate {addr}: {e}"),
+        }
+    }
     let answer = rtc
         .sdp_api()
         .accept_offer(offer)

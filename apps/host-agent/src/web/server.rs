@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use str0m::change::{SdpAnswer, SdpOffer};
 
 use super::offer::local_ip_towards;
+use super::public::{self, Public};
 use super::{WebError, WebRequest};
 use crate::HostSecurity;
 use crate::http::{self, Body, Head, Method, Response};
@@ -23,13 +24,21 @@ pub(crate) fn serve(
     root: Option<PathBuf>,
     sec: Arc<HostSecurity>,
     requests: Sender<WebRequest>,
+    public: Public,
     stop: Arc<AtomicBool>,
 ) -> anyhow::Result<(JoinHandle<()>, SocketAddr)> {
     let listener = std::net::TcpListener::bind(addr)
         .map_err(|e| anyhow::anyhow!("web server on {addr}: {e}"))?;
     let local = listener.local_addr()?;
     let t = http::serve(listener, stop, move |head, body, from| {
-        handle(head, body, from, root.as_deref(), &sec, &requests)
+        handle(
+            head,
+            body,
+            from,
+            root.as_deref(),
+            &sec,
+            (&requests, &public),
+        )
     })?;
     Ok((t, local))
 }
@@ -40,6 +49,11 @@ pub(crate) fn serve(
 pub(crate) struct Info<'a> {
     pub name: &'a str,
     pub pairing: bool,
+    /// For a page reached at a public name: STUN servers (`stun:…`) the
+    /// browser asks for its public address before it offers.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<Vec<String>>"))]
+    pub stun: Vec<String>,
 }
 
 /// `POST /api/connect`: the PIN the host shows and the browser's offer.
@@ -147,9 +161,9 @@ fn handle(
     from: SocketAddr,
     root: Option<&Path>,
     sec: &HostSecurity,
-    requests: &Sender<WebRequest>,
+    to: (&Sender<WebRequest>, &Public),
 ) -> Response {
-    secured(route(head, body, from, root, sec, requests))
+    secured(route(head, body, from, root, sec, to))
 }
 
 fn route(
@@ -158,21 +172,26 @@ fn route(
     from: SocketAddr,
     root: Option<&Path>,
     sec: &HostSecurity,
-    requests: &Sender<WebRequest>,
+    (requests, public_names): (&Sender<WebRequest>, &Public),
 ) -> Response {
-    if head.path.starts_with("/api/") && !host_allowed(head.header("host"), sec.name()) {
+    let public = public::is_public(head.header("host"), &public_names.names);
+    let allowed = public || host_allowed(head.header("host"), sec.name());
+    if head.path.starts_with("/api/") && !allowed {
         return refused(WebError::WrongHost);
     }
+    let from = public::browser_address(from, head, public);
+    let stun = if public { &public_names.stun[..] } else { &[] };
     match (head.method, head.path.as_str()) {
         (Method::Get, "/api/info") => json_response(
             200,
             &Info {
                 name: sec.name(),
                 pairing: sec.pairing_remaining().is_some(),
+                stun: stun.iter().map(|s| format!("stun:{s}")).collect(),
             },
         ),
         (Method::Post, "/api/connect") if !same_origin_post(head) => refused(WebError::Forbidden),
-        (Method::Post, "/api/connect") => connect(body, from, requests),
+        (Method::Post, "/api/connect") => connect(body, from, requests, public.then_some(stun)),
         (Method::Get | Method::Head, path) => serve_file(root, path),
         _ => refused(WebError::NotFound),
     }
@@ -181,11 +200,29 @@ fn route(
 /// How long a browser waits for the session to start.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn connect(body: &[u8], browser: SocketAddr, requests: &Sender<WebRequest>) -> Response {
+/// A browser asks for a session; `stun`: it came over the internet, and
+/// the STUN servers to find the host's public address with.
+fn connect(
+    body: &[u8],
+    browser: SocketAddr,
+    requests: &Sender<WebRequest>,
+    stun: Option<&[String]>,
+) -> Response {
     let Ok(ConnectRequest { pin, offer }) = serde_json::from_slice(body) else {
         return refused(WebError::BadRequest);
     };
-    let Ok(local_ip) = local_ip_towards(browser.ip()) else {
+    let public = match stun.map(public::path).transpose() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("web: no socket for a browser over the internet: {e}");
+            return refused(WebError::Failed);
+        }
+    };
+    let local_ip = match &public {
+        Some(p) => p.socket.local_addr().map(|a| a.ip()),
+        None => local_ip_towards(browser.ip()),
+    };
+    let Ok(local_ip) = local_ip else {
         return refused(WebError::Failed);
     };
     let (reply, answer) = bounded(1);
@@ -194,6 +231,7 @@ fn connect(body: &[u8], browser: SocketAddr, requests: &Sender<WebRequest>) -> R
         offer,
         browser,
         local_ip,
+        public,
         reply,
     };
     if requests.send(req).is_err() {

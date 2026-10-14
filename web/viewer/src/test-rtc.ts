@@ -26,11 +26,15 @@ export class FakePeerConnection extends EventTarget {
   remote: RTCSessionDescriptionInit | undefined;
   closed = false;
   connectionState: RTCPeerConnectionState = "connected";
+  iceGatheringState: RTCIceGatheringState = "new";
+  config: RTCConfiguration | undefined;
+  localDescription: RTCSessionDescriptionInit | null = null;
   ontrack: ((e: { receiver: object; track: object }) => void) | null = null;
   report = new Map<string, Record<string, unknown>>();
 
-  constructor() {
+  constructor(config?: RTCConfiguration) {
     super();
+    this.config = config;
     FakePeerConnection.last = this;
   }
   addTransceiver(kind: string, init?: RTCRtpTransceiverInit) {
@@ -56,7 +60,17 @@ export class FakePeerConnection extends EventTarget {
   createOffer() {
     return Promise.resolve({ type: "offer" as const, sdp: "v=0 offer" });
   }
-  setLocalDescription() {
+  setLocalDescription(d?: RTCSessionDescriptionInit) {
+    this.localDescription = d ?? null;
+    // With STUN servers, gathering finishes a moment later, the offer then
+    // carrying the addresses found.
+    if (this.config?.iceServers?.length) {
+      setTimeout(() => {
+        this.localDescription = { type: "offer", sdp: "v=0 offer a=candidate:srflx" };
+        this.iceGatheringState = "complete";
+        this.dispatchEvent(new Event("icegatheringstatechange"));
+      }, 10);
+    }
     return Promise.resolve();
   }
   setRemoteDescription(d: RTCSessionDescriptionInit) {

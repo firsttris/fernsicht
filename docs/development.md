@@ -99,7 +99,7 @@ pnpm install && pnpm check && pnpm -r typecheck && pnpm test
 pnpm test:coverage && pnpm test:e2e
 pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
 cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-shellcheck packaging/*.sh scripts/*.sh
+shellcheck packaging/*.sh scripts/*.sh dev/*.sh dev/runner/*.sh tests/nat/*.sh
 ```
 
 CI runs on every push; nightly it adds 15 minutes of fuzzing per target and the soak test. The GPU

@@ -51,14 +51,14 @@ From the [performance](performance.md) page, in its recommended order:
 
 ## 5. Beyond the LAN
 
-Today Fernsicht works in the LAN or over a VPN ([remote access](remote-access.md)). On its own over
-the internet would need:
+Connections over the internet through one's own rendezvous service, with hole punching, IPv6 and
+a TURN relay, are built ([over the internet](internet.md)). What is left:
 
-- **NAT traversal and a rendezvous service** so devices find each other without port forwarding, and
-  a **relay** for networks where hole punching fails. Open decision: self-hosted only, or a hosted
-  rendezvous service as well.
-- **HTTPS for the web viewer** (today the page and the PIN travel over plain HTTP) and **TURN** for
-  browsers.
+- **See it live** between two homes, on a phone's hotspot (carrier-grade NAT) and on IPv6 only.
+- **Port forwarding by the router** live against a FritzBox (built and tested against routers the
+  tests play).
+- **A relay for the web viewer** (TURN credentials for browsers that come with the PIN), for
+  networks where the browser's and the host's NATs cannot be punched.
 
 ## 6. Quality
 
@@ -69,7 +69,8 @@ the internet would need:
 
 - **Name and brand.**
 - **First client:** our own client (as now) or also Moonlight compatibility.
-- **Self-hosted only, or a hosted rendezvous service** for connections over the internet.
 
-Decided: the license (AGPL-3.0, commercial license on request) and the codecs (AV1, HEVC and H.264,
-chosen per connection).
+Decided: the license (AGPL-3.0, commercial license on request), the codecs (AV1, HEVC and H.264,
+chosen per connection) and the rendezvous service for the internet: one protocol with two
+implementations, a Cloudflare Worker and a small Rust service; everyone runs their own, the host
+hands its address to its clients ([over the internet](internet.md#everyone-runs-their-own)).

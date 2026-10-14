@@ -60,6 +60,17 @@ impl HostAgent {
             ten_bit: hello.ten_bit.and(hello.codecs),
             // Known once the screen is opened.
             screen: Colour::SDR,
+            relayed: false,
+        }
+    }
+
+    /// The highest bitrate a session may have: the host's limit, and for a
+    /// relayed one the relay's.
+    fn max_kbps(&self, p: &SessionParams) -> u32 {
+        if p.relayed {
+            self.cfg.max_bitrate_kbps.min(self.cfg.relay_max_kbps)
+        } else {
+            self.cfg.max_bitrate_kbps
         }
     }
 
@@ -78,10 +89,9 @@ impl HostAgent {
     fn resolve(&self, mut p: SessionParams, native: (u32, u32)) -> SessionParams {
         (p.width, p.height) = fit(native, self.bounds(&p));
         if p.bitrate_kbps == 0 {
-            p.bitrate_kbps = default_bitrate_kbps(p.width, p.height, p.fps)
-                .min(self.cfg.max_bitrate_kbps)
-                .max(1);
+            p.bitrate_kbps = default_bitrate_kbps(p.width, p.height, p.fps);
         }
+        p.bitrate_kbps = p.bitrate_kbps.min(self.max_kbps(&p)).max(1);
         p
     }
 
@@ -122,7 +132,13 @@ impl HostAgent {
         };
         let web = web.map(|setup| (setup, crate::web::out_channel()));
         let web_tx = web.as_ref().map(|(_, (tx, _))| tx);
-        let link = link_for(&self.socket, peer, params.session_id, crypto, web_tx);
+        let link = link_for(
+            self.sockets.for_peer(peer),
+            peer,
+            (params.session_id, params.relayed),
+            crypto,
+            web_tx,
+        );
         if let (Some(input), Some(out)) = (
             input.as_mut(),
             crate::input::rumble_out(&link, params.session_id),
@@ -315,7 +331,7 @@ type WebChannel = (Sender<WebOut>, Receiver<WebOut>);
 fn link_for(
     socket: &Arc<UdpSocket>,
     peer: SocketAddr,
-    session_id: u32,
+    (session_id, relayed): (u32, bool),
     crypto: Option<Arc<Transport>>,
     web: Option<&Sender<WebOut>>,
 ) -> Link {
@@ -325,6 +341,7 @@ fn link_for(
             socket: socket.clone(),
             peer,
             session_id,
+            relayed,
             // A plain session (tests) has no keys to prove.
             confirmed: Arc::new(AtomicBool::new(crypto.is_none())),
             gso: Arc::new(AtomicBool::new(true)),

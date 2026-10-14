@@ -10,6 +10,7 @@
 //!   Then every packet is sealed with ChaCha20-Poly1305 under an explicit
 //!   counter; replays are dropped.
 
+pub mod exchange;
 pub mod pairing;
 pub mod replay;
 pub mod session;
@@ -97,6 +98,15 @@ impl Identity {
         &self.secret
     }
 
+    /// The X25519 key agreement with `other`: a secret only this device
+    /// and the holder of `other`'s private key can compute. `None` for a
+    /// key that would make it predictable (a low-order point).
+    pub fn agree(&self, other: &PublicKey) -> Option<[u8; 32]> {
+        let ours = x25519_dalek::StaticSecret::from(self.secret);
+        let shared = ours.diffie_hellman(&x25519_dalek::PublicKey::from(other.0));
+        shared.was_contributory().then(|| shared.to_bytes())
+    }
+
     /// Loads the identity from `path`, or creates and saves a new one
     /// (readable by the owner only).
     pub fn load_or_create(path: &Path) -> Result<Self, String> {
@@ -173,6 +183,10 @@ pub struct Peer {
     pub address: Option<String>,
     /// Unix time of the pairing.
     pub paired_at: u64,
+    /// Where the host can be found over the internet: its rendezvous
+    /// service, as the host said in a session (clients only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendezvous: Option<String>,
 }
 
 /// The devices this one is paired with.
@@ -295,12 +309,14 @@ mod tests {
             key,
             address: None,
             paired_at: 1,
+            rendezvous: None,
         });
         t.add(Peer {
             name: "bazzite (neu)".into(),
             key,
             address: Some("192.168.178.20:47800".into()),
             paired_at: 2,
+            rendezvous: None,
         });
         assert_eq!(t.peers.len(), 1, "same key replaces");
         t.save(&path).unwrap();
@@ -313,6 +329,16 @@ mod tests {
         std::fs::write(&path, "nonsense").unwrap();
         assert!(Trusted::load(&path).is_err());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn both_sides_agree_and_low_order_keys_are_refused() {
+        let a = Identity::generate();
+        let b = Identity::generate();
+        let ab = a.agree(&b.public).unwrap();
+        assert_eq!(Some(ab), b.agree(&a.public));
+        assert_ne!(Some(ab), a.agree(&Identity::generate().public));
+        assert_eq!(a.agree(&PublicKey([0; 32])), None);
     }
 
     #[test]

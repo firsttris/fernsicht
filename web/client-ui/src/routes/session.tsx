@@ -37,7 +37,7 @@ export function SessionPage() {
         deviceName: name,
         width: 2560,
         height: 1440,
-        path: "P2P",
+        path: session?.path === "relayed" ? "Relay" : "P2P",
         encrypted: true,
       }}
       stats={session?.stats ?? undefined}
