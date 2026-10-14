@@ -10,6 +10,7 @@
 //!   Then every packet is sealed with ChaCha20-Poly1305 under an explicit
 //!   counter; replays are dropped.
 
+pub mod exchange;
 pub mod pairing;
 pub mod replay;
 pub mod session;
@@ -95,6 +96,15 @@ impl Identity {
 
     pub(crate) fn secret(&self) -> &[u8; 32] {
         &self.secret
+    }
+
+    /// The X25519 key agreement with `other`: a secret only this device
+    /// and the holder of `other`'s private key can compute. `None` for a
+    /// key that would make it predictable (a low-order point).
+    pub fn agree(&self, other: &PublicKey) -> Option<[u8; 32]> {
+        let ours = x25519_dalek::StaticSecret::from(self.secret);
+        let shared = ours.diffie_hellman(&x25519_dalek::PublicKey::from(other.0));
+        shared.was_contributory().then(|| shared.to_bytes())
     }
 
     /// Loads the identity from `path`, or creates and saves a new one
@@ -313,6 +323,16 @@ mod tests {
         std::fs::write(&path, "nonsense").unwrap();
         assert!(Trusted::load(&path).is_err());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn both_sides_agree_and_low_order_keys_are_refused() {
+        let a = Identity::generate();
+        let b = Identity::generate();
+        let ab = a.agree(&b.public).unwrap();
+        assert_eq!(Some(ab), b.agree(&a.public));
+        assert_ne!(Some(ab), a.agree(&Identity::generate().public));
+        assert_eq!(a.agree(&PublicKey([0; 32])), None);
     }
 
     #[test]

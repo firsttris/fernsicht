@@ -1,0 +1,29 @@
+[package]
+name = "fernsicht-rendezvous"
+description = "Rendezvous service: passes sealed offers and answers between hosts and their paired clients"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fernsicht-rendezvous"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+env_logger.workspace = true
+fernsicht-core.workspace = true
+fernsicht-internet.workspace = true
+fernsicht-secure.workspace = true
+hmac.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+tungstenite.workspace = true
+x25519-dalek.workspace = true

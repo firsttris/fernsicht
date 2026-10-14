@@ -14,6 +14,7 @@ serde_json.workspace = true
 snow.workspace = true
 spake2.workspace = true
 getrandom.workspace = true
+x25519-dalek.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

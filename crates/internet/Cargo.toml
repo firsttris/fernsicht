@@ -1,0 +1,34 @@
+[package]
+name = "fernsicht-internet"
+description = "Connections over the internet: STUN, TURN, candidates, hole punching and the rendezvous signaling"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# TypeScript types of the rendezvous messages (ts-rs), for the Worker.
+ts = ["dep:ts-rs"]
+
+[dependencies]
+base64.workspace = true
+fernsicht-proto.workspace = true
+fernsicht-secure.workspace = true
+hmac.workspace = true
+libc.workspace = true
+log.workspace = true
+md-5.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+ts-rs = { workspace = true, optional = true }
+tungstenite.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
