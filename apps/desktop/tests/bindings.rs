@@ -1,4 +1,5 @@
-//! The TypeScript types of what the app's UI and the web viewer get are
+//! The TypeScript types of what the app's UI and the web viewer get, and of
+//! the rendezvous Worker's messages, are
 //! generated from the Rust types (ts-rs) and checked in. This test fails
 //! when they are out of date; `UPDATE_BINDINGS=1 cargo test --test
 //! bindings` writes them anew.
@@ -22,11 +23,15 @@ fn app_types(cfg: &Config) -> Result<(), ExportError> {
 
 type Export = fn(&Config) -> Result<(), ExportError>;
 
-const SETS: [(&str, Export); 2] = [
+const SETS: [(&str, Export); 3] = [
     ("web/client-ui/src/lib/bindings", app_types),
     (
         "web/viewer/src/lib/bindings",
         fernsicht_host_agent::export_viewer_types,
+    ),
+    (
+        "web/rendezvous-worker/src/lib/bindings",
+        fernsicht_internet::signal::export_types,
     ),
 ];
 

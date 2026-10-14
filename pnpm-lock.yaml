@@ -100,6 +100,15 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  web/rendezvous-worker:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260915.1
+        version: 5.20260915.1
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   web/ui:
     dependencies:
       '@fontsource-variable/geist':
@@ -283,6 +292,9 @@ packages:
   '@bramus/specificity@2.4.3':
     resolution: {integrity: sha512-0GEz8qJWokkUVYQYRukmkSHIFNoBH8QTreeHrAFbvz1XFYc3Y+puhMs8PQ5x8GNugiC2l5jvDBXKLbBIByeSBw==}
     hasBin: true
+
+  '@cloudflare/workers-types@5.20260915.1':
+    resolution: {integrity: sha512-3Lw2wkyVcEDdD0W6rNBmannaAkUsWGsO5TjbyHflWIDlhxtFRDFnxqHoDlg4YiVxinsIcBl1j9jW1kdruUhZpg==}
 
   '@csstools/color-helpers@6.1.2':
     resolution: {integrity: sha512-grhRy3OKmniaAEKXMjua5z/EODX0MSqBGjunw8+j/3HQjOnahs2AGhvEOIYVUWcU6ScApbhLhVrQTX8XqrMrow==}
@@ -1556,6 +1568,8 @@ snapshots:
   '@bramus/specificity@2.4.3':
     dependencies:
       css-tree: 3.2.1
+
+  '@cloudflare/workers-types@5.20260915.1': {}
 
   '@csstools/color-helpers@6.1.2': {}
 

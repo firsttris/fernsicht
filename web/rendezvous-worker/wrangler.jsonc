@@ -1,0 +1,18 @@
+// The Fernsicht rendezvous service as a Cloudflare Worker
+// (docs/internet.md). Deploy with `npx wrangler@4 deploy` or the "Deploy to
+// Cloudflare" button; free plan.
+{
+  "$schema": "https://unpkg.com/wrangler@4.140.0/config-schema.json",
+  "name": "fernsicht-rendezvous",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [{ "name": "HOSTS", "class_name": "HostRoom" }]
+  },
+  // SQLite-backed Durable Objects: the kind the free plan has.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HostRoom"] }],
+  "observability": { "enabled": true }
+  // The relay (optional): `npx wrangler@4 secret put TURN_KEY_ID` and
+  // `npx wrangler@4 secret put TURN_API_TOKEN` with a TURN key from the
+  // dashboard (Realtime → TURN).
+}

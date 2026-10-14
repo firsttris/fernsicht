@@ -1,0 +1,14 @@
+{
+  "name": "@fernsicht/rendezvous-worker",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "deploy": "npx wrangler@4 deploy",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260915.1",
+    "typescript": "^7.0.2"
+  }
+}

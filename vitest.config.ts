@@ -8,11 +8,17 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
-    include: ["{web/ui,web/viewer,web/client-ui}/src/**/*.test.{ts,tsx}"],
+    include: ["{web/ui,web/viewer,web/client-ui,web/rendezvous-worker}/src/**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
-      include: ["{web/ui,web/viewer,web/client-ui}/src/**/*.{ts,tsx}"],
-      exclude: ["**/*.test.{ts,tsx}", "**/main.tsx", "**/*.d.ts"],
+      include: ["{web/ui,web/viewer,web/client-ui,web/rendezvous-worker}/src/**/*.{ts,tsx}"],
+      // The Worker's entry is the runtime glue around lib/room.ts (tested).
+      exclude: [
+        "**/*.test.{ts,tsx}",
+        "**/main.tsx",
+        "**/*.d.ts",
+        "web/rendezvous-worker/src/index.ts",
+      ],
       reporter: ["text", "lcov"],
       thresholds: { lines: 90, functions: 90, branches: 85, statements: 90 },
     },

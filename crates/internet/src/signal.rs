@@ -353,6 +353,25 @@ mod tests {
     }
 
     #[test]
+    fn the_proof_matches_an_independent_vector() {
+        // Host key 32 × 0x11, the service's ephemeral key 32 × 0x22, nonce
+        // 16 × 0x33: the MAC as Python's `cryptography` and `hmac` compute
+        // it. The Worker's test checks the same vector.
+        let host: Identity = serde_json::from_str(&format!(
+            r#"{{"secret":"{}","public":"7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"}}"#,
+            "11".repeat(32)
+        ))
+        .unwrap();
+        let ephemeral = PublicKey(
+            unhex32("0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20").unwrap(),
+        );
+        assert_eq!(
+            hex(&prove(&host, &ephemeral, &[0x33; 16]).unwrap()),
+            "6260281feb9f567b4d0162b4400352079e3d9fb5db3e0205bc45742d6e999901"
+        );
+    }
+
+    #[test]
     fn offers_and_answers_go_between_the_paired_devices() {
         let host = Identity::generate();
         let client = Identity::generate();
