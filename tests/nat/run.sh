@@ -11,7 +11,7 @@
 #   symmetric client     → through the relay
 #   symmetric/symmetric  → through the relay
 #
-# Needs root (network namespaces), ip (iproute2), nft, turnserver (coturn)
+# Needs root (network namespaces), ip (iproute2), nft, conntrack, turnserver (coturn)
 # and the built programs (cargo build -p fernsicht-host-agent
 # -p fernsicht-client -p fernsicht-rendezvous); TARGET_DIR says where they
 # are (default: target/debug).
@@ -115,7 +115,9 @@ run_case() { # name host-NAT client-NAT expected-path
     inside hr nft add rule ip nat prerouting iif wan udp dport 47800 dnat to 192.168.10.2
     inside c "$bin/fernsicht-client" pair 198.51.100.10 "$pin" --state-dir "$cs" --name laptop
     inside hr nft flush chain ip nat prerouting
-    inside hr conntrack -F 2>/dev/null || true
+    # Only the forward's own entry goes (the host's connection to the
+    # service stays, as on a router that removes a forward).
+    inside hr conntrack -D -p udp --orig-port-dst 47800 >/dev/null 2>&1 || true
     # Now only through the service.
     if ! RUST_LOG=${RUST_LOG:-info} inside c "$bin/fernsicht-client" 198.51.100.10 --headless --no-audio --duration 3 \
         --width 640 --height 360 --state-dir "$cs" \
