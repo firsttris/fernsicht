@@ -529,6 +529,7 @@ impl Backend {
             &Request::Set {
                 gpu_boost: Some(on),
                 rendezvous: None,
+                port_mapping: None,
             },
         )
         .map(drop)
@@ -541,6 +542,20 @@ impl Backend {
             &Request::Set {
                 gpu_boost: None,
                 rendezvous: Some(url.trim().to_owned()),
+                port_mapping: None,
+            },
+        )
+        .map(drop)
+    }
+
+    /// Asks this computer's host to have its router forward its port.
+    pub fn set_port_mapping(&self, on: bool) -> anyhow::Result<()> {
+        control::request(
+            &self.control_path(),
+            &Request::Set {
+                gpu_boost: None,
+                rendezvous: None,
+                port_mapping: Some(on),
             },
         )
         .map(drop)

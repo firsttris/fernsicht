@@ -173,7 +173,13 @@ impl HostAgent {
             Packet::Punch(p) => self.on_punch(l, p, from),
             Packet::Pair(p) => self.on_pair(p, from, &mut l.pairing, &mut l.out),
             Packet::Discover(d) => {
-                if l.announce_budget.take(from.ip(), Instant::now()) {
+                // Only neighbours learn name, GPU and status: a host
+                // reachable from the internet does not tell it.
+                let neighbour = fernsicht_internet::candidates::is_neighbour(
+                    from.ip(),
+                    &fernsicht_internet::candidates::interface_networks(),
+                );
+                if neighbour && l.announce_budget.take(from.ip(), Instant::now()) {
                     self.announce(d, from, l.session.is_some(), &mut l.out);
                 }
             }

@@ -136,6 +136,80 @@ pub fn host_candidates(port: u16) -> Vec<Candidate> {
         .collect()
 }
 
+/// Whether `ip` is in one of `networks` (an address and its netmask).
+pub fn in_networks(ip: IpAddr, networks: &[(IpAddr, IpAddr)]) -> bool {
+    let ip = ip.to_canonical();
+    networks.iter().any(|(addr, mask)| match (ip, addr, mask) {
+        (IpAddr::V4(i), IpAddr::V4(a), IpAddr::V4(m)) => {
+            u32::from(i) & u32::from(*m) == u32::from(*a) & u32::from(*m)
+        }
+        (IpAddr::V6(i), IpAddr::V6(a), IpAddr::V6(m)) => {
+            u128::from(i) & u128::from(*m) == u128::from(*a) & u128::from(*m)
+        }
+        _ => false,
+    })
+}
+
+/// Whether a device at `ip` is a neighbour: in a local network (see
+/// [`is_local`]) or in one of this machine's own networks. A host answers
+/// discovery only to neighbours, so that a host reachable from the
+/// internet does not tell it its name and GPU.
+pub fn is_neighbour(ip: IpAddr, own_networks: &[(IpAddr, IpAddr)]) -> bool {
+    is_local(ip) || in_networks(ip, own_networks)
+}
+
+/// The networks of the interfaces that are up: each address with its
+/// netmask (getifaddrs).
+pub fn interface_networks() -> Vec<(IpAddr, IpAddr)> {
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: as in `interface_addresses`; the netmask has the address's
+    // family.
+    unsafe {
+        if libc::getifaddrs(&mut list) != 0 {
+            return out;
+        }
+        let mut cur = list;
+        while let Some(ifa) = cur.as_ref() {
+            let up = ifa.ifa_flags & libc::IFF_UP as u32 != 0;
+            if up
+                && !ifa.ifa_addr.is_null()
+                && !ifa.ifa_netmask.is_null()
+                && let (Some(a), Some(m)) =
+                    (sockaddr_ip(ifa.ifa_addr), sockaddr_ip(ifa.ifa_netmask))
+            {
+                out.push((a, m));
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(list);
+    }
+    out
+}
+
+/// The IP address in a sockaddr of family INET or INET6.
+///
+/// # Safety
+/// `sa` points to a valid sockaddr of the size its family says.
+unsafe fn sockaddr_ip(sa: *const libc::sockaddr) -> Option<IpAddr> {
+    // SAFETY: the caller's promise.
+    unsafe {
+        match i32::from((*sa).sa_family) {
+            libc::AF_INET => {
+                let sin = &*(sa as *const libc::sockaddr_in);
+                Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+                    sin.sin_addr.s_addr,
+                ))))
+            }
+            libc::AF_INET6 => {
+                let sin6 = &*(sa as *const libc::sockaddr_in6);
+                Some(IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr)))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// The addresses of the interfaces that are up (getifaddrs).
 pub fn interface_addresses() -> Vec<IpAddr> {
     let mut out = Vec::new();
@@ -282,6 +356,33 @@ mod tests {
         );
         let many = (0..20).map(|i| c(Kind::Host, &format!("10.0.0.{i}:1")));
         assert_eq!(offer_list(many).len(), MAX_CANDIDATES);
+    }
+
+    #[test]
+    fn neighbours_are_local_or_in_our_networks() {
+        let ours = [
+            (
+                "203.0.113.10".parse().unwrap(),
+                "255.255.255.0".parse().unwrap(),
+            ),
+            (
+                "2a02:810::5".parse().unwrap(),
+                "ffff:ffff:ffff:ffff::".parse().unwrap(),
+            ),
+        ];
+        for yes in [
+            "192.168.1.7",
+            "100.64.1.1",
+            "203.0.113.99",
+            "2a02:810::77",
+            "::ffff:203.0.113.4",
+        ] {
+            assert!(is_neighbour(yes.parse().unwrap(), &ours), "{yes}");
+        }
+        for no in ["8.8.8.8", "203.0.114.1", "2a02:811::1"] {
+            assert!(!is_neighbour(no.parse().unwrap(), &ours), "{no}");
+        }
+        assert!(!interface_networks().is_empty(), "loopback at least");
     }
 
     #[test]

@@ -74,6 +74,8 @@ pub struct HostSettings {
     /// The rendezvous service's address, for connections over the internet
     /// (`docs/internet.md`); `None`: LAN and VPN only.
     rendezvous: std::sync::Mutex<Option<String>>,
+    /// Ask the router to forward the host's port (PCP, NAT-PMP, UPnP).
+    port_mapping: AtomicBool,
     path: Option<PathBuf>,
 }
 
@@ -82,6 +84,8 @@ struct SettingsFile {
     gpu_boost: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rendezvous: Option<String>,
+    #[serde(default)]
+    port_mapping: bool,
 }
 
 impl HostSettings {
@@ -96,8 +100,9 @@ impl HostSettings {
             .and_then(|f| f.rendezvous.clone())
             .filter(|u| fernsicht_internet::rendezvous::is_service_url(u));
         Self {
-            gpu_boost: AtomicBool::new(file.is_none_or(|f| f.gpu_boost)),
+            gpu_boost: AtomicBool::new(file.as_ref().is_none_or(|f| f.gpu_boost)),
             rendezvous: std::sync::Mutex::new(rendezvous),
+            port_mapping: AtomicBool::new(file.as_ref().is_some_and(|f| f.port_mapping)),
             path: Some(path),
         }
     }
@@ -118,6 +123,23 @@ impl HostSettings {
     pub fn with_rendezvous(self, url: Option<String>) -> Self {
         *self.rendezvous.lock().unwrap_or_else(|e| e.into_inner()) = url;
         Self { path: None, ..self }
+    }
+
+    /// Port forwarding by the router on for this run only; the stored
+    /// setting stays (`--port-mapping`).
+    pub fn with_port_mapping(self) -> Self {
+        self.port_mapping.store(true, Ordering::Relaxed);
+        Self { path: None, ..self }
+    }
+
+    /// Ask the router to forward the host's port.
+    pub fn port_mapping(&self) -> bool {
+        self.port_mapping.load(Ordering::Relaxed)
+    }
+
+    pub fn set_port_mapping(&self, on: bool) -> std::io::Result<()> {
+        self.port_mapping.store(on, Ordering::Relaxed);
+        self.save()
     }
 
     /// The rendezvous service's address, if one is set.
@@ -159,6 +181,7 @@ impl HostSettings {
         let json = serde_json::to_string(&SettingsFile {
             gpu_boost: self.gpu_boost(),
             rendezvous: self.rendezvous(),
+            port_mapping: self.port_mapping(),
         })
         .map_err(std::io::Error::other)?;
         std::fs::write(path, json)

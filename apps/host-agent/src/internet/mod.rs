@@ -3,6 +3,7 @@
 //! it passes on are answered in the control loop, which owns the socket
 //! that STUN and the hole punching must use ([`punching`]).
 
+pub(crate) mod forwarding;
 pub(crate) mod punching;
 pub(crate) mod signaling;
 
@@ -21,6 +22,22 @@ pub struct InternetStatus {
     /// The service hands out relay (TURN) credentials.
     pub relay: bool,
     /// Why the last attempt failed.
+    pub error: Option<String>,
+    /// The port the router forwards, if asked to.
+    #[serde(default)]
+    pub forwarding: Forwarding,
+}
+
+/// The port the router forwards to the host (`--port-mapping`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Forwarding {
+    /// The host asks its router to forward its port.
+    pub on: bool,
+    /// The public address the router forwards, once it does.
+    pub external: Option<String>,
+    /// Why the router does not.
     pub error: Option<String>,
 }
 
@@ -61,9 +78,14 @@ impl HostAgent {
             return Vec::new();
         };
         let v6 = self.sockets.has_v6();
+        let forwarded = *self.forwarded.lock().unwrap_or_else(|e| e.into_inner());
         host_candidates(local.port())
             .into_iter()
             .filter(|c| worth_offering(c.addr.ip()) && (c.addr.is_ipv4() || v6))
+            .chain(forwarded.map(|addr| Candidate {
+                kind: fernsicht_internet::candidates::Kind::Mapped,
+                addr,
+            }))
             .collect()
     }
 

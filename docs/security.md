@@ -100,6 +100,8 @@ nothing about them changes. What is added, and why it holds:
   host, short-lived. A relayed session's bitrate is limited.
 - **The service's address** reaches clients only inside a sealed session packet, so nobody can
   point a client elsewhere (and another service could only drop messages).
+- **Discovery is for neighbours.** A host answers Discover only from local addresses and its own
+  networks: one with a forwarded port or a public address tells strangers nothing about itself.
 
 ## The web viewer
 

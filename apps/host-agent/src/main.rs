@@ -107,6 +107,11 @@ struct Args {
     /// when a client connects over the internet (repeatable).
     #[arg(long, default_values_t = [fernsicht_host_agent::DEFAULT_STUN.to_string()])]
     stun: Vec<String>,
+    /// Ask the router to forward the port (PCP, NAT-PMP or UPnP IGD), for
+    /// this run; also switchable in the app. Clients over the internet
+    /// then reach the host directly at the forwarded address.
+    #[arg(long)]
+    port_mapping: bool,
     /// Upper bound for a session's bitrate through a relay (TURN), kbit/s:
     /// relayed traffic may cost money.
     #[arg(long, default_value_t = 15_000)]
@@ -317,6 +322,9 @@ fn main() -> anyhow::Result<()> {
             "--rendezvous {url}: not a rendezvous service address (https://…)"
         );
         settings = settings.with_rendezvous(Some(url.clone()));
+    }
+    if args.port_mapping {
+        settings = settings.with_port_mapping();
     }
     // SAFETY: geteuid has no preconditions.
     let root = unsafe { libc::geteuid() } == 0;

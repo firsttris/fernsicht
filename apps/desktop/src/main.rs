@@ -125,6 +125,11 @@ async fn stop_sharing(backend: Shared<'_>) -> Answer<()> {
 }
 
 #[tauri::command]
+async fn set_port_mapping(backend: Shared<'_>, on: bool) -> Answer<()> {
+    blocking(&backend, move |b| b.set_port_mapping(on)).await
+}
+
+#[tauri::command]
 async fn set_rendezvous(backend: Shared<'_>, url: String) -> Answer<()> {
     blocking(&backend, move |b| b.set_rendezvous(&url)).await
 }
@@ -167,6 +172,7 @@ fn main() {
             stop_sharing,
             set_gpu_boost,
             set_rendezvous,
+            set_port_mapping,
         ])
         .build(tauri::generate_context!())
         .expect("starting the app")

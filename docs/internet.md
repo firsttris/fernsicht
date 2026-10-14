@@ -2,9 +2,9 @@
 
 !!! note "Status: built, not yet seen live"
     The rendezvous service (a Cloudflare Worker and a Rust service), hole punching over IPv4 and
-    IPv6 and the TURN relay are built and tested on one machine (host, client, service, STUN and a
-    real coturn; the Worker in `wrangler dev`). Port forwarding by the router and the web viewer
-    over the internet are the [stages](#stages) still to come. Nobody has connected two real homes
+    IPv6, the TURN relay and port forwarding by the router are built and tested on one machine
+    (host, client, service, STUN and a real coturn; the Worker in `wrangler dev`; routers played by
+    the tests). The web viewer over the internet is the [stage](#stages) still to come. Nobody has connected two real homes
     with it yet ([handover](handover.md#what-nobody-has-seen-live-yet)).
 
 This page is how Fernsicht connects two devices anywhere, without a VPN and without setting up
@@ -306,16 +306,23 @@ the native protocol passes unchanged, inside ChannelData (4 bytes more per datag
 
 ## Port forwarding by the router
 
-As an option (“Aus dem Internet erreichbar”, off by default), the host asks its router to forward
-UDP 47800, first with PCP (RFC 6887), then NAT-PMP (RFC 6886), then UPnP IGD. PCP can also open
-the IPv6 firewall for the port. The mapping is requested with a lifetime and renewed before it runs
-out, and removed when the host stops or the option is turned off. A FritzBox does this when
-“Selbstständige Portfreigaben für dieses Gerät erlauben” is ticked for the host.
+As an option (“Portfreigabe beim Router anfragen” in the app, `--port-mapping`, off by default),
+the host asks its router (the default route's gateway) to forward its UDP port: first with PCP
+(RFC 6887), then NAT-PMP (RFC 6886) when the router answers PCP in NAT-PMP's form or not at all,
+then UPnP IGD (SSDP, the router's description, SOAP). A refusal is the answer; only silence tries
+the next. The mapping is asked for two hours and renewed after one (PCP with the same nonce), and
+removed when the host stops or the option is turned off; a router that only keeps permanent
+mappings (UPnP error 725) gets one, removed the same way. The forwarded address is offered to
+clients as a candidate (path 3). The app shows what the router forwards, or why not. A FritzBox
+does this when “Selbstständige Portfreigaben für dieses Gerät erlauben” is ticked for the host.
+(`crates/internet/src/portmap`; PCP for IPv6 firewalls is not used: IPv6 hole punching gets
+through them.)
 
-A host reachable from the internet must behave differently towards strangers: it answers **Discover
-only from local addresses** (private IPv4 ranges, IPv6 link-local and unique local, the host's own
-subnets), so its name, GPU and status are not told to the internet. Pairing stays as it is (a
-guess costs a full exchange and attempts are limited per address and in total).
+A host reachable from the internet must behave differently towards strangers, so every host
+answers **Discover only from neighbours**: local addresses (private IPv4 ranges, the shared range
+VPNs use, IPv6 link-local and unique local) and the host's own networks. Its name, GPU and status
+are not told to the internet. Pairing stays as it is (a guess costs a full exchange and attempts
+are limited per address and in total).
 
 ## The web viewer
 
@@ -372,7 +379,7 @@ their sizes, as any router on the way does.
 3. **The relay:** a TURN client in the client (allocation, channels, ChannelData), credentials
    from the service, the relay's bitrate limit, “Relay” in the app. Done.
 4. **Port forwarding by the router** (PCP, NAT-PMP, UPnP IGD) as an option, with Discover answered
-   only locally.
+   only to neighbours. Done.
 5. **The web viewer over the internet:** HTTPS through a tunnel, the host's candidates, ICE servers.
 
 ## Open questions

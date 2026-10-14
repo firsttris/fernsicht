@@ -52,10 +52,28 @@ vi.mock("@tauri-apps/api/core", () => ({
         backend.thisMachine = {
           ...backend.thisMachine,
           host: host({
-            internet: url
-              ? { url, state: "registered", relay: true, error: null }
-              : { url: null, state: "off", relay: false, error: null },
+            internet: {
+              ...(url
+                ? { url, state: "registered", relay: true, error: null }
+                : { url: null, state: "off", relay: false, error: null }),
+              forwarding: { on: false, external: null, error: null },
+            },
           }),
+        };
+        return null;
+      }
+      case "set_port_mapping": {
+        const { on } = args as { on: boolean };
+        const h = backend.thisMachine.host!;
+        backend.thisMachine = {
+          ...backend.thisMachine,
+          host: {
+            ...h,
+            internet: {
+              ...h.internet,
+              forwarding: { on, external: on ? "203.0.113.5:47800" : null, error: null },
+            },
+          },
         };
         return null;
       }
@@ -124,7 +142,13 @@ const host = (over: Partial<HostStatus> = {}): HostStatus => ({
   session: null,
   pairing: null,
   gpu_boost: true,
-  internet: { url: null, state: "off", relay: false, error: null },
+  internet: {
+    url: null,
+    state: "off",
+    relay: false,
+    error: null,
+    forwarding: { on: false, external: null, error: null },
+  },
   ...over,
 });
 
@@ -479,6 +503,7 @@ describe("Desktop-App", () => {
           state: "failed",
           relay: false,
           error: "cannot reach r.example:443",
+          forwarding: { on: true, external: null, error: "UPnP: refused (718)" },
         },
       }),
     };
@@ -488,11 +513,24 @@ describe("Desktop-App", () => {
     };
     const { user } = await renderApp("/settings");
     expect(await screen.findByText(/cannot reach r.example:443/)).toBeInTheDocument();
+    expect(screen.getByText(/leitet nichts weiter \(UPnP: refused \(718\)\)/)).toBeInTheDocument();
     const field = screen.getByLabelText("Adresse des Rendezvous-Dienstes");
     await user.clear(field);
     await user.type(field, "ftp://x");
     await user.click(screen.getByRole("button", { name: "Speichern" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("not a rendezvous service");
+  });
+
+  it("asks the router to forward the port", async () => {
+    backend.thisMachine = { name: "zentrale", host: host() };
+    const { user } = await renderApp("/settings");
+    const box = await screen.findByRole("checkbox", { name: "Portfreigabe beim Router anfragen" });
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    expect(called("set_port_mapping")).toEqual([["set_port_mapping", { on: true }]]);
+    expect(
+      await screen.findByText(/leitet 203.0.113.5:47800 an diesen Rechner/),
+    ).toBeInTheDocument();
   });
 
   it("removes a device paired with this computer", async () => {

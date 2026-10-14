@@ -4,6 +4,8 @@
 //!   from Fernsicht's packets on one socket.
 //! - [`candidates`]: the addresses a device may be reached at, and how
 //!   good a path to each is.
+//! - [`portmap`]: asking the router to forward the host's port (PCP,
+//!   NAT-PMP, UPnP IGD).
 //! - [`punch`]: when to send hole punching probes and which path to take.
 //! - [`signal`]: the rendezvous service's messages, the host's key proof,
 //!   and the sealed offer and answer.
@@ -13,6 +15,7 @@
 //!   state machine.
 
 pub mod candidates;
+pub mod portmap;
 pub mod punch;
 pub mod rendezvous;
 pub mod signal;

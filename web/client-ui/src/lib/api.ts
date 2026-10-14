@@ -166,6 +166,8 @@ export const actions = {
   setGpuBoost: (on: boolean) => invoke<void>("set_gpu_boost", { on }),
   /** This computer's host's rendezvous service; empty: none. */
   setRendezvous: (url: string) => invoke<void>("set_rendezvous", { url }),
+  /** Whether this computer's host asks its router to forward its port. */
+  setPortMapping: (on: boolean) => invoke<void>("set_port_mapping", { on }),
   /** Removes a device paired with this computer's host (by its key); its
    * session ends. */
   unpairFromHost: (device: string) => invoke<void>("unpair_from_host", { device }),

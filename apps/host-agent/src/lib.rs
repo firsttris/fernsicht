@@ -95,6 +95,8 @@ pub struct HostAgent {
     internet: internet::InternetCell,
     /// The thread talking to the rendezvous service, while the host runs.
     signaling: Option<internet::signaling::Signaling>,
+    /// The public address the router forwards to the host, if asked to.
+    forwarded: internet::forwarding::ForwardedCell,
     web: Option<WebServer>,
 }
 
@@ -144,6 +146,7 @@ impl HostAgent {
             status: Arc::default(),
             internet: Arc::default(),
             signaling: None,
+            forwarded: Arc::default(),
             web,
         })
     }
@@ -173,6 +176,17 @@ impl HostAgent {
         let control = self.serve_control(&control_stop)?;
         // The rendezvous service, for clients over the internet (idle while
         // none is set).
+        // The router's port forwarding, while the setting is on.
+        let forwarding = match (&self.cfg.security, self.local_addr()) {
+            (Some(_), Ok(local)) => Some(internet::forwarding::spawn(
+                self.cfg.settings.clone(),
+                local.port(),
+                self.internet.clone(),
+                self.forwarded.clone(),
+                control_stop.clone(),
+            )?),
+            _ => None,
+        };
         if let Some(sec) = &self.cfg.security {
             self.signaling = Some(internet::signaling::spawn(
                 self.cfg.settings.clone(),
@@ -230,6 +244,9 @@ impl HostAgent {
         }
         if let Some(s) = self.signaling.take() {
             s.join();
+        }
+        if let Some(t) = forwarding {
+            let _ = t.join();
         }
         if let Some(w) = self.web.take() {
             w.stop.store(true, Ordering::Relaxed);

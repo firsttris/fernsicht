@@ -39,6 +39,7 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 | `--no-gpu-boost` | | leave the GPU's clocks alone during sessions |
 | `--rendezvous <url>` | the one set in the app | the rendezvous service for connections over the internet, for this run ([over the internet](internet.md)) |
 | `--stun <host:port>` | `stun.cloudflare.com:3478` | STUN servers asked for this computer's public address when a client connects over the internet (repeatable) |
+| `--port-mapping` | off (or as set in the app) | ask the router to forward the port (PCP, NAT-PMP or UPnP IGD), for this run ([over the internet](internet.md#port-forwarding-by-the-router)) |
 | `--relay-max-bitrate` | `15000` | upper bound for a session's bitrate through a relay (TURN), kbit/s |
 | `--pace-mbit` | `400` | highest pacing rate in Mbit/s for what goes beyond a 64 KiB burst (keyframes); the host paces at the rate the client measures the path deliver, up to this |
 | `--loss <f>` | `0` | drop this fraction of outgoing video packets (testing, e.g. `0.01`) |

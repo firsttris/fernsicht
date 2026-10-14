@@ -163,7 +163,8 @@ mouse mapping follow the decoded size. A browser gets the list as JSON on its da
 ## Discovery
 
 The client broadcasts Discover (padded to 256 bytes, longer than any answer, so the host can never be
-used to amplify traffic) on the stream port; hosts answer with Announce: a nonce, their public key,
+used to amplify traffic) on the stream port; hosts answer with Announce (only to neighbours: local addresses and the host's own networks, so a
+host reachable from the internet tells strangers nothing): a nonce, their public key,
 name, OS, GPU and codecs, and whether pairing is open or a session is running. Paired hosts are also
 asked directly at their last known address. Anyone can answer in a host's name (its key is public),
 so an answer only shows where the host may be and is tried first when connecting; a client stores a

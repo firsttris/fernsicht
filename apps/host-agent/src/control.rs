@@ -13,6 +13,8 @@
 //! {"cmd":"set","gpu_boost":true} → {"ok":true} (kept in the state directory)
 //! {"cmd":"set","rendezvous":"https://…"} → {"ok":true} (the rendezvous
 //!                                  service; "" for none; kept too)
+//! {"cmd":"set","port_mapping":true} → {"ok":true} (ask the router to
+//!                                  forward the port; kept too)
 //! ```
 //!
 //! Who may ask: root, the user the host runs as, and the user at the
@@ -50,6 +52,9 @@ pub enum Request {
         /// The rendezvous service's address; empty: none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rendezvous: Option<String>,
+        /// Ask the router to forward the host's port.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port_mapping: Option<bool>,
     },
 }
 
@@ -193,13 +198,23 @@ pub fn handle(
         Request::Set {
             gpu_boost: Some(on),
             rendezvous: None,
+            port_mapping: None,
         } => match settings.set_gpu_boost(on) {
             Ok(()) => done(),
             Err(e) => failed(&format!("saving the setting: {e}")),
         },
         Request::Set {
             gpu_boost: None,
+            rendezvous: None,
+            port_mapping: Some(on),
+        } => match settings.set_port_mapping(on) {
+            Ok(()) => done(),
+            Err(e) => failed(&format!("saving the setting: {e}")),
+        },
+        Request::Set {
+            gpu_boost: None,
             rendezvous: Some(url),
+            port_mapping: None,
         } => {
             // Empty: none (LAN and VPN only).
             let url = Some(url.trim().to_owned()).filter(|u| !u.is_empty());
@@ -650,6 +665,7 @@ mod tests {
             state: crate::internet::InternetState::Registered,
             relay: true,
             error: None,
+            forwarding: Default::default(),
         };
         let st = ask(r#"{"cmd":"status"}"#);
         assert_eq!(st["internet"]["state"], "registered");

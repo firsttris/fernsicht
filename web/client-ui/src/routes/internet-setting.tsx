@@ -30,6 +30,11 @@ export function InternetSetting({ internet }: { internet: InternetStatus }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["this-machine"] }),
   });
   const changed = url.trim() !== (internet.url ?? "");
+  const forwarding = useMutation({
+    mutationFn: actions.setPortMapping,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["this-machine"] }),
+  });
+  const fwd = internet.forwarding;
 
   return (
     <div className="flex flex-col gap-2">
@@ -83,6 +88,35 @@ export function InternetSetting({ internet }: { internet: InternetStatus }) {
       {save.isError && (
         <span role="alert" className="text-xs text-muted-foreground">
           {errorText(save.error)}
+        </span>
+      )}
+      <label className="mt-2 flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={fwd.on}
+          disabled={forwarding.isPending}
+          onChange={(e) => forwarding.mutate(e.target.checked)}
+          className="m-0 size-4 accent-foreground"
+        />
+        Portfreigabe beim Router anfragen
+      </label>
+      <span className="text-xs leading-normal text-muted-foreground">
+        Der Host bittet den Router (UPnP, NAT-PMP oder PCP), seinen Port weiterzuleiten. Dann
+        erreichen Geräte ihn direkt, auch wo Hole Punching nicht reicht. Bei einer FritzBox muss
+        dafür „Selbstständige Portfreigaben für dieses Gerät erlauben“ an sein.
+      </span>
+      {fwd.on && (
+        <span className="text-xs text-muted-foreground" aria-live="polite">
+          {fwd.external
+            ? `Der Router leitet ${fwd.external} an diesen Rechner weiter.`
+            : fwd.error
+              ? `Der Router leitet nichts weiter (${fwd.error}).`
+              : "Frage den Router …"}
+        </span>
+      )}
+      {forwarding.isError && (
+        <span role="alert" className="text-xs text-muted-foreground">
+          {errorText(forwarding.error)}
         </span>
       )}
     </div>

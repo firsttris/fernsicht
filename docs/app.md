@@ -167,6 +167,8 @@ computer; “Entfernen” (remove) forgets one, ends its session if it has one, 
 paired again. “Verbindung über das Internet” (connecting over the internet) takes the address of
 the host's own rendezvous service, so that paired devices reach this computer from anywhere
 ([over the internet](internet.md#everyone-runs-their-own)); below it the host says how it stands
-with it: off, connecting, reachable (with or without a relay), or why not. Devices learn the
+with it: off, connecting, reachable (with or without a relay), or why not. “Portfreigabe beim
+Router anfragen” (ask the router to forward the port) has the host ask its router by UPnP, NAT-PMP
+or PCP; the line below it says what the router forwards, or why it does not. Devices learn the
 address in their next session with this computer. In a session over the internet the toolbar
 shows “Relay” instead of “P2P” when it runs through a relay.

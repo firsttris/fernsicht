@@ -81,9 +81,14 @@ pub(crate) fn spawn(
     })
 }
 
+/// Sets the rendezvous part of the status; the forwarding part is the
+/// forwarding thread's.
 fn set(status: &InternetCell, s: InternetStatus) {
     if let Ok(mut cell) = status.lock() {
-        *cell = s;
+        *cell = InternetStatus {
+            forwarding: std::mem::take(&mut cell.forwarding),
+            ..s
+        };
     }
 }
 
@@ -131,6 +136,7 @@ fn run(
                         state: InternetState::Failed,
                         relay: false,
                         error: Some(e.to_string()),
+                        ..Default::default()
                     },
                 );
                 wait(backoff(failures), settings, &url, stop);
@@ -150,6 +156,7 @@ fn run(
                 state: InternetState::Registered,
                 relay: conn.relay,
                 error: None,
+                ..Default::default()
             },
         );
         let lost = serve(
@@ -169,6 +176,7 @@ fn run(
                         state: InternetState::Failed,
                         relay: false,
                         error: Some(e),
+                        ..Default::default()
                     },
                 );
                 wait(backoff(0), settings, &url, stop);
