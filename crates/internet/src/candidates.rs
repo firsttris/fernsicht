@@ -70,6 +70,12 @@ pub fn rung(remote: &Candidate, via_relay: bool) -> Rung {
     }
 }
 
+/// Whether a relay at `server` can reach `peer`: a relay on the internet
+/// reaches only public addresses, one in a local network also local ones.
+pub fn relay_reaches(server: SocketAddr, peer: SocketAddr) -> bool {
+    !is_local(peer.ip()) || is_local(server.ip())
+}
+
 /// Addresses of a local network: private IPv4 (RFC 1918), shared address
 /// space (RFC 6598, used by VPNs such as Tailscale and by carrier NAT),
 /// link-local, loopback, IPv6 unique local and link-local. Mapped IPv4 in
@@ -334,6 +340,18 @@ mod tests {
         ] {
             assert!(!worth_offering(no.parse().unwrap()), "{no}");
         }
+    }
+
+    #[test]
+    fn a_relay_on_the_internet_reaches_only_public_addresses() {
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        let public_relay = a("198.51.100.1:3478");
+        assert!(relay_reaches(public_relay, a("203.0.113.5:47800")));
+        assert!(!relay_reaches(public_relay, a("192.168.10.2:47800")));
+        assert!(!relay_reaches(public_relay, a("[fd00::2]:47800")));
+        // One in the LAN (or on this machine, in tests) reaches both.
+        assert!(relay_reaches(a("127.0.0.1:3478"), a("127.0.0.1:47800")));
+        assert!(relay_reaches(a("192.168.1.1:3478"), a("203.0.113.5:47800")));
     }
 
     #[test]

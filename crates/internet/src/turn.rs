@@ -444,6 +444,19 @@ impl TurnClient {
         }
     }
 
+    /// A Send indication carrying `data` to `peer`: for a peer without a
+    /// bound channel (36 bytes and more of header, instead of 4). A
+    /// permission for the peer's address must exist (a channel bound to
+    /// any port of it gives one: permissions are per address, RFC 8656
+    /// section 9).
+    pub fn send_indication(&mut self, peer: SocketAddr, data: &[u8]) -> Vec<u8> {
+        let tx = self.next_tx();
+        Builder::new(method::SEND, Class::Indication, tx)
+            .xor_address(attr::XOR_PEER_ADDRESS, peer)
+            .attr(attr::DATA, data)
+            .finish()
+    }
+
     /// The ChannelData message carrying `data` to `peer`, into `out`; its
     /// length. `None` while the channel is not bound.
     pub fn wrap(&self, peer: SocketAddr, data: &[u8], out: &mut [u8]) -> Option<usize> {
@@ -648,6 +661,18 @@ mod tests {
             Message::parse(&release).unwrap().u32_attr(attr::LIFETIME),
             Some(0)
         );
+    }
+
+    #[test]
+    fn send_indications_carry_data_to_a_peer() {
+        let now = Instant::now();
+        let (mut c, _) = allocated(now);
+        let peer: SocketAddr = "192.0.2.9:61000".parse().unwrap();
+        let ind = c.send_indication(peer, b"probe");
+        let m = Message::parse(&ind).unwrap();
+        assert_eq!((m.method, m.class), (method::SEND, Class::Indication));
+        assert_eq!(m.xor_address(attr::XOR_PEER_ADDRESS), Some(peer));
+        assert_eq!(m.attr(attr::DATA), Some(&b"probe"[..]));
     }
 
     #[test]

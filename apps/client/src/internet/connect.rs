@@ -7,7 +7,9 @@
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use fernsicht_internet::candidates::{Candidate, Kind, Rung, host_candidates, offer_list};
+use fernsicht_internet::candidates::{
+    Candidate, Kind, MAX_CANDIDATES, Rung, host_candidates, offer_list, relay_reaches,
+};
 use fernsicht_internet::punch::{Answered, Schedule, canonical, choose, matching};
 use fernsicht_internet::signal::{self, AnswerPayload, IceServer, OfferPayload};
 use fernsicht_internet::stun::{self, Class, Message, TransactionId};
@@ -144,7 +146,7 @@ fn remote(a: AnswerPayload) -> Result<Remote, Failure> {
             addr: canonical(c.addr),
             ..c
         })
-        .take(fernsicht_internet::candidates::MAX_CANDIDATES)
+        .take(MAX_CANDIDATES)
         .collect();
     Ok(Remote {
         candidates,
@@ -351,7 +353,7 @@ fn on_relayed(
 ) {
     let (turn, remote) = match relay {
         RelayState::Allocating(t) => (t, None),
-        RelayState::Punching { turn, remote, .. } => (turn, Some(&*remote)),
+        RelayState::Punching { turn, remote, .. } => (turn, Some(remote)),
         _ => return,
     };
     let Event::Data { peer, data } = turn.handle(datagram, now) else {
@@ -363,19 +365,48 @@ fn on_relayed(
     if p.token != remote.token {
         return;
     }
+    // The relay lets in any port of a candidate's address (permissions
+    // are per address): a host behind a NAT that gives each destination
+    // its own port speaks from another port than it offered. That address
+    // is where it really is (ICE's peer-reflexive candidate).
+    let known = matching(&remote.candidates, peer);
+    let Some(candidate) = known.or_else(|| {
+        remote
+            .candidates
+            .iter()
+            .find(|c| c.addr.ip() == peer.ip())
+            .map(|c| Candidate { addr: peer, ..*c })
+    }) else {
+        return;
+    };
+    turn.bind(peer, now);
     if p.reply {
-        if let Some(c) = matching(&remote.candidates, peer) {
-            answers.push(Answered {
-                remote: c,
-                via_relay: true,
-                at: now,
-            });
-        }
-    } else {
-        let mut out = [0u8; 64];
-        if let Some(n) = turn.wrap(peer, &probe(p.token, true), &mut out) {
-            let _ = socket.send_to(&out[..n], for_socket(socket, turn.server()));
-        }
+        answers.push(Answered {
+            remote: candidate,
+            via_relay: true,
+            at: now,
+        });
+        return;
+    }
+    send_relayed(turn, socket, peer, &probe(p.token, true));
+    if known.is_none() && remote.candidates.len() < 2 * MAX_CANDIDATES {
+        // Probed from now on, and at once (ICE's triggered check).
+        remote.candidates.push(candidate);
+        send_relayed(turn, socket, peer, &probe(p.token, false));
+    }
+}
+
+/// `data` to `peer` through the relay: on its channel once bound, in a
+/// Send indication until then; with the binding's own requests.
+fn send_relayed(turn: &mut TurnClient, socket: &UdpSocket, peer: SocketAddr, data: &[u8]) {
+    let server = for_socket(socket, turn.server());
+    let mut out = [0u8; 64];
+    let _ = match turn.wrap(peer, data, &mut out) {
+        Some(n) => socket.send_to(&out[..n], server),
+        None => socket.send_to(&turn.send_indication(peer, data), server),
+    };
+    while let Some(m) = turn.poll_transmit() {
+        let _ = socket.send_to(&m, server);
     }
 }
 
@@ -416,6 +447,7 @@ fn step_relay(
             let Some(relayed) = turn.relayed() else {
                 return RelayState::Allocating(turn);
             };
+            log::debug!("relay: allocated {relayed}");
             // The host learns the relay's address with a second offer,
             // and limits the session to it.
             let mut with_relay = candidates.to_vec();
@@ -424,13 +456,23 @@ fn step_relay(
                 addr: relayed,
             });
             let second = exchange(url, host, identity, offer_list(with_relay)).and_then(remote);
-            let remote = match second {
+            let mut remote = match second {
                 Ok(r) => r,
                 Err(e) => {
                     log::warn!("relay: {e}");
                     return RelayState::Failed;
                 }
             };
+            // A relay on the internet does not reach the host's LAN
+            // addresses (and coturn's relay socket does not survive the
+            // error of trying).
+            remote
+                .candidates
+                .retain(|c| relay_reaches(turn.server(), c.addr));
+            log::debug!(
+                "relay: the host answered ({} candidates)",
+                remote.candidates.len()
+            );
             tokens.push(remote.token);
             for c in &remote.candidates {
                 turn.bind(c.addr, now);
@@ -451,9 +493,11 @@ fn step_relay(
             send_all(&mut turn);
             // Probes once the channels are bound.
             if schedule.is_none() && remote.candidates.iter().any(|c| turn.is_bound(c.addr)) {
+                log::debug!("relay: channels bound, probing");
                 schedule = Some(Schedule::new(now));
             }
-            if turn.failure().is_some() {
+            if let Some(why) = turn.failure() {
+                log::warn!("relay: {why}");
                 return RelayState::Failed;
             }
             RelayState::Punching {

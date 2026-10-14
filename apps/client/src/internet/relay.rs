@@ -104,8 +104,16 @@ fn run(
         let (from_relay, from_session) = poll2(socket, inner, wait);
         if from_session && let Ok(n) = inner.recv(&mut buf) {
             // Per packet: no allocation, the buffers are the thread's.
-            if let Some(m) = turn.wrap(peer, &buf[..n], &mut out) {
-                let _ = socket.send_to(&out[..m], for_socket(socket, server));
+            match turn.wrap(peer, &buf[..n], &mut out) {
+                Some(m) => {
+                    let _ = socket.send_to(&out[..m], for_socket(socket, server));
+                }
+                // Until its channel is bound (a moment after the start; the
+                // indication allocates, only then).
+                None => {
+                    let ind = turn.send_indication(peer, &buf[..n]);
+                    let _ = socket.send_to(&ind, for_socket(socket, server));
+                }
             }
         }
         if from_relay

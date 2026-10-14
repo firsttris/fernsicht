@@ -93,7 +93,7 @@ PROPTEST_CASES=1024 cargo test --workspace --test properties   # CI's strength; 
 pnpm check && pnpm -r typecheck && pnpm test
 pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
 cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-shellcheck packaging/*.sh scripts/*.sh dev/*.sh dev/runner/*.sh
+shellcheck packaging/*.sh scripts/*.sh dev/*.sh dev/runner/*.sh tests/nat/*.sh
 mkdocs build --strict                        # when docs/ or mkdocs.yml changed
 ```
 

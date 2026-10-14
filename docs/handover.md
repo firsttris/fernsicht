@@ -291,7 +291,8 @@ Confirmed live (2026-10-10, according to the user):
 
 16. **Over the internet.** Built, tested on one machine (host, client,
     the Rust rendezvous service, a STUN server and coturn; the Worker
-    in `wrangler dev`), never between two homes. Deploy the Worker
+    in `wrangler dev`) and through real NATs played by network
+    namespaces (`tests/nat/run.sh`), never between two homes. Deploy the Worker
     (button in the README, or `npx wrangler@4 deploy` in
     `web/rendezvous-worker`), enter its address on the zentrale in the
     app's settings (“Verbindung über das Internet”; the line below says

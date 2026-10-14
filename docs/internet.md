@@ -276,10 +276,13 @@ the native protocol passes unchanged, inside ChannelData (4 bytes more per datag
 - **The client allocates** the relay address, after 1.5 s without a direct answer: the client is
   the one in a hostile network (a hotel, a company, a mobile network), and the host is in a home
   network. It tells the host the relayed address with a second offer, binds a channel to each of
-  the host's candidates, and probes through the relay; the host probes back to the relayed
-  address. TURN permissions are by IP
-  address only, not by port (RFC 8656, section 9), so the host reaches the relay even through a NAT
-  that gives every destination its own port. One allocation is enough in nearly every case.
+  the host's public candidates (a relay on the internet cannot reach the host's LAN addresses,
+  and coturn's relay socket stops relaying after the error of trying), and probes through the
+  relay; the host probes back to the relayed address. TURN permissions are by IP address only, not
+  by port (RFC 8656, section 9), so the host reaches the relay even through a NAT that gives every
+  destination its own port. Its probes then come from a port it never offered: the client takes
+  that address as the host's (ICE's peer-reflexive candidate), binds a channel to it and probes it
+  at once. One allocation is enough in nearly every case.
 - **In the client** a thread sits between the session's socket and the TURN server: it wraps what
   the session sends in ChannelData, unwraps what comes back, and refreshes the allocation and the
   channel. The network thread stays as it is; the relay costs a hop through the kernel's loopback.
@@ -377,11 +380,23 @@ their sizes, as any router on the way does.
 - **Unit and property tests:** the STUN and TURN message parsers (never panic, never allocate, like
   `proto`), telling packets apart by their first byte, choosing a path from a set of answers,
   the key proof, the signaling messages.
-- **End-to-end tests with real NATs:** network namespaces with nftables masquerading between them
-  (the e2e tests already build impaired networks), one per kind of NAT: one port for all
-  destinations, one per destination (symmetric), IPv6 with a stateful firewall. A local STUN and
-  TURN server (coturn) and the Rust rendezvous service run beside them. Each test asserts which path
-  was chosen: direct where the NATs allow it, relayed where they do not.
+- **End-to-end tests on one machine:** host, client, the Rust rendezvous service and coturn on
+  loopback (`tests/e2e/tests/internet.rs`): a punched path, an unpaired client refused, a session
+  through the relay.
+- **End-to-end tests through real NATs** (`tests/nat/run.sh`, root, in CI's `nat` job): network
+  namespaces for the internet (coturn and the rendezvous service) and two homes behind routers that
+  NAT with nftables and, as home routers do, let nothing new in from the internet. A router keeps
+  the port for all destinations (`masquerade`) or gives each destination its own
+  (`masquerade random`, a symmetric NAT). Each case pairs once through a port forwarded for that
+  moment, takes it away, connects through the service and asserts the path the client took:
+
+  | Host's NAT | Client's NAT | Path |
+  |---|---|---|
+  | one port | one port | punched |
+  | one port | symmetric | relayed |
+  | symmetric | symmetric | relayed (to the host's peer-reflexive port) |
+
+  `KEEP=1` keeps the logs. IPv6 behind a stateful firewall is not among them yet.
 - **The Worker** against the same tests through `wrangler dev`.
 - **Live:** a host at home, a laptop on a phone's hotspot (carrier-grade NAT), on IPv6 only, and in
   a network that blocks UDP except to the relay.
