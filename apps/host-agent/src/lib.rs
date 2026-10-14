@@ -125,8 +125,18 @@ impl HostAgent {
             (Some(addr), Some(sec)) => {
                 let (tx, requests) = bounded(4);
                 let stop = Arc::new(AtomicBool::new(false));
-                let (thread, addr) =
-                    web::serve(addr, cfg.web_root.clone(), sec.clone(), tx, stop.clone())?;
+                let public = web::Public {
+                    names: cfg.web_public.clone(),
+                    stun: cfg.stun.clone(),
+                };
+                let (thread, addr) = web::serve(
+                    addr,
+                    cfg.web_root.clone(),
+                    sec.clone(),
+                    tx,
+                    public,
+                    stop.clone(),
+                )?;
                 if cfg.web_root.is_none() {
                     log::info!("web viewer API on {addr} (no page: --web-root not set)");
                 }

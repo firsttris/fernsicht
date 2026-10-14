@@ -23,11 +23,13 @@
 
 mod commands;
 mod offer;
+mod public;
 mod rate;
 mod rtc;
 mod server;
 
 pub(crate) use offer::{WebSetup, accept};
+pub(crate) use public::{Public, PublicPath};
 pub(crate) use rtc::spawn;
 pub(crate) use server::{check_pin, serve};
 
@@ -80,6 +82,9 @@ pub(crate) struct WebRequest {
     pub browser: SocketAddr,
     /// Our address on the browser's network: the WebRTC candidate.
     pub local_ip: IpAddr,
+    /// For a browser over the internet: the socket and the host's public
+    /// address (full ICE instead of ICE lite).
+    pub public: Option<PublicPath>,
     pub reply: Sender<Result<WebAccepted, WebError>>,
 }
 

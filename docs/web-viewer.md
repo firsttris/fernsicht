@@ -107,5 +107,8 @@ network. The host serves the page itself.
   `install-host.sh` opens 47800.
 - **Browser:** Tested with Chrome and Firefox and on a phone. Firefox plays
   H.264 only with a suitable H.264 decoder installed.
-- **Over the internet:** only through a VPN for now, see
-  [remote access](remote-access.md).
+- **Over the internet:** through a tunnel with HTTPS (a Cloudflare Tunnel) and
+  `--web-public-name`: the host then offers its public address and punches
+  through its NAT ([over the internet](internet.md#the-web-viewer)); or
+  through a VPN ([remote access](remote-access.md)). There is no relay for
+  browsers: behind two NATs that cannot be punched, use a VPN.

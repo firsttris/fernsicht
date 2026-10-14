@@ -25,9 +25,13 @@ export async function fetchHostInfo(): Promise<HostInfo | null> {
     const r = await fetch("/api/info", { headers: { Accept: "application/json" } });
     if (!r.ok || !(r.headers.get("content-type") ?? "").includes("json")) return null;
     const v: unknown = await r.json();
-    return isObject(v) && typeof v.name === "string"
-      ? { name: v.name, pairing: !!v.pairing }
-      : null;
+    if (!isObject(v) || typeof v.name !== "string") return null;
+    // Reached over the internet: STUN servers for the browser's public
+    // address (only `stun:` addresses, whatever else came).
+    const stun = Array.isArray(v.stun)
+      ? v.stun.filter((s: unknown): s is string => typeof s === "string" && s.startsWith("stun:"))
+      : [];
+    return { name: v.name, pairing: !!v.pairing, ...(stun.length > 0 ? { stun } : {}) };
   } catch {
     return null;
   }
@@ -167,9 +171,37 @@ export function holdSession(session: LiveSession): () => void {
   };
 }
 
-/** Starts a session with the host serving this page. */
-export async function connect(pin: string, hostName: string): Promise<ConnectResult> {
-  const pc = new RTCPeerConnection();
+/** How long the browser looks for its addresses before it offers. */
+const GATHER_MS = 2000;
+
+/** Waits until `pc` has gathered its candidates (or `ms` passed). */
+export function gathered(pc: RTCPeerConnection, ms = GATHER_MS): Promise<void> {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      pc.removeEventListener("icegatheringstatechange", check);
+      resolve();
+    };
+    const check = () => {
+      if (pc.iceGatheringState === "complete") done();
+    };
+    const timer = setTimeout(done, ms);
+    pc.addEventListener("icegatheringstatechange", check);
+  });
+}
+
+/**
+ * Starts a session with the host serving this page. `stun`: the page was
+ * reached over the internet; the browser then finds its public address
+ * first and offers it, so that host and browser punch through their NATs.
+ */
+export async function connect(
+  pin: string,
+  hostName: string,
+  stun: string[] = [],
+): Promise<ConnectResult> {
+  const pc = new RTCPeerConnection(stun.length > 0 ? { iceServers: [{ urls: stun }] } : undefined);
   const stream = new MediaStream();
   pc.addTransceiver("video", { direction: "recvonly" });
   pc.addTransceiver("audio", { direction: "recvonly" });
@@ -185,8 +217,12 @@ export async function connect(pin: string, hostName: string): Promise<ConnectRes
   // Pointer moves: one lost on the network must not hold up the next.
   const moves = pc.createDataChannel("moves", { ordered: false, maxRetransmits: 0 });
   try {
-    const offer = await pc.createOffer();
+    let offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    if (stun.length > 0) {
+      await gathered(pc);
+      offer = pc.localDescription ?? offer;
+    }
     let r: Response;
     try {
       r = await fetch("/api/connect", {

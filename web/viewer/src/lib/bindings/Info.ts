@@ -3,4 +3,9 @@
 /**
  * `GET /api/info`: who the host is and whether it shows a PIN.
  */
-export type Info = { name: string, pairing: boolean, };
+export type Info = { name: string, pairing: boolean, 
+/**
+ * For a page reached at a public name: STUN servers (`stun:…`) the
+ * browser asks for its public address before it offers.
+ */
+stun?: Array<string>, };

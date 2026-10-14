@@ -57,8 +57,8 @@ a TURN relay, are built ([over the internet](internet.md)). What is left:
 - **See it live** between two homes, on a phone's hotspot (carrier-grade NAT) and on IPv6 only.
 - **Port forwarding by the router** live against a FritzBox (built and tested against routers the
   tests play).
-- **The web viewer over the internet**: HTTPS for its page and the PIN, the host's public
-  candidates and ICE servers for the browser ([stage 5](internet.md#stages)).
+- **A relay for the web viewer** (TURN credentials for browsers that come with the PIN), for
+  networks where the browser's and the host's NATs cannot be punched.
 
 ## 6. Quality
 

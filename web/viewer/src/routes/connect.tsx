@@ -106,7 +106,7 @@ function HostForm({ host }: { host: HostInfo }) {
         if (!valid || busy) return;
         setBusy(true);
         setError(null);
-        void connect(pin, host.name).then((r) => {
+        void connect(pin, host.name, host.stun).then((r) => {
           if ("session" in r) {
             void navigate({
               to: "/session/$deviceId",

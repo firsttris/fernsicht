@@ -80,6 +80,12 @@ struct Args {
     /// No web viewer.
     #[arg(long)]
     no_web: bool,
+    /// A public name the web viewer is reached at through a tunnel (e.g.
+    /// a Cloudflare Tunnel to this port with HTTPS): fernsicht.example.org,
+    /// or *.trycloudflare.com for a quick tunnel (repeatable). Browsers
+    /// there get the host's public address and STUN (docs/internet.md).
+    #[arg(long = "web-public-name")]
+    web_public: Vec<String>,
     /// Leave the GPU's clocks alone during sessions (by default they are
     /// raised while someone watches, see docs/installation.md; also switchable
     /// in the app).
@@ -291,6 +297,7 @@ fn main() -> anyhow::Result<()> {
         description: HostDescription::of_this_machine(&encoder),
         web: (!args.no_web).then(|| args.web.clone()),
         web_root: args.web_root.clone().or_else(installed_viewer),
+        web_public: args.web_public.clone(),
         encoder,
         stun: args.stun.clone(),
         relay_max_kbps: args.relay_max_bitrate,

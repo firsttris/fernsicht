@@ -52,6 +52,10 @@ pub struct HostConfig {
     pub web: Option<String>,
     /// The built viewer (`web/viewer/dist`) the web server serves.
     pub web_root: Option<PathBuf>,
+    /// Public names the web viewer is reached at through a tunnel (e.g.
+    /// `fernsicht.example.org`, or `*.trycloudflare.com`): browsers there
+    /// come over the internet.
+    pub web_public: Vec<String>,
     /// Settings the desktop's user changes while the host runs.
     pub settings: Arc<HostSettings>,
     /// Where the GPU's clock settings are noted during a session, so a
@@ -342,6 +346,7 @@ impl Default for HostConfig {
             description: HostDescription::default(),
             web: None,
             web_root: None,
+            web_public: Vec::new(),
             settings: Arc::default(),
             power_record: None,
             stun: vec![DEFAULT_STUN.into()],

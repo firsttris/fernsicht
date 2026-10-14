@@ -84,7 +84,7 @@ the [installation guide](https://firsttris.github.io/fernsicht/installation.html
 | 🎞️ **AV1, HEVC, H.264** | Each session takes the best codec both sides do in hardware; switchable in the settings; 10-bit desktops stream in 10 bit (HEVC Main 10, AV1) without banding; HDR desktops are recognised and tone-mapped for the client's display |
 | 🔊 **Sound** | What the host plays, Opus with 5 ms frames, a 15 ms jitter buffer that hides loss |
 | 🔐 **Pairing and encryption** | Pair once with a PIN (SPAKE2, no offline guessing), Noise IK per session, ChaCha20-Poly1305 for every packet, only paired devices get in |
-| 🌐 **Web viewer** | The host serves it itself: any browser in the LAN, PIN once, WebRTC with AV1 or H.264; on phones with gestures, touchpad mode, pinch zoom and the on-screen keyboard |
+| 🌐 **Web viewer** | The host serves it itself: any browser in the LAN, PIN once, WebRTC with AV1 or H.264; on phones with gestures, touchpad mode, pinch zoom and the on-screen keyboard; over the internet through a tunnel with HTTPS |
 | 🌍 **Over the internet** | Your own rendezvous service (a free Cloudflare Worker, or self-hosted): paired devices find the host from anywhere without a VPN or port forwarding; direct by hole punching and IPv6, through a TURN relay only where nothing else gets through; the service sees nothing of the session |
 | 📶 **Bad networks** | Forward error correction sized from the measured loss, bitrate adaptation before packets are lost (queue delay, ECN marks); 1 % loss costs no frame |
 | 🧰 **Host as a service** | systemd unit, encoder picked for the GPU, GPU clocks raised during sessions, pairing and status from the app or the command line |
@@ -167,7 +167,8 @@ homes yet.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/firsttris/fernsicht/tree/main/web/rendezvous-worker)
 
-A VPN such as Tailscale or WireGuard works too, and is for now the way for the web viewer
+The web viewer goes over the internet through a tunnel with HTTPS (a Cloudflare Tunnel). A VPN such
+as Tailscale or WireGuard works too
 ([remote access](https://firsttris.github.io/fernsicht/remote-access.html)).
 </details>
 

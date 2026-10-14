@@ -35,6 +35,7 @@ fernsicht-host-agent disconnect  # end the running session (a device's or a brow
 | `--control` | `/run/fernsicht/control.sock` for the service, else the user's runtime directory | the running host's control socket |
 | `--web <addr>` | `0.0.0.0:47800` | TCP address of the web viewer (page and API) |
 | `--no-web` | | no web viewer |
+| `--web-public-name <name>` | | a public name the web viewer is reached at through a tunnel with HTTPS, e.g. `fernsicht.example.org` or `*.trycloudflare.com` (repeatable): browsers there get STUN, the host's public address and full ICE ([over the internet](internet.md#the-web-viewer)) |
 | `--web-root` | `../share/fernsicht/viewer` next to the program | the built web viewer (`web/viewer/dist`) |
 | `--no-gpu-boost` | | leave the GPU's clocks alone during sessions |
 | `--rendezvous <url>` | the one set in the app | the rendezvous service for connections over the internet, for this run ([over the internet](internet.md)) |

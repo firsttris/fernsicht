@@ -2,10 +2,10 @@
 
 !!! note "Status: built, not yet seen live"
     The rendezvous service (a Cloudflare Worker and a Rust service), hole punching over IPv4 and
-    IPv6, the TURN relay and port forwarding by the router are built and tested on one machine
-    (host, client, service, STUN and a real coturn; the Worker in `wrangler dev`; routers played by
-    the tests). The web viewer over the internet is the [stage](#stages) still to come. Nobody has connected two real homes
-    with it yet ([handover](handover.md#what-nobody-has-seen-live-yet)).
+    IPv6, the TURN relay, port forwarding by the router and the web viewer at a public name are
+    built and tested on one machine: host, client, service, STUN and a real coturn; the Worker in
+    `wrangler dev`; routers and a browser played by the tests. Nobody has connected two real
+    homes with it yet ([handover](handover.md#what-nobody-has-seen-live-yet)).
 
 This page is how Fernsicht connects two devices anywhere, without a VPN and without setting up
 the router, the way remote desktop tools do.
@@ -326,18 +326,34 @@ are limited per address and in total).
 
 ## The web viewer
 
-The browser has all of this built in (ICE in WebRTC); what is missing is on the host's side, and it
-comes last:
+The browser has ICE built in; the host's side needs a public name for its page and a path for the
+picture:
 
-- **HTTPS** for the page and the PIN: through a Cloudflare Tunnel to the host's web server, which
-  carries the page and the WebRTC offer and answer (plain HTTP, no UDP needed), optionally behind
-  Cloudflare Access.
-- **The host's candidates** in its WebRTC answer: its server-reflexive address from STUN and its
-  global IPv6 addresses, as well as the LAN address. str0m does no I/O of its own, so the host asks
-  STUN itself and adds the candidate.
-- **ICE servers for the browser:** STUN and short-lived TURN credentials, handed to the page with
-  the answer, so the browser relays where needed.
-- The check against DNS rebinding accepts the tunnel's public name once it is configured.
+- **HTTPS for the page and the PIN through a tunnel** to the host's web server: a Cloudflare
+  Tunnel (`cloudflared`) carries the page and the WebRTC offer and answer (plain HTTP inside, no UDP
+  needed). A quick tunnel needs no account:
+
+    ```sh
+    cloudflared tunnel --url http://localhost:47800      # prints https://<random>.trycloudflare.com
+    fernsicht-host-agent … --web-public-name '*.trycloudflare.com'
+    ```
+
+    A named tunnel gives a fixed name of one's own domain (`--web-public-name
+    fernsicht.example.org`), and Cloudflare Access can ask for a login before the page.
+- **The public name** is what makes a request one from the internet: the check against DNS
+  rebinding accepts it, and the browser's address for the PIN's attempt limits is the one the
+  tunnel names (`CF-Connecting-IP`, `X-Forwarded-For`), believed only from a tunnel on the same
+  machine (a connection from loopback).
+- **A path for the picture:** for such a browser the host binds its WebRTC socket to the address
+  it reaches the internet from, asks a STUN server for its public address and offers it as a
+  server-reflexive candidate, and runs **full ICE** instead of ICE lite: its own checks towards the
+  browser's candidates open its NAT while the browser's come in (hole punching, as for the app).
+  `/api/info` gives such a page the STUN servers; the browser looks for its public address with
+  them (up to 2 s) and offers it.
+- **Not built:** a relay for browsers. Where both sides are behind NATs that cannot be punched,
+  the web viewer needs a VPN or a forwarded port; the app has its relay.
+
+(`apps/host-agent/src/web/public.rs`, `web/viewer/src/lib/host.ts`)
 
 ## Security
 
@@ -380,7 +396,8 @@ their sizes, as any router on the way does.
    from the service, the relay's bitrate limit, “Relay” in the app. Done.
 4. **Port forwarding by the router** (PCP, NAT-PMP, UPnP IGD) as an option, with Discover answered
    only to neighbours. Done.
-5. **The web viewer over the internet:** HTTPS through a tunnel, the host's candidates, ICE servers.
+5. **The web viewer over the internet:** HTTPS through a tunnel, the public name, the host's
+   public address and full ICE, STUN for the browser. Done (a relay for browsers is not).
 
 ## Open questions
 

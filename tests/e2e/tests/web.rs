@@ -20,12 +20,25 @@ use str0m::{Candidate, Event, Input, Output, RtcConfig};
 
 /// A minimal HTTP/1.1 request; returns status and body.
 fn http(addr: SocketAddr, method: &str, path: &str, body: Option<&Value>) -> (u16, Vec<u8>) {
+    http_as(addr, &addr.to_string(), method, path, body)
+}
+
+/// The same, naming `host` in the request (a public name, through a
+/// tunnel on this machine).
+fn http_as(
+    addr: SocketAddr,
+    host: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> (u16, Vec<u8>) {
     let mut s = TcpStream::connect(addr).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let body = body.map(|b| b.to_string()).unwrap_or_default();
     write!(
         s,
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\
+         X-Forwarded-For: 203.0.113.9\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     )
@@ -457,5 +470,117 @@ fn a_narrow_path_lowers_the_browsers_bitrate() {
         kbps > 0 && kbps <= KBPS,
         "the browser's estimate brought the bitrate to {kbps} kbit/s"
     );
+    host.stop();
+}
+
+/// A STUN server answering Binding requests with the address it saw.
+fn stun_server() -> SocketAddr {
+    use fernsicht_internet::stun::{Builder, Class, Message, attr, method};
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = socket.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, from)) = socket.recv_from(&mut buf) {
+            if let Ok(m) = Message::parse(&buf[..n])
+                && (m.method, m.class) == (method::BINDING, Class::Request)
+            {
+                let answer = Builder::new(method::BINDING, Class::Success, m.transaction)
+                    .xor_address(attr::XOR_MAPPED_ADDRESS, from)
+                    .finish();
+                let _ = socket.send_to(&answer, from);
+            }
+        }
+    });
+    addr
+}
+
+#[test]
+fn a_browser_over_the_internet_gets_stun_and_full_ice() {
+    let _serial = exclusive();
+    let sec = Arc::new(HostSecurity::new(
+        Identity::generate(),
+        "zentrale",
+        Trusted::default(),
+        None,
+    ));
+    let stun = stun_server();
+    let host = Host::start(HostConfig {
+        security: Some(sec.clone()),
+        web: Some("127.0.0.1:0".into()),
+        web_public: vec!["fernsicht.example.org".into()],
+        stun: vec![stun.to_string()],
+        ..HostConfig::default()
+    });
+    let web = host.web_addr().expect("web server");
+    const PUBLIC: &str = "fernsicht.example.org";
+
+    // In the LAN no STUN; at the public name the browser gets it.
+    let (_, body) = http(web, "GET", "/api/info", None);
+    assert_eq!(
+        json_of(&body),
+        json!({"name": "zentrale", "pairing": false})
+    );
+    let (status, body) = http_as(web, PUBLIC, "GET", "/api/info", None);
+    assert_eq!(status, 200);
+    assert_eq!(json_of(&body)["stun"], json!([format!("stun:{stun}")]));
+    // Another name is still another site's.
+    let (status, _) = http_as(web, "evil.example.org", "GET", "/api/info", None);
+    assert_eq!(status, 403);
+
+    let mut rtc = RtcConfig::new().build(Instant::now());
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let local = socket.local_addr().unwrap();
+    rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
+    let mut change = rtc.sdp_api();
+    change.add_media(MediaKind::Video, Direction::RecvOnly, None, None, None);
+    change.add_channel("fernsicht".into());
+    let (offer, pending) = change.apply().unwrap();
+    sec.open_pairing("482913");
+    let request = json!({"pin": "482913", "offer": offer});
+    let (status, body) = http_as(web, PUBLIC, "POST", "/api/connect", Some(&request));
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let reply = json_of(&body);
+    let sdp = reply["answer"]["sdp"].as_str().unwrap().to_owned();
+    assert!(
+        !sdp.contains("a=ice-lite"),
+        "full ICE over the internet:\n{sdp}"
+    );
+    assert!(sdp.contains("a=candidate:"), "{sdp}");
+    let answer: SdpAnswer = serde_json::from_value(reply["answer"].clone()).unwrap();
+    rtc.sdp_api().accept_answer(pending, answer).unwrap();
+
+    let mut frames = 0;
+    let mut buf = vec![0u8; 2048];
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while frames < 10 {
+        assert!(Instant::now() < deadline, "no picture over full ICE");
+        let timeout = loop {
+            match rtc.poll_output().unwrap() {
+                Output::Timeout(t) => break t,
+                Output::Transmit(t) => {
+                    socket.send_to(&t.contents, t.destination).unwrap();
+                }
+                Output::Event(Event::MediaData(_)) => frames += 1,
+                Output::Event(_) => {}
+            }
+        };
+        let wait = timeout.saturating_duration_since(Instant::now());
+        socket
+            .set_read_timeout(Some(wait.max(Duration::from_millis(1))))
+            .unwrap();
+        let input = match socket.recv_from(&mut buf) {
+            Ok((n, source)) => Input::Receive(
+                Instant::now(),
+                Receive {
+                    proto: Protocol::Udp,
+                    source,
+                    destination: local,
+                    contents: buf[..n].try_into().unwrap(),
+                },
+            ),
+            Err(_) => Input::Timeout(Instant::now()),
+        };
+        rtc.handle_input(input).unwrap();
+    }
     host.stop();
 }

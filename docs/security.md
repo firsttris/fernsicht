@@ -119,5 +119,11 @@ nothing about them changes. What is added, and why it holds:
 - The host's small web server takes one request per connection with everything bounded: a request
   head of at most 8 KiB and 32 headers, a body of at most 64 KiB, 10 s to send it, 32 connections
   at once. A slow or oversized request cannot tie up the root service.
-- **The page and the PIN travel over plain HTTP.** That is acceptable in your own LAN, not over the
-  internet. Use a VPN for remote access ([remote access](remote-access.md)).
+- **The page and the PIN travel over plain HTTP in the LAN.** That is acceptable in your own LAN.
+  Over the internet the page goes through a tunnel with HTTPS (`--web-public-name`,
+  [over the internet](internet.md#the-web-viewer)); its name is the only one besides the machine's
+  own that the API answers to. The browser's address for the PIN's attempt limits comes from the
+  tunnel's header only when the tunnel runs on the host itself (a connection from loopback), so a
+  browser cannot claim another's address. Anyone who finds the public page can try PINs within
+  those limits while pairing is open; Cloudflare Access in front of it keeps strangers out
+  entirely.

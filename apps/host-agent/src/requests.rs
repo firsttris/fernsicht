@@ -44,7 +44,7 @@ impl HostAgent {
             let _ = req.reply.send(Err(e));
             return;
         }
-        let (setup, answer) = match crate::web::accept(req.offer, req.local_ip) {
+        let (setup, answer) = match crate::web::accept(req.offer, req.local_ip, req.public) {
             Ok(r) => r,
             Err(e) => {
                 log::warn!("web: {}: {e:#}", req.browser.ip());
