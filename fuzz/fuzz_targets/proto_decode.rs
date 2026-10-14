@@ -50,6 +50,8 @@ fuzz_target!(|data: &[u8]| {
         Packet::Rumble(p) => p.encode(&mut buf),
         Packet::Clipboard(c, data) => c.encode(data, &mut buf),
         Packet::ClipboardAck(p) => p.encode(&mut buf),
+        Packet::Punch(p) => p.encode(&mut buf),
+        Packet::Rendezvous(p) => p.encode(&mut buf),
     };
     assert_eq!(Packet::decode(&buf[..n]), Ok(packet));
 });

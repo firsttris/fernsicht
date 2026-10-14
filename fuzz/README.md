@@ -17,6 +17,7 @@ cargo +nightly fuzz run synthetic_decode -- -max_total_time=60
 | `reassembler` | Hostile datagram streams: no panic, completed frames have the declared length |
 | `fec_roundtrip` | Arbitrary frames and loss within the FEC budget reconstruct exactly |
 | `synthetic_decode` | Malformed bitstreams are rejected without panicking |
+| `stun_turn` | Any STUN/TURN message or ChannelData from the internet: the parser, its attribute readers and integrity checks, and the TURN client fed with it never panic |
 
 CI runs every target for a short time on each push and longer every night.
 Crashes are uploaded as artifacts; add the input to a regression test before
