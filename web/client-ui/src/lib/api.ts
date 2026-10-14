@@ -36,6 +36,8 @@ export const inApp = () => isTauri();
 export type { Failure } from "./bindings/Failure";
 export type { FailureCode } from "./bindings/FailureCode";
 export type { HostService } from "./bindings/HostService";
+export type { InternetStatus } from "./bindings/InternetStatus";
+export type { Rung } from "./bindings/Rung";
 export type { SessionState } from "./bindings/SessionState";
 /** The host running on this computer, as its control socket reports it. */
 export type HostStatus = Status;
@@ -162,6 +164,8 @@ export const actions = {
   openPairing: () => invoke<PairingOpened>("open_pairing"),
   share: () => invoke<void>("share_this_machine"),
   setGpuBoost: (on: boolean) => invoke<void>("set_gpu_boost", { on }),
+  /** This computer's host's rendezvous service; empty: none. */
+  setRendezvous: (url: string) => invoke<void>("set_rendezvous", { url }),
   /** Removes a device paired with this computer's host (by its key); its
    * session ends. */
   unpairFromHost: (device: string) => invoke<void>("unpair_from_host", { device }),
@@ -176,6 +180,8 @@ const FAILURE_TEXT: Record<FailureCode, string | null> = {
     "Der Host konnte die Sitzung nicht starten (kein Bild oder kein Video-Encoder). Sein Log sagt, warum.",
   "no-answer": "Keine Antwort vom Host. Läuft er, und ist die Kopplung offen?",
   "host-silent": "Der Host antwortet nicht. Läuft er noch?",
+  unreachable:
+    "Der Host ist über das Internet nicht erreichbar. Läuft er, und ist er bei seinem Rendezvous-Dienst angemeldet?",
   "gpu-lost": "Die Grafikkarte dieses Computers reagiert nicht mehr; die Sitzung wurde beendet.",
   cancelled: "Abgebrochen.",
   "pkexec-missing": "Es fehlt pkexec (polkit), um als Administrator einzurichten.",

@@ -125,6 +125,11 @@ async fn stop_sharing(backend: Shared<'_>) -> Answer<()> {
 }
 
 #[tauri::command]
+async fn set_rendezvous(backend: Shared<'_>, url: String) -> Answer<()> {
+    blocking(&backend, move |b| b.set_rendezvous(&url)).await
+}
+
+#[tauri::command]
 async fn unpair_from_host(backend: Shared<'_>, device: String) -> Answer<()> {
     blocking(&backend, move |b| b.unpair_from_host(&device)).await
 }
@@ -161,6 +166,7 @@ fn main() {
             share_this_machine,
             stop_sharing,
             set_gpu_boost,
+            set_rendezvous,
         ])
         .build(tauri::generate_context!())
         .expect("starting the app")

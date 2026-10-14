@@ -13,6 +13,7 @@ import {
   saveSettings,
   thisMachineQuery,
 } from "../lib/api";
+import { InternetSetting } from "./internet-setting";
 
 const SIZES = [
   { value: "host", label: "Wie der Host", size: [0, 0] },
@@ -170,6 +171,7 @@ function HostSettings() {
           {errorText(boost.error)}
         </p>
       )}
+      <InternetSetting internet={host.internet} />
       <Setting
         title="Gekoppelte Geräte"
         hint="Diese Geräte dürfen sich mit diesem Rechner verbinden. Ein entferntes Gerät muss neu gekoppelt werden; läuft gerade eine Sitzung mit ihm, endet sie."
