@@ -190,8 +190,55 @@ The decision from the [next steps](next-steps.md#open-decisions) is **both**:
 - **A small Rust service** (`apps/rendezvous`, one binary) with the same protocol, for whoever
   rather runs everything themselves: on a small VPS, next to coturn.
 
-Which service a device uses is a setting (its URL). Whether the project also runs a public default,
-so that it works without setting anything up, is still open ([open questions](#open-questions)).
+### Everyone runs their own
+
+The project runs **no public rendezvous service**: whoever wants to connect over the internet
+deploys their own, once, for all their devices. Nobody but that user (and Cloudflare, or their own
+VPS) sees when their devices connect and from where, nobody's relay traffic is paid by someone
+else, and an outage concerns only one user. The protocol is the same either way, so a public
+service can still come later.
+
+Setting it up with Cloudflare takes a few minutes:
+
+1. **A Cloudflare account** (free; no own domain needed).
+2. **Deploy the Worker**, either with the **“Deploy to Cloudflare” button** in the README and on this
+   page (it copies the repository to one's GitHub account and deploys the Worker with its Durable
+   Object; their configuration is in the repository's `wrangler.jsonc`), or by hand:
+
+    ```sh
+    cd services/rendezvous-worker
+    npx wrangler login
+    npx wrangler deploy
+    ```
+
+    Either way the Worker gets an address like `https://fernsicht-rendezvous.<name>.workers.dev`.
+3. **Optionally the relay:** create a TURN key in the Cloudflare dashboard (Realtime → TURN) and
+   give it to the Worker as secrets (`npx wrangler secret put TURN_KEY_ID`, `TURN_API_TOKEN`).
+   Without them everything works except the relay: networks that allow no direct path cannot
+   connect.
+4. **Enter the address on the host**, in the app (“Dieser Rechner” → “Verbindung über das
+   Internet”) or with `fernsicht-host-agent --rendezvous <url>`. The host registers there and the
+   app shows whether that worked (“Erreichbar über das Internet”) and whether the Worker can hand
+   out relay credentials.
+
+With the Rust service, step 2 is running `fernsicht-rendezvous` on a VPS behind HTTPS, and step 3
+is coturn with a shared secret given to both.
+
+### The clients learn the address from the host
+
+The address belongs to the host and is entered only there. **Clients learn it from the host**:
+
+- **at pairing:** the host's sealed message in step 2 of pairing carries its rendezvous address
+  next to its key and name ([security](security.md#pairing-with-a-pin));
+- **in every session:** the HelloAck carries it, so a client that paired before the address was
+  set, or before it changed, picks it up the next time it connects (in the LAN, or over the old
+  address while it still works).
+
+A client stores it with the paired host and uses it whenever the host is not found otherwise. A
+laptop or phone paired once at home therefore connects from anywhere without being set up; only
+the host was. Since the address arrives inside a sealed message from the host, nobody else can
+point a client at a different service (and a different service could do no more than drop
+messages anyway).
 
 ### Limits
 
@@ -292,8 +339,9 @@ their sizes, as any router on the way does.
 
 1. **This design.**
 2. **Rendezvous, STUN and hole punching**, with IPv6 candidates: the Rust service and the Worker,
-   the host's registration, the client's connect, the Punch packet, choosing a path. Covers most
-   home networks and IPv6.
+   the host's registration, the client's connect, the Punch packet, choosing a path, the address
+   handed to clients at pairing and in HelloAck, the deploy button and its instructions. Covers
+   most home networks and IPv6.
 3. **The relay:** a TURN client in the client (allocation, permissions, ChannelData), credentials
    from the service, the relay's bitrate limit, “über Relay” in the app.
 4. **Port forwarding by the router** (PCP, NAT-PMP, UPnP IGD) as an option, with Discover answered
@@ -302,10 +350,9 @@ their sizes, as any router on the way does.
 
 ## Open questions
 
-- **A public default rendezvous service run by the project**, so that it works without setting
-  anything up, or only one's own (a Worker in one's own Cloudflare account, or the Rust service)?
-  A public one costs little (Cloudflare's free plan covers a lot) but is a service to keep running;
-  it would hand out no relay credentials, or only with a tight limit.
+- **A public rendezvous service later**, for users who do not want to set one up? Not now
+  ([everyone runs their own](#everyone-runs-their-own)); if it comes, it would hand out no relay
+  credentials, or only with a tight limit.
 - **Pairing over the internet:** today pairing needs the host's address. With the rendezvous, a
   client could pair with a host it cannot see in the LAN using a short code that carries the
   rendezvous ID and the PIN. Worth it, or is pairing in the LAN once enough?

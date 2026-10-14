@@ -69,10 +69,8 @@ the internet would need:
 
 - **Name and brand.**
 - **First client:** our own client (as now) or also Moonlight compatibility.
-- **A public default rendezvous service** run by the project, or only one's own
-  ([over the internet](internet.md#open-questions)).
 
 Decided: the license (AGPL-3.0, commercial license on request), the codecs (AV1, HEVC and H.264,
 chosen per connection) and the rendezvous service for the internet: one protocol with two
-implementations, a Cloudflare Worker and a small Rust service to host oneself
-([over the internet](internet.md#two-implementations)).
+implementations, a Cloudflare Worker and a small Rust service; everyone runs their own, the host
+hands its address to its clients ([over the internet](internet.md#everyone-runs-their-own)).
