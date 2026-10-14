@@ -1,7 +1,7 @@
 # Remote access
 
 Fernsicht is built for the LAN. Over the internet it works today through a VPN that makes your
-devices look like one network; built-in NAT traversal is on the [roadmap](next-steps.md).
+devices look like one network; built-in NAT traversal is planned ([design](internet.md)).
 
 ## What is missing for the internet
 

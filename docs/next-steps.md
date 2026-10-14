@@ -55,8 +55,8 @@ Today Fernsicht works in the LAN or over a VPN ([remote access](remote-access.md
 the internet would need:
 
 - **NAT traversal and a rendezvous service** so devices find each other without port forwarding, and
-  a **relay** for networks where hole punching fails. Open decision: self-hosted only, or a hosted
-  rendezvous service as well.
+  a **relay** for networks where hole punching fails. The design, in stages, is on
+  [over the internet](internet.md).
 - **HTTPS for the web viewer** (today the page and the PIN travel over plain HTTP) and **TURN** for
   browsers.
 
@@ -69,7 +69,10 @@ the internet would need:
 
 - **Name and brand.**
 - **First client:** our own client (as now) or also Moonlight compatibility.
-- **Self-hosted only, or a hosted rendezvous service** for connections over the internet.
+- **A public default rendezvous service** run by the project, or only one's own
+  ([over the internet](internet.md#open-questions)).
 
-Decided: the license (AGPL-3.0, commercial license on request) and the codecs (AV1, HEVC and H.264,
-chosen per connection).
+Decided: the license (AGPL-3.0, commercial license on request), the codecs (AV1, HEVC and H.264,
+chosen per connection) and the rendezvous service for the internet: one protocol with two
+implementations, a Cloudflare Worker and a small Rust service to host oneself
+([over the internet](internet.md#two-implementations)).
