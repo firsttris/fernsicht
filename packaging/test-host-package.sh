@@ -97,7 +97,16 @@ fedora | debian | ubuntu)
     if sh "$dist/install.sh" 2>/dev/null; then fail "install.sh replaced the package"; fi
     if [ "$ID" = fedora ]; then dnf remove -y -q fernsicht-host; else apt-get remove -y -qq fernsicht-host >/dev/null; fi
     gone /usr/lib/fernsicht-host /usr/bin/fernsicht-host-agent /usr/lib/systemd/system/fernsicht-host-agent.service
-    # Its dependencies stay installed: the archive below needs the same.
+    ;;
+esac
+
+# What install.sh asks for when it is missing (dnf removes the package's
+# dependencies along with it).
+case "$ID" in
+fedora) dnf install -y -q libva libdrm ;;
+debian | ubuntu)
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+        libva2 libva-drm2 libdrm2 >/dev/null
     ;;
 esac
 
