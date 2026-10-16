@@ -55,6 +55,8 @@ Under “Dieser Rechner” (this computer):
 - “Host aktualisieren auf …” (update the host to …) appears when the app carries a newer host than
   the installed one.
 - “Freigabe beenden” (stop sharing) removes the service again.
+- A host installed without the app (`install.sh` or the `.deb`/`.rpm`, [on a server](installation.md#on-a-server-over-ssh))
+  shows as installed, with its version.
 
 ## A session
 

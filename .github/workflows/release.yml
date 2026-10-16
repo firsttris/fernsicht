@@ -3,7 +3,9 @@ name: Release
 # A tag vX.Y.Z (from the "Bump version" button or pushed from a checkout)
 # runs the checks (unless main's CI already ran them), builds
 # Fernsicht.AppImage (the app, the stream window, the host and the web viewer
-# in one file) and creates the GitHub release with it.
+# in one file) and the host alone for servers (an archive with install.sh, a
+# .deb and an .rpm), installs those on Arch, Fedora, Debian and Ubuntu, and
+# creates the GitHub release with all of it.
 # Run by hand on a branch it only checks and builds (no release), e.g. to try
 # the packaging.
 on:
@@ -33,7 +35,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   build:
-    name: Build · AppImage
+    name: Build · AppImage, host packages
     needs: [tested, checks]
     # The checks either passed or were not needed.
     if: ${{ !cancelled() && needs.tested.result == 'success' && needs.checks.result != 'failure' }}
@@ -82,11 +84,26 @@ jobs:
         env:
           PKG_CONFIG_PATH: ${{ github.workspace }}/target/ffmpeg/lib/pkgconfig
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/ffmpeg/lib
+      # nfpm makes the .deb and the .rpm. A fixed release, checked by Go's
+      # checksum database (sum.golang.org) as it is fetched; it needs a newer
+      # Go than the runner's, which GOTOOLCHAIN fetches the same way.
+      - name: nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+        env:
+          GOTOOLCHAIN: auto
+          GOBIN: ${{ runner.temp }}/bin
+      # The host just built for the AppImage, alone: archive, .deb, .rpm.
+      - run: ./packaging/host-bundle.sh target/host-bundle
+        env:
+          NFPM: ${{ runner.temp }}/bin/nfpm
       - name: Collect release files
         run: |
           set -euo pipefail
           mkdir -p dist
           cp apps/desktop/target/release/bundle/appimage/Fernsicht-*.AppImage dist/
+          cp target/host-bundle/fernsicht-host-*.tar.gz target/host-bundle/*.deb \
+            target/host-bundle/*.rpm target/host-bundle/install.sh dist/
+          # install.sh checks its download against this.
           (cd dist && sha256sum -- * > SHA256SUMS)
           ls -l dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -95,8 +112,29 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  release:
+  # The host's packages on fresh distributions, installed as a user would:
+  # through install.sh (piped into sh), and as a .deb or .rpm
+  # (packaging/test-host-package.sh).
+  host-packages:
+    name: Install · ${{ matrix.image }}
     needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["archlinux:latest", "fedora:latest", "debian:stable", "ubuntu:24.04"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - run: sh packaging/test-host-package.sh dist
+
+  release:
+    needs: [build, host-packages]
     if: startsWith(github.ref, 'refs/tags/v') # run by hand on a branch: only checks and build
     uses: firsttris/workflows/.github/workflows/github-release.yml@v1
     with:
@@ -106,6 +144,9 @@ jobs:
         Download **Fernsicht-<Version>-x86_64.AppImage**, make it executable and start it:
         on the computer you connect from, and on the computer you want to control (there,
         under “Dieser Rechner”, click “Diesen Rechner freigeben” – share this computer).
+        On a server without a screen at hand, over SSH, the host alone:
+        `curl -fsSL https://github.com/firsttris/fernsicht/releases/latest/download/install.sh | sudo sh`
+        (or the .deb / .rpm).
         Guide: https://firsttris.github.io/fernsicht/installation.html
     permissions:
       contents: write

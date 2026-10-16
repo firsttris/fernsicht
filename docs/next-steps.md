@@ -64,6 +64,10 @@ the internet would need:
 
 - **A test with real Chrome in CI** for the web viewer's WebRTC path.
 - **Live tests of the AppImage** on fresh installs of Bazzite, Fedora and Ubuntu.
+- **The host on a real server** through `install.sh` and the `.deb`/`.rpm`: CI installs them in
+  containers without systemd or a GPU; a headless machine with a dummy plug has not run them yet.
+- **More packages:** an AUR package for Arch (`fernsicht-host-bin`, from the release's archive), a
+  Copr or OBS repository for automatic updates, aarch64.
 
 ## Open decisions
 

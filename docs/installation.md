@@ -30,6 +30,70 @@ for it with only what Fernsicht uses (`packaging/ffmpeg.sh`): the
 distribution it is built on (Ubuntu 24.04, for a wide range of systems)
 has one too old for Vulkan Video.
 
+## On a server, over SSH
+
+For a computer you only reach over SSH, a server with a desktop but no one
+sitting at it: the host alone, without the app, in one command.
+
+```sh
+curl -fsSL https://github.com/firsttris/fernsicht/releases/latest/download/install.sh | sudo sh
+```
+
+```text
+Fernsicht-Host 0.1.7 läuft.
+  Gerät koppeln: sudo fernsicht-host-agent pair
+  Im Browser:    http://192.168.178.20:47800
+  Log:           journalctl -u fernsicht-host-agent.service -f
+  Entfernen:     sudo /opt/fernsicht/host/install.sh --uninstall
+```
+
+Then `sudo fernsicht-host-agent pair` shows a PIN; enter it in a browser at
+the address shown ([web viewer](web-viewer.md)) or pair the app with it.
+
+- **What it does:** it downloads `fernsicht-host-<version>-x86_64.tar.gz` from
+  the release, checks it against the release's `SHA256SUMS`, puts it in
+  `/opt/fernsicht/host`, links `/usr/local/bin/fernsicht-host-agent`, sets up
+  and starts the `fernsicht-host-agent` service (the same unit as the app's)
+  and opens TCP and UDP port 47800 if firewalld runs. A host shared from the
+  AppImage before is replaced.
+- **To read it first:** download `install.sh` from the
+  [release](https://github.com/firsttris/fernsicht/releases/latest), read it,
+  and run `sudo sh install.sh`. Run from an unpacked archive, it installs
+  that one instead of downloading.
+- **Update:** `sudo /opt/fernsicht/host/install.sh` (the latest release, or
+  `FERNSICHT_VERSION=0.1.7` before it for a given one). **Remove:**
+  `sudo /opt/fernsicht/host/install.sh --uninstall`. Keys and pairings in
+  `/var/lib/fernsicht` stay either way.
+- **Any distribution:** one build for all, x86_64 with systemd and glibc 2.39
+  or newer (Arch, Fedora 40+, Debian 13, Ubuntu 24.04 and newer; the release
+  installs it on these four in CI). It carries its own FFmpeg; the graphics
+  drivers' libraries come from the system: `libva` and `libdrm` (the script
+  names the packages if they are missing).
+- **A monitor must be on.** The host streams what the graphics card shows
+  ([KMS capture](kms-capture.md)): a desktop (or the login screen) on an
+  active output. Without a monitor, an HDMI or DisplayPort dummy plug keeps
+  one on; set up automatic login if you want the desktop rather than the
+  login screen. The graphics card needs a hardware video encoder (VAAPI or
+  NVENC; `vainfo | grep EncSlice` shows it). The AMD RX 6500 XT and 6400, for
+  example, have none.
+
+### As a .deb or .rpm
+
+The release also has the host as a package, with the same files, for systems
+whose package manager should own it:
+
+```sh
+sudo apt install ./fernsicht-host_0.1.7-1_amd64.deb     # Debian, Ubuntu
+sudo dnf install ./fernsicht-host-0.1.7-1.x86_64.rpm    # Fedora
+```
+
+It installs to `/usr/lib/fernsicht-host`, the service to
+`/usr/lib/systemd/system`, pulls in `libva` and `libdrm`, and enables and
+starts the service. Updating and removing go through `apt` or `dnf`;
+`install.sh` then leaves the host alone. A host installed before by the app
+or by `install.sh` is replaced. The app shows a packaged host as installed;
+“Diesen Rechner freigeben” there would put its own copy in front of it.
+
 ## From source
 
 There are two parts:
@@ -209,14 +273,16 @@ After that, this device can no longer connect until it is paired again.
 journalctl -u fernsicht-host-agent -f        # follow the log
 sudo systemctl stop fernsicht-host-agent     # stop (starts again at the next boot)
 sudo systemctl disable --now fernsicht-host-agent   # stop and no longer start automatically
-sudo ./packaging/install-host.sh --uninstall       # remove completely
+sudo ./packaging/install-host.sh --uninstall       # remove completely (built from source)
+sudo /opt/fernsicht/host/install.sh --uninstall    # remove completely (installed with install.sh)
 ```
 
 Keys and pairings are stored in `/var/lib/fernsicht` and are kept when you
 uninstall. If you delete the file `host.json` there, the host gets a new
 key. All devices must then be paired again.
 
-If the service reports
+If the service, built from source, reports
 `libavcodec.so.NN: cannot open shared object file` after a Bazzite update,
-the FFmpeg major version has changed. Then update the box
+the FFmpeg major version has changed (the AppImage and the release's host
+carry their own FFmpeg). Then update the box
 (`dev/setup.sh`), build again and install again.
