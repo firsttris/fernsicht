@@ -21,6 +21,9 @@ pub const UNIT_PATH: &str = "/etc/systemd/system/fernsicht-host-agent.service";
 /// install or update removes it.
 pub const OLD_SERVICE: &str = "fernsicht-host.service";
 pub const OLD_UNIT_PATH: &str = "/etc/systemd/system/fernsicht-host.service";
+/// The unit of the host installed as a .deb or .rpm (packaging/nfpm.yaml);
+/// one in /etc, the app's, takes precedence as it does for systemd.
+pub const PACKAGED_UNIT_PATH: &str = "/usr/lib/systemd/system/fernsicht-host-agent.service";
 pub const INSTALL_DIR: &str = "/opt/fernsicht";
 
 /// The unit `packaging/install-host.sh` installs, the one source of it.
@@ -197,12 +200,18 @@ fn bundle() -> Option<(PathBuf, PathBuf)> {
     (appimage.is_file() && host.is_file()).then_some((appimage, host))
 }
 
+/// The unit the service runs from: the first one there, in systemd's order
+/// (/etc before the package's /usr/lib).
+fn installed_unit(read: impl Fn(&str) -> Option<String>) -> Option<String> {
+    [UNIT_PATH, OLD_UNIT_PATH, PACKAGED_UNIT_PATH]
+        .into_iter()
+        .find_map(read)
+}
+
 /// What is installed here, and what this app could install.
 pub fn status() -> HostService {
     // Under its old name until the next update renames it.
-    let unit = std::fs::read_to_string(UNIT_PATH)
-        .or_else(|_| std::fs::read_to_string(OLD_UNIT_PATH))
-        .ok();
+    let unit = installed_unit(|path| std::fs::read_to_string(path).ok());
     let active = [SERVICE, OLD_SERVICE].iter().any(|service| {
         Command::new("systemctl")
             .args(["is-active", "--quiet", service])
@@ -286,6 +295,20 @@ mod tests {
             Path::new("/opt/fernsicht/app/usr/bin/fernsicht-host-agent")
         );
         assert_eq!(exec_start("[Unit]\n"), None);
+    }
+
+    #[test]
+    fn a_host_installed_as_a_package_is_found_and_the_apps_unit_wins() {
+        let package = "ExecStart=/usr/lib/fernsicht-host/bin/fernsicht-host-agent\n";
+        let only_package = |path: &str| (path == PACKAGED_UNIT_PATH).then(|| package.to_owned());
+        assert_eq!(installed_unit(only_package).as_deref(), Some(package));
+        let both =
+            |path: &str| (path == UNIT_PATH || path == PACKAGED_UNIT_PATH).then(|| path.to_owned());
+        assert_eq!(installed_unit(both).as_deref(), Some(UNIT_PATH));
+        assert_eq!(installed_unit(|_| None), None);
+        // Where the package puts it.
+        let nfpm = include_str!("../../../packaging/nfpm.yaml");
+        assert!(nfpm.contains(&format!("dst: {PACKAGED_UNIT_PATH}")));
     }
 
     #[test]

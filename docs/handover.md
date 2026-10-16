@@ -289,6 +289,15 @@ Confirmed live (2026-10-10, according to the user):
     gyro aiming or touchpad controls (or `evtest` on “Fernsicht DualSense
     pad 1 Motion Sensors”) follows the pad's movements.
 
+16. **The host on a server, without the app.** `install.sh`, the `.deb`
+    and the `.rpm` from the release (`packaging/host-bundle.sh`) are
+    installed in containers in CI (no systemd, no GPU), never on a real
+    machine. On a headless machine with KDE, a dummy plug and SSH only:
+    `curl -fsSL …/releases/latest/download/install.sh | sudo sh`, then
+    `sudo fernsicht-host-agent pair`; the service runs, the log names the
+    GPU's encoder and the monitor, and a browser at `http://<server>:47800`
+    shows the desktop.
+
 ## Open tasks, by importance
 
 The findings of the code review (bugs, security, performance, clean-up) are listed with

@@ -1,0 +1,69 @@
+# The host as a .deb and an .rpm: the same files as in the archive
+# (packaging/host-bundle.sh puts them together, fills in ${STAGE},
+# ${PACKAGE} and ${VERSION} and runs nfpm with this). Installed in
+# /usr/lib/fernsicht-host, the service in /usr/lib/systemd/system; the
+# package manager updates and removes it.
+name: fernsicht-host
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: 1
+section: net
+priority: optional
+maintainer: Tristan Teufel <tristanteufel@googlemail.com>
+vendor: Fernsicht
+homepage: https://github.com/firsttris/fernsicht
+license: AGPL-3.0-only
+description: |-
+  Fernsicht host: low-latency remote desktop for Linux.
+  Streams the screen (KMS capture, VAAPI or NVENC) to paired devices and to
+  browsers (the web viewer on port 47800), and takes their mouse, keyboard
+  and controllers. Runs as the system service fernsicht-host-agent.
+
+# The GPU's libraries stay the system's (FFmpeg comes with the package).
+overrides:
+  deb:
+    depends:
+      - libva2
+      - libva-drm2
+      - libdrm2
+  rpm:
+    depends:
+      - libva
+      - libdrm
+
+contents:
+  # Owned, so that removing the package removes them too.
+  - dst: /usr/lib/fernsicht-host
+    type: dir
+  - dst: /usr/share/doc/fernsicht-host
+    type: dir
+  - src: ${STAGE}/bin/
+    dst: /usr/lib/fernsicht-host/bin
+    type: tree
+  - src: ${STAGE}/lib/
+    dst: /usr/lib/fernsicht-host/lib
+    type: tree
+  - src: ${STAGE}/share/
+    dst: /usr/lib/fernsicht-host/share
+    type: tree
+  - src: /usr/lib/fernsicht-host/bin/fernsicht-host-agent
+    dst: /usr/bin/fernsicht-host-agent
+    type: symlink
+  - src: ${PACKAGE}/fernsicht-host-agent.service
+    dst: /usr/lib/systemd/system/fernsicht-host-agent.service
+    file_info:
+      mode: 0644
+  - src: ${STAGE}/LICENSE
+    dst: /usr/share/doc/fernsicht-host/LICENSE
+    file_info:
+      mode: 0644
+  - src: ${STAGE}/NOTICE
+    dst: /usr/share/doc/fernsicht-host/NOTICE
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/package-postinstall.sh
+  preremove: packaging/package-preremove.sh
+  postremove: packaging/package-postremove.sh

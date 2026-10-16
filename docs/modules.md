@@ -9,7 +9,7 @@ web/      ui · viewer · e2e
 tests/    e2e (host and client through an impaired network)
 fuzz/     cargo-fuzz targets
 dev/      Distrobox containers for Bazzite, GPU runner setup
-packaging/ AppImage, install scripts, systemd unit
+packaging/ AppImage, the host's archive and packages, install scripts, systemd unit
 ```
 
 ## How they depend on each other

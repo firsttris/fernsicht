@@ -60,8 +60,16 @@ On the computer you want to control, open “Dieser Rechner” (this computer) a
 On the other computer the host shows up in the list; pair with the PIN and click **Desktop** or
 **Gaming**. The app's interface is in German for now.
 
-Building from source, the host as a service without the app, the browser and everything else:
-the [installation guide](https://firsttris.github.io/fernsicht/installation.html).
+On a server you reach over SSH, install the host alone (any distribution with systemd; a .deb and
+an .rpm are in the release too), then pair with `sudo fernsicht-host-agent pair` and open
+`http://<server>:47800` in a browser:
+
+```sh
+curl -fsSL https://github.com/firsttris/fernsicht/releases/latest/download/install.sh | sudo sh
+```
+
+Building from source, the browser and everything else: the
+[installation guide](https://firsttris.github.io/fernsicht/installation.html).
 
 ### 🐧 Runs on
 

@@ -141,6 +141,14 @@ only the joystick, gamepad and sensor parts, about 3 MB, cached the same way). L
 `./packaging/appimage.sh` builds the AppImage in the dev container, against its FFmpeg; building SDL3
 there needs cmake and the libudev headers.
 
+The same build of the host goes into the release a second time, alone, for servers and other
+computers without the app (`packaging/host-bundle.sh`): `fernsicht-host-<version>-x86_64.tar.gz`
+with its FFmpeg beside it (found through its RPATH, `$ORIGIN/../lib`), the web viewer, the unit and
+`packaging/install.sh`; from the same files a `.deb` and an `.rpm` (nfpm, `packaging/nfpm.yaml`, its
+scripts `packaging/package-*.sh`); and `install.sh` and `SHA256SUMS` on their own, which
+`curl … | sudo sh` uses. **Release** then installs them on Arch, Fedora, Debian and Ubuntu in
+containers (`packaging/test-host-package.sh`) before it publishes anything.
+
 The release commit changes only version numbers, so when `main`'s CI already passed for the commit
 before it, **Release** skips its own run of the CI and goes straight to the build.
 
