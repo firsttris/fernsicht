@@ -118,6 +118,10 @@ jobs:
   host-packages:
     name: Install · ${{ matrix.image }}
     needs: build
+    # Without a status function the implicit success() also counts the
+    # skipped `checks` job (a release commit main's CI already tested) and
+    # skips this job and the release after it.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -135,7 +139,12 @@ jobs:
 
   release:
     needs: [build, host-packages]
-    if: startsWith(github.ref, 'refs/tags/v') # run by hand on a branch: only checks and build
+    # Run by hand on a branch: only checks and build. !cancelled() for the
+    # same reason as host-packages.
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success'
+      && needs.host-packages.result == 'success'
+      && startsWith(github.ref, 'refs/tags/v') }}
     uses: firsttris/workflows/.github/workflows/github-release.yml@v1
     with:
       version-file: Cargo.toml
