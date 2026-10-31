@@ -140,5 +140,14 @@
       automerge: false,
       dependencyDashboardApproval: false,
     },
+    {
+      // release.yml builds the AppImage on ubuntu-24.04 on purpose: it runs on every distribution
+      // with that glibc or newer, and a newer runner would raise that floor. ubuntu-latest jobs
+      // are not pinned and are left alone.
+      // (A regex: the runners' docker versioning knows no ranges.)
+      matchDatasources: ["github-runners"],
+      matchPackageNames: ["ubuntu"],
+      allowedVersions: "/^2[0-4]\\.04$/",
+    },
   ],
 }
