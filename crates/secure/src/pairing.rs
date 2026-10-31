@@ -68,7 +68,7 @@ fn seal(key: &[u8], step: u8, aad: &[u8], msg: &[u8]) -> Vec<u8> {
     let mut nonce = [0u8; 12];
     nonce[0] = step;
     cipher
-        .encrypt(Nonce::from_slice(&nonce), Payload { msg, aad })
+        .encrypt(&Nonce::from(nonce), Payload { msg, aad })
         .expect("sealing cannot fail")
 }
 
@@ -77,7 +77,7 @@ fn open(key: &[u8], step: u8, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Pair
     let mut nonce = [0u8; 12];
     nonce[0] = step;
     cipher
-        .decrypt(Nonce::from_slice(&nonce), Payload { msg: sealed, aad })
+        .decrypt(&Nonce::from(nonce), Payload { msg: sealed, aad })
         .map_err(|_| PairError::WrongPin)
 }
 
