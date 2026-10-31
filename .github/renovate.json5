@@ -1,0 +1,137 @@
+// Renovate (GitHub App, https://github.com/apps/renovate): a pull request for each new release of
+// what Fernsicht builds on, plus the "Dependency Dashboard" issue listing what is open.
+// Only those: the FFmpeg the AppImage carries (packaging/ffmpeg.sh, with the ffmpeg-next crates),
+// the Vulkan headers it is built with, the NVENC/NVDEC headers within 12.1 (on purpose the oldest
+// FFmpeg takes, for NVIDIA drivers from 530 on), the SDL3 for gamepads (packaging/sdl3.sh) and the
+// Fedora of the dev image and GPU runner (dev/). The other crates and packages and the actions are
+// not tracked here. The tarballs' sha256 cannot be made by Renovate: renovate-pins.yml sets them on
+// the Renovate branch. Check with
+// `npx --package renovate renovate-config-validator .github/renovate.json5`.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  enabledManagers: ["cargo", "custom.regex"],
+  timezone: "Europe/Berlin",
+  labels: ["dependencies"],
+  // Nothing merges itself: each of these needs the checks in its pull request read by a person
+  automerge: false,
+  customManagers: [
+    {
+      // FFmpeg's release tarball (n8.1.3 → ffmpeg-8.1.3.tar.xz); the -dev tags do not match
+      customType: "regex",
+      managerFilePatterns: ["/^packaging/ffmpeg\\.sh$/"],
+      matchStrings: ["\\nffmpeg_version=(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\\n"],
+      depNameTemplate: "FFmpeg/FFmpeg",
+      datasourceTemplate: "github-tags",
+      extractVersionTemplate: "^n(?<version>\\d+\\.\\d+(?:\\.\\d+)?)$",
+      versioningTemplate: "loose",
+    },
+    {
+      // The FFmpeg minor the docs name ("Its FFmpeg (8.1)"), so a new minor changes them too
+      customType: "regex",
+      managerFilePatterns: ["/^docs/(installation|development)\\.md$/"],
+      matchStrings: [
+        "Its FFmpeg \\((?<currentValue>\\d+\\.\\d+)\\)",
+        "`packaging/ffmpeg\\.sh`: (?<currentValue>\\d+\\.\\d+),",
+      ],
+      depNameTemplate: "FFmpeg/FFmpeg",
+      datasourceTemplate: "github-tags",
+      extractVersionTemplate: "^n(?<version>\\d+\\.\\d+)(?:\\.\\d+)?$",
+      versioningTemplate: "regex:^(?<major>\\d+)\\.(?<minor>\\d+)$",
+    },
+    {
+      // The headers FFmpeg is built with: a tag and the commit ffmpeg.sh checks it against
+      customType: "regex",
+      managerFilePatterns: ["/^packaging/ffmpeg\\.sh$/"],
+      matchStrings: [
+        "nvcodec_tag=(?<currentValue>\\S+)\\nnvcodec_commit=(?<currentDigest>[0-9a-f]{40})",
+      ],
+      depNameTemplate: "FFmpeg/nv-codec-headers",
+      datasourceTemplate: "github-tags",
+      versioningTemplate: "regex:^n(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\.(?<build>\\d+)$",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^packaging/ffmpeg\\.sh$/"],
+      matchStrings: [
+        "vulkan_tag=(?<currentValue>\\S+)\\nvulkan_commit=(?<currentDigest>[0-9a-f]{40})",
+      ],
+      depNameTemplate: "KhronosGroup/Vulkan-Headers",
+      datasourceTemplate: "github-tags",
+      versioningTemplate: "regex:^vulkan-sdk-(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\.(?<build>\\d+)$",
+    },
+    {
+      // SDL3 (release-3.4.18); previews and prereleases do not match
+      customType: "regex",
+      managerFilePatterns: ["/^packaging/sdl3\\.sh$/"],
+      matchStrings: ["\\nsdl_version=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"],
+      depNameTemplate: "libsdl-org/SDL",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^release-(?<version>\\d+\\.\\d+\\.\\d+)$",
+    },
+    {
+      // The Fedora of the dev image and the GPU runner: the Containerfile's default and the
+      // fallback of the setup scripts (which otherwise take the host's, `rpm -E %fedora`)
+      customType: "regex",
+      managerFilePatterns: ["/^dev/Containerfile$/", "/^dev/(runner/)?setup(-runner)?\\.sh$/"],
+      matchStrings: [
+        "ARG FEDORA_VERSION=(?<currentValue>\\d+)",
+        "rpm -E %fedora 2>/dev/null \\|\\| echo (?<currentValue>\\d+)",
+      ],
+      depNameTemplate: "registry.fedoraproject.org/fedora-toolbox",
+      datasourceTemplate: "docker",
+      versioningTemplate: "regex:^(?<major>\\d+)$",
+    },
+  ],
+  packageRules: [
+    {
+      // From Cargo only the FFmpeg bindings (below)
+      matchManagers: ["cargo"],
+      enabled: false,
+    },
+    {
+      // The tarball, the docs' minor and the Rust bindings in one PR
+      matchPackageNames: ["FFmpeg/FFmpeg", "ffmpeg-next", "ffmpeg-sys-next"],
+      enabled: true,
+      groupName: "FFmpeg",
+      commitMessageTopic: "FFmpeg",
+      sourceUrl: "https://github.com/FFmpeg/FFmpeg",
+      prBodyNotes: [
+        "`renovate-pins.yml` sets `ffmpeg_sha256` on this branch and starts **Release** on it, which builds the AppImage against the new FFmpeg (CI does not build it). Before merging: read the Changelog for `nvenc.c`, `vaapi_encode*.c`, `hwcontext_vulkan.c` and the Vulkan encoders (`crates/codec`, docs/video.md); `ffmpeg.sh` stops when a component it names is missing. The GPU runners test with the dev image's FFmpeg, not this one: try the AppImage of the Release run on the AMD and the NVIDIA machine (docs/handover.md), host and client.",
+      ],
+    },
+    {
+      matchPackageNames: ["FFmpeg/nv-codec-headers"],
+      // 12.1 is the oldest API FFmpeg takes: NVENC then works with NVIDIA drivers from 530 on.
+      // A newer API raises that minimum, so it is a decision, not an update.
+      allowedVersions: "/^n12\\.1\\./",
+      groupName: "FFmpeg build headers",
+      prBodyNotes: [
+        "Header only. The **Release** run of this branch builds FFmpeg with it (`ffmpeg.sh` checks the tag against the commit).",
+      ],
+    },
+    {
+      matchPackageNames: ["KhronosGroup/Vulkan-Headers"],
+      groupName: "FFmpeg build headers",
+      prBodyNotes: [
+        "Header only; the loader is the system's. The **Release** run of this branch builds FFmpeg with it (`ffmpeg.sh` checks the tag against the commit and that every Vulkan Video encoder and hwaccel is configured).",
+      ],
+    },
+    {
+      matchPackageNames: ["libsdl-org/SDL"],
+      groupName: "SDL3",
+      commitMessageTopic: "SDL3",
+      prBodyNotes: [
+        "`renovate-pins.yml` sets `sdl_sha256` on this branch and starts CI, whose tests load the new SDL (`crates/input/tests/sdl.rs`). Before merging: read the release notes for the gamepad, haptic, sensor and virtual-joystick API that `crates/input/src/sdl.rs` declares by hand; with the AppImage of a Release run, try a pad with rumble, and a DualSense with gyro and touchpad.",
+      ],
+    },
+    {
+      matchPackageNames: ["registry.fedoraproject.org/fedora-toolbox"],
+      groupName: "Fedora dev image",
+      commitMessageTopic: "Fedora of the dev image",
+      prBodyNotes: [
+        "The dev image should match the host (Bazzite): merge once Bazzite is on this Fedora. The Containers workflow builds both images; it warns when RPM Fusion has no `mesa-vulkan-drivers-freeworld` yet. Then rebuild the Distrobox (`dev/setup.sh`) and the runners (`dev/runner/setup-runner.sh`, docs/gpu-runner.md) and let gpu.yml run.",
+      ],
+    },
+  ],
+}

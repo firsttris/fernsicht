@@ -1,0 +1,59 @@
+name: Renovate · tarball sha256
+
+# On a Renovate branch (.github/renovate.json5): Renovate changes ffmpeg_version or sdl_version in
+# packaging/ffmpeg.sh and packaging/sdl3.sh only. This sets the sha256 the scripts check the
+# tarball against, commits it and starts the runs that build it: CI (SDL3 for the tests) and, when
+# ffmpeg.sh changed (FFmpeg or its headers), Release on the branch (it only builds there, it
+# publishes from tags). A commit pushed with the workflow's token starts no workflow by itself,
+# hence the explicit runs.
+on:
+  push:
+    branches: ["renovate/**"]
+    paths: ["packaging/ffmpeg.sh", "packaging/sdl3.sh"]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: renovate-pins-${{ github.ref }}
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set the tarballs' sha256
+        run: |
+          set -euo pipefail
+          # pin <script> <name> <url with VERSION>
+          pin() {
+            local version sha
+            version=$(sed -n "s/^$2_version=//p" "$1")
+            sha=$(curl -fsSL "${3//VERSION/$version}" | sha256sum | cut -d' ' -f1)
+            echo "$2 $version: $sha"
+            sed -i "s/^$2_sha256=.*/$2_sha256=$sha/" "$1"
+          }
+          pin packaging/ffmpeg.sh ffmpeg "https://ffmpeg.org/releases/ffmpeg-VERSION.tar.xz"
+          pin packaging/sdl3.sh sdl \
+            "https://github.com/libsdl-org/SDL/releases/download/release-VERSION/SDL3-VERSION.tar.gz"
+      - name: Commit and start the builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "sha256 already match"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Pin the sha256 of the tarball Renovate updated"
+            git push
+            gh workflow run ci.yml --ref "$GITHUB_REF_NAME"
+          fi
+          # FFmpeg, or the headers it is built with: CI does not build it, Release does
+          git fetch -q --depth 1 origin main
+          if ! git diff --quiet FETCH_HEAD HEAD -- packaging/ffmpeg.sh; then
+            gh workflow run release.yml --ref "$GITHUB_REF_NAME"
+          fi

@@ -139,7 +139,10 @@ with only the decoders, encoders, hardware paths and the filter Fernsicht uses, 
 pinned sources, built once per version and cached), and an SDL3 for gamepads (`packaging/sdl3.sh`:
 only the joystick, gamepad and sensor parts, about 3 MB, cached the same way). Locally
 `./packaging/appimage.sh` builds the AppImage in the dev container, against its FFmpeg; building SDL3
-there needs cmake and the libudev headers.
+there needs cmake and the libudev headers. New releases of FFmpeg, its Vulkan and NVENC headers,
+SDL3 and the dev image's Fedora come as Renovate pull requests (`.github/renovate.json5`, each with
+what to check); `renovate-pins.yml` sets the tarballs' sha256 and starts **Release** on the branch
+to build FFmpeg.
 
 The same build of the host goes into the release a second time, alone, for servers and other
 computers without the app (`packaging/host-bundle.sh`): `fernsicht-host-<version>-x86_64.tar.gz`
