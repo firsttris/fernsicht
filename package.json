@@ -3,7 +3,7 @@
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
-  "packageManager": "pnpm@10.34.9",
+  "packageManager": "pnpm@12.16.1",
   "scripts": {
     "dev:client": "pnpm --filter @fernsicht/client-ui dev",
     "dev:viewer": "pnpm --filter @fernsicht/viewer dev",
