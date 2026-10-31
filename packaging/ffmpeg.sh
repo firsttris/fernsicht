@@ -15,8 +15,8 @@
 # headers. A prefix already built with these versions is kept.
 set -eu
 
-ffmpeg_version=8.1.3
-ffmpeg_sha256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
+ffmpeg_version=9.0.2
+ffmpeg_sha256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 # NVENC/NVDEC API (header only; CUDA is loaded at runtime). 12.1 is the
 # oldest FFmpeg takes: NVENC then works with NVIDIA drivers from 530 on.
 nvcodec_tag=n12.1.14.1
