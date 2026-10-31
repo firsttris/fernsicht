@@ -266,25 +266,29 @@ impl VulkanDevice {
 
             // One queue per family: the graphics one (also compute and
             // transfer) and the video ones.
-            let graphics = gpu.queue_family as c_int;
-            hw.queue_family_index = graphics;
-            hw.nb_graphics_queues = 1;
-            hw.queue_family_comp_index = graphics;
-            hw.nb_comp_queues = 1;
-            hw.queue_family_tx_index = graphics;
-            hw.nb_tx_queues = 1;
-            let (decode, nb_decode) = gpu
-                .decode
-                .as_ref()
-                .map_or((-1, 0), |q| (q.family as c_int, 1));
-            hw.queue_family_decode_index = decode;
-            hw.nb_decode_queues = nb_decode;
-            let (encode, nb_encode) = gpu
-                .encode
-                .as_ref()
-                .map_or((-1, 0), |q| (q.family as c_int, 1));
-            hw.queue_family_encode_index = encode;
-            hw.nb_encode_queues = nb_encode;
+            // FFmpeg 9 knows only the list of queue families below.
+            #[cfg(not(ffmpeg_9))]
+            {
+                let graphics = gpu.queue_family as c_int;
+                hw.queue_family_index = graphics;
+                hw.nb_graphics_queues = 1;
+                hw.queue_family_comp_index = graphics;
+                hw.nb_comp_queues = 1;
+                hw.queue_family_tx_index = graphics;
+                hw.nb_tx_queues = 1;
+                let (decode, nb_decode) = gpu
+                    .decode
+                    .as_ref()
+                    .map_or((-1, 0), |q| (q.family as c_int, 1));
+                hw.queue_family_decode_index = decode;
+                hw.nb_decode_queues = nb_decode;
+                let (encode, nb_encode) = gpu
+                    .encode
+                    .as_ref()
+                    .map_or((-1, 0), |q| (q.family as c_int, 1));
+                hw.queue_family_encode_index = encode;
+                hw.nb_encode_queues = nb_encode;
+            }
             #[cfg(ffmpeg_queue_families)]
             list_queue_families(hw, &gpu);
             hw.lock_queue = Some(lock_queue);
@@ -414,6 +418,9 @@ impl VkSync for FrameSync {
             let v = &*vkf;
             VkAccess {
                 layout: v.layout[0],
+                #[cfg(ffmpeg_9)]
+                access: v.access[0],
+                #[cfg(not(ffmpeg_9))]
                 access: u64::from(v.access[0] as u32),
                 semaphore: v.sem[0],
                 wait: v.sem_value[0],
@@ -428,7 +435,14 @@ impl VkSync for FrameSync {
             if submitted {
                 let v = &mut *vkf;
                 v.layout[0] = layout;
-                v.access[0] = access as c_int;
+                #[cfg(ffmpeg_9)]
+                {
+                    v.access[0] = access;
+                }
+                #[cfg(not(ffmpeg_9))]
+                {
+                    v.access[0] = access as c_int;
+                }
                 v.sem_value[0] += 1;
             }
             let hw = &*(*fc).hwctx.cast::<ffi::AVVulkanFramesContext>();
