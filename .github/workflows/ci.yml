@@ -69,7 +69,7 @@ jobs:
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: shellcheck packaging/*.sh scripts/*.sh
       - name: FFmpeg and VAAPI headers (feature "vaapi")
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: >-
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev
@@ -108,7 +108,7 @@ jobs:
       # (they would make sound or type on a desktop, so they need these
       # variables to run at all).
       - name: libopus and a sound server
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: libopus0 pulseaudio
       - name: Sound server and uinput
@@ -146,7 +146,7 @@ jobs:
           path: ~/sdl3
           key: sdl3-${{ runner.os }}-${{ hashFiles('packaging/sdl3.sh') }}
       - name: SDL3's build dependencies
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: libudev-dev cmake
       - name: SDL3 (packaging/sdl3.sh)
@@ -158,7 +158,7 @@ jobs:
       # control; KWin's is tried by hand), one for the host, one for the
       # client.
       - name: Sway
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: sway
       - name: Two headless Wayland compositors
@@ -212,7 +212,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: FFmpeg and VAAPI headers (feature "vaapi")
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: >-
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev
@@ -229,7 +229,7 @@ jobs:
       # The validation layers check every Vulkan call, including
       # synchronization; any message they print fails the job.
       - name: Software Vulkan (llvmpipe) and the validation layers
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: mesa-vulkan-drivers vulkan-validationlayers
       - name: Vulkan renderer, validated
@@ -355,7 +355,7 @@ jobs:
             apps/desktop
             .
       - name: WebKitGTK (Tauri)
-        uses: firsttris/workflows/actions/apt-install@ccr-161f105b-9ns022
+        uses: firsttris/workflows/actions/apt-install@v1
         with:
           packages: >-
             libwebkit2gtk-4.1-dev libsoup-3.0-dev
