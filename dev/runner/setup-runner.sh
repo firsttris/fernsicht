@@ -74,7 +74,7 @@ else
 fi
 
 # --- Images -------------------------------------------------------------------
-fedora="$(rpm -E %fedora 2>/dev/null || echo 44)"
+fedora="$(rpm -E %fedora 2>/dev/null || echo 46)"
 echo "==> Baue Images (Fedora ${fedora}) ..."
 podman build --build-arg "FEDORA_VERSION=${fedora}" -t localhost/fernsicht-dev:latest -f "${here}/../Containerfile" "${here}/.."
 podman build -t localhost/fernsicht-runner:latest -f "${here}/Containerfile" "$here"
