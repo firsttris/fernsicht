@@ -3,7 +3,7 @@
 #
 # FEDORA_VERSION should match the host (`rpm -E %fedora`); dev/setup.sh and
 # dev/runner/setup-runner.sh pass it automatically.
-ARG FEDORA_VERSION=44
+ARG FEDORA_VERSION=46
 FROM registry.fedoraproject.org/fedora-toolbox:${FEDORA_VERSION}
 ARG FEDORA_VERSION
 

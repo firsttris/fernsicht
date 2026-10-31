@@ -18,7 +18,7 @@ case "${1:-}" in
   *) echo "usage: $0 [--nvidia|--root]" >&2; exit 2 ;;
 esac
 
-fedora="$(rpm -E %fedora 2>/dev/null || echo 44)"
+fedora="$(rpm -E %fedora 2>/dev/null || echo 46)"
 "${podman[@]}" build --build-arg "FEDORA_VERSION=${fedora}" -t localhost/fernsicht-dev:latest -f Containerfile .
 distrobox assemble create --file distrobox.ini --name "$box" --replace
 
