@@ -19,12 +19,12 @@ ffmpeg_version=8.1.3
 ffmpeg_sha256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
 # NVENC/NVDEC API (header only; CUDA is loaded at runtime). 12.1 is the
 # oldest FFmpeg takes: NVENC then works with NVIDIA drivers from 530 on.
-nvcodec_tag=n12.1.14.0
-nvcodec_commit=1889e62e2d35ff7aa9baca2bceb14f053785e6f1
+nvcodec_tag=n12.1.14.1
+nvcodec_commit=7c8e7fc751f803c672b42c37d9199c8a4f98b327
 # Vulkan headers (the loader is the system's, loaded at runtime); 1.4.317 or
 # newer enables the AV1 Vulkan encoder.
-vulkan_tag=vulkan-sdk-1.4.341.0
-vulkan_commit=b5c8f996196ba4aa6d8f97e52b5d3b6e70f7e4e2
+vulkan_tag=vulkan-sdk-1.4.363.0
+vulkan_commit=6802bb4733b63ed5efd3adb308a6c885ef180ea1
 
 cd "$(dirname "$0")/.."
 prefix=$(realpath -m "${1:-target/ffmpeg}")
