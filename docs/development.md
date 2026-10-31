@@ -134,7 +134,7 @@ mkdocs serve        # http://127.0.0.1:8000
 
 The **Bump version** workflow in GitHub Actions raises the version and sets the tag; **Release** then
 builds the AppImage and publishes it. It builds on Ubuntu 24.04, so the AppImage starts on systems with
-that glibc or newer, and carries an FFmpeg of its own (`packaging/ffmpeg.sh`: 8.1, shared libraries
+that glibc or newer, and carries an FFmpeg of its own (`packaging/ffmpeg.sh`: 9.0, shared libraries
 with only the decoders, encoders, hardware paths and the filter Fernsicht uses, LGPL, about 5 MB;
 pinned sources, built once per version and cached), and an SDL3 for gamepads (`packaging/sdl3.sh`:
 only the joystick, gamepad and sensor parts, about 3 MB, cached the same way). Locally

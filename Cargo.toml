@@ -69,7 +69,7 @@ x11-dl = "2.21"
 
 # test-only
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-escargot = "0.5"
+escargot = "1.0"
 proptest = "1.11"
 
 [workspace.lints.rust]

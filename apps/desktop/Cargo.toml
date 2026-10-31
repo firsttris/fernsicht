@@ -46,4 +46,4 @@ unsafe_op_in_unsafe_fn = "deny"
 all = { level = "warn", priority = -1 }
 
 [dev-dependencies]
-escargot = "0.5"
+escargot = "1.0"
