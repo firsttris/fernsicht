@@ -1,20 +1,17 @@
 // Renovate (GitHub App, https://github.com/apps/renovate): a pull request for each new release of
-// what Fernsicht builds on, plus the "Dependency Dashboard" issue listing what is open.
-// Only those: the FFmpeg the AppImage carries (packaging/ffmpeg.sh, with the ffmpeg-next crates),
-// the Vulkan headers it is built with, the NVENC/NVDEC headers within 12.1 (on purpose the oldest
-// FFmpeg takes, for NVIDIA drivers from 530 on), the SDL3 for gamepads (packaging/sdl3.sh) and the
-// Fedora of the dev image and GPU runner (dev/). The other crates and packages and the actions are
-// not tracked here. The tarballs' sha256 cannot be made by Renovate: renovate-pins.yml sets them on
-// the Renovate branch. Check with
-// `npx --package renovate renovate-config-validator .github/renovate.json5`.
+// what Fernsicht builds on, plus the "Dependency Dashboard" issue listing what is open. Their own
+// pull requests: the FFmpeg the AppImage carries (packaging/ffmpeg.sh, with the ffmpeg-next
+// crates), the Vulkan headers it is built with, the NVENC/NVDEC headers within 12.1 (on purpose the
+// oldest FFmpeg takes, for NVIDIA drivers from 530 on), the SDL3 for gamepads (packaging/sdl3.sh)
+// and the Fedora of the dev image and GPU runner (dev/). The tarballs' sha256 cannot be made by
+// Renovate: renovate-pins.yml sets them on the Renovate branch.
+// Everything else (the other packages, the actions, the images) comes with the shared settings of
+// firsttris/workflows (renovate/default.json5): minor and patch updates once a month in one pull
+// request that merges itself when CI is green, majors on request in the dashboard.
+// Check with `npx --package renovate renovate-config-validator .github/renovate.json5`.
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
-  extends: ["config:recommended"],
-  enabledManagers: ["cargo", "custom.regex"],
-  timezone: "Europe/Berlin",
-  labels: ["dependencies"],
-  // Nothing merges itself: each of these needs the checks in its pull request read by a person
-  automerge: false,
+  extends: ["github>firsttris/workflows//renovate/default.json5"],
   customManagers: [
     {
       // FFmpeg's release tarball (n8.1.3 → ffmpeg-8.1.3.tar.xz); the -dev tags do not match
@@ -85,11 +82,6 @@
   ],
   packageRules: [
     {
-      // From Cargo only the FFmpeg bindings (below)
-      matchManagers: ["cargo"],
-      enabled: false,
-    },
-    {
       // The tarball, the docs' minor and the Rust bindings in one PR
       matchPackageNames: ["FFmpeg/FFmpeg", "ffmpeg-next", "ffmpeg-sys-next"],
       enabled: true,
@@ -99,6 +91,9 @@
       prBodyNotes: [
         "`renovate-pins.yml` sets `ffmpeg_sha256` on this branch and starts **Release** on it, which builds the AppImage against the new FFmpeg (CI does not build it). Before merging: read the Changelog for `nvenc.c`, `vaapi_encode*.c`, `hwcontext_vulkan.c` and the Vulkan encoders (`crates/codec`, docs/video.md); `ffmpeg.sh` stops when a component it names is missing. The GPU runners test with the dev image's FFmpeg, not this one: try the AppImage of the Release run on the AMD and the NVIDIA machine (docs/handover.md), host and client.",
       ],
+      schedule: ["at any time"],
+      automerge: false,
+      dependencyDashboardApproval: false,
     },
     {
       matchPackageNames: ["FFmpeg/nv-codec-headers"],
@@ -109,6 +104,9 @@
       prBodyNotes: [
         "Header only. The **Release** run of this branch builds FFmpeg with it (`ffmpeg.sh` checks the tag against the commit).",
       ],
+      schedule: ["at any time"],
+      automerge: false,
+      dependencyDashboardApproval: false,
     },
     {
       matchPackageNames: ["KhronosGroup/Vulkan-Headers"],
@@ -116,6 +114,9 @@
       prBodyNotes: [
         "Header only; the loader is the system's. The **Release** run of this branch builds FFmpeg with it (`ffmpeg.sh` checks the tag against the commit and that every Vulkan Video encoder and hwaccel is configured).",
       ],
+      schedule: ["at any time"],
+      automerge: false,
+      dependencyDashboardApproval: false,
     },
     {
       matchPackageNames: ["libsdl-org/SDL"],
@@ -124,6 +125,9 @@
       prBodyNotes: [
         "`renovate-pins.yml` sets `sdl_sha256` on this branch and starts CI, whose tests load the new SDL (`crates/input/tests/sdl.rs`). Before merging: read the release notes for the gamepad, haptic, sensor and virtual-joystick API that `crates/input/src/sdl.rs` declares by hand; with the AppImage of a Release run, try a pad with rumble, and a DualSense with gyro and touchpad.",
       ],
+      schedule: ["at any time"],
+      automerge: false,
+      dependencyDashboardApproval: false,
     },
     {
       matchPackageNames: ["registry.fedoraproject.org/fedora-toolbox"],
@@ -132,6 +136,9 @@
       prBodyNotes: [
         "The dev image should match the host (Bazzite): merge once Bazzite is on this Fedora. The Containers workflow builds both images; it warns when RPM Fusion has no `mesa-vulkan-drivers-freeworld` yet. Then rebuild the Distrobox (`dev/setup.sh`) and the runners (`dev/runner/setup-runner.sh`, docs/gpu-runner.md) and let gpu.yml run.",
       ],
+      schedule: ["at any time"],
+      automerge: false,
+      dependencyDashboardApproval: false,
     },
   ],
 }
