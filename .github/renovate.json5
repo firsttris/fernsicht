@@ -14,16 +14,6 @@
   extends: ["github>firsttris/workflows//renovate/default.json5"],
   customManagers: [
     {
-      // "packageManager": "bun@x.y.z": the Bun of every workflow (setup-bun with bun-version-file,
-      // and the npm-installed Bun of the screenshots job in the Playwright image)
-      customType: "regex",
-      managerFilePatterns: ["/^package\\.json$/"],
-      matchStrings: ['"packageManager": "bun@(?<currentValue>\\d+\\.\\d+\\.\\d+)"'],
-      depNameTemplate: "oven-sh/bun",
-      datasourceTemplate: "github-releases",
-      extractVersionTemplate: "^bun-v(?<version>.+)$",
-    },
-    {
       // FFmpeg's release tarball (n8.1.3 → ffmpeg-8.1.3.tar.xz); the -dev tags do not match
       customType: "regex",
       managerFilePatterns: ["/^packaging/ffmpeg\\.sh$/"],
@@ -152,8 +142,10 @@
     },
     {
       // Bun: packageManager in package.json and the dev image's (dev/Containerfile, COPY --from
-      // oven/bun) in one PR, so CI and the Distrobox and GPU runner use the same Bun
-      matchPackageNames: ["docker.io/oven/bun", "oven/bun", "oven-sh/bun"],
+      // oven/bun) in one PR, so CI and the Distrobox and GPU runner use the same Bun. Renovate's
+      // bun manager reads packageManager itself, as the dependency "bun" (npm); without it here
+      // that one would go into the monthly group and merge itself without the dev image.
+      matchPackageNames: ["bun", "docker.io/oven/bun", "oven/bun"],
       enabled: true,
       groupName: "Bun",
       sourceUrl: "https://github.com/oven-sh/bun",
