@@ -24,7 +24,7 @@ RUN set -eux; \
 ENV RUNNER_ALLOW_RUNASROOT=1 \
     CARGO_HOME=/cache/cargo \
     CARGO_TARGET_DIR=/cache/target \
-    PNPM_HOME=/cache/pnpm
+    BUN_INSTALL_CACHE_DIR=/cache/bun
 
 COPY entrypoint.sh /usr/local/bin/fernsicht-runner
 ENTRYPOINT ["/usr/local/bin/fernsicht-runner"]

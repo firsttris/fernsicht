@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../../web/client-ui/dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm --filter @fernsicht/client-ui dev",
-    "beforeBuildCommand": "pnpm --filter @fernsicht/client-ui build && pnpm --filter @fernsicht/viewer build"
+    "beforeDevCommand": "bun run --filter @fernsicht/client-ui dev",
+    "beforeBuildCommand": "bun run --filter @fernsicht/client-ui build && bun run --filter @fernsicht/viewer build"
   },
   "app": {
     "windows": [

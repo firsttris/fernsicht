@@ -3,11 +3,12 @@ import { defineConfig, devices } from "@playwright/test";
 const CLIENT = "http://localhost:4301";
 const VIEWER = "http://localhost:4302";
 
-// Browser E2E against production builds of both apps (vite preview).
+// Browser E2E against production builds of both apps (vite preview, on Bun
+// as the runner is). Each server runs in its app's folder.
 /** Builds the UI before serving it, unless CI brought it built
  * (FERNSICHT_UI_BUILT). */
-const build = (pkg: string) =>
-  process.env.FERNSICHT_UI_BUILT ? "" : `pnpm --filter ${pkg} build && `;
+const build = process.env.FERNSICHT_UI_BUILT ? "" : "bun run build && ";
+const preview = (port: number) => `${build}bun --bun vite preview --port ${port} --strictPort`;
 
 export default defineConfig({
   testDir: "tests",
@@ -27,13 +28,15 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `${build("@fernsicht/client-ui")}pnpm --filter @fernsicht/client-ui preview --port 4301 --strictPort`,
+      command: preview(4301),
+      cwd: "../client-ui",
       url: CLIENT,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
     {
-      command: `${build("@fernsicht/viewer")}pnpm --filter @fernsicht/viewer preview --port 4302 --strictPort`,
+      command: preview(4302),
+      cwd: "../viewer",
       url: VIEWER,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,

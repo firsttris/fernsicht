@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [features]
 # Serve the built UI from the binary (the default). For UI work with hot
-# reload: `pnpm dev:client`, then `cargo run --no-default-features`, which
+# reload: `bun run dev:client`, then `cargo run --no-default-features`, which
 # loads the Vite dev server instead.
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

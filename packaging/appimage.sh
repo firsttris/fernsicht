@@ -12,7 +12,7 @@ if [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null 2>&1; then
     exec distrobox enter fernsicht -- sh -c "cd '$PWD' && ./packaging/appimage.sh"
 fi
 
-pnpm install --frozen-lockfile
+bun install --frozen-lockfile
 # SDL3 for the client's gamepads, loaded at runtime, so the bundler does not
 # see it (packaging/sdl3.sh; a prefix already built is kept).
 ./packaging/sdl3.sh target/sdl3
@@ -27,7 +27,7 @@ for bin in fernsicht-client fernsicht-host-agent; do
 done
 
 cd apps/desktop
-pnpm exec tauri build --bundles appimage
+bunx tauri build --bundles appimage
 
 # The GPU stack stays the system's: a bundled libva looks for drivers where
 # the build machine has them and may be older than the installed Mesa or
