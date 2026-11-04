@@ -11,9 +11,9 @@ if [ ! -e /run/.containerenv ] && command -v distrobox >/dev/null 2>&1; then
     exec distrobox enter fernsicht -- sh -c "cd '$PWD' && ./packaging/build.sh"
 fi
 
-pnpm install --frozen-lockfile
-pnpm --filter @fernsicht/client-ui build
-pnpm --filter @fernsicht/viewer build
+bun install --frozen-lockfile
+bun run --filter @fernsicht/client-ui build
+bun run --filter @fernsicht/viewer build
 cargo build --release -p fernsicht-host-agent --features vaapi,kms,nvidia,vulkan
 cargo build --release -p fernsicht-client --features vaapi,nvidia,vulkan,window
 cargo build --release --manifest-path apps/desktop/Cargo.toml

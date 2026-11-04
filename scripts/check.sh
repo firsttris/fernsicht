@@ -27,12 +27,12 @@ fi
 PROPTEST_CASES=1024 cargo test --workspace --test properties
 
 step "Web: format and lint (Biome), types, tests, build"
-pnpm check
-pnpm -r typecheck
-pnpm test
-pnpm -r build
+bun run check
+bun run typecheck
+bun run test
+bun run build
 if ! $quick; then
-    FERNSICHT_UI_BUILT=1 pnpm test:e2e
+    FERNSICHT_UI_BUILT=1 bun run test:e2e
 fi
 
 step "Desktop app: format, clippy, tests (and the generated TypeScript)"

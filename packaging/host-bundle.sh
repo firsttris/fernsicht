@@ -10,7 +10,7 @@
 #   ./packaging/ffmpeg.sh target/ffmpeg
 #   PKG_CONFIG_PATH=$PWD/target/ffmpeg/lib/pkgconfig \
 #     cargo build --release --locked -p fernsicht-host-agent --features vaapi,kms,nvidia,vulkan
-#   pnpm --filter @fernsicht/viewer build
+#   bun run --filter @fernsicht/viewer build
 #   ./packaging/host-bundle.sh [out-dir]       (default: target/host-bundle)
 #
 # FFMPEG_LIB names another FFmpeg than target/ffmpeg/lib. Without nfpm (or
@@ -31,7 +31,7 @@ fail() {
     exit 1
 }
 [ -x "$bin" ] || fail "$bin fehlt (cargo build --release -p fernsicht-host-agent …)"
-[ -f "$viewer/index.html" ] || fail "$viewer fehlt (pnpm --filter @fernsicht/viewer build)"
+[ -f "$viewer/index.html" ] || fail "$viewer fehlt (bun run --filter @fernsicht/viewer build)"
 command -v patchelf >/dev/null 2>&1 || fail "patchelf fehlt"
 
 # FFmpeg's libraries an ELF file needs (by soname).

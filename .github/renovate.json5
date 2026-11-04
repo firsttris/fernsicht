@@ -2,13 +2,13 @@
 // what Fernsicht builds on, plus the "Dependency Dashboard" issue listing what is open. Their own
 // pull requests: the FFmpeg the AppImage carries (packaging/ffmpeg.sh, with the ffmpeg-next
 // crates), the Vulkan headers it is built with, the NVENC/NVDEC headers within 12.1 (on purpose the
-// oldest FFmpeg takes, for NVIDIA drivers from 530 on), the SDL3 for gamepads (packaging/sdl3.sh)
-// and the Fedora of the dev image and GPU runner (dev/). The tarballs' sha256 cannot be made by
-// Renovate: renovate-pins.yml sets them on the Renovate branch.
+// oldest FFmpeg takes, for NVIDIA drivers from 530 on), the SDL3 for gamepads (packaging/sdl3.sh),
+// the Fedora of the dev image and GPU runner (dev/) and Bun (package.json and the dev image). The
+// tarballs' sha256 cannot be made by Renovate: renovate-pins.yml sets them on the Renovate branch.
 // Everything else (the other packages, the actions, the images) comes with the shared settings of
 // firsttris/workflows (renovate/default.json5): minor and patch updates once a month in one pull
 // request that merges itself when CI is green, majors on request in the dashboard.
-// Check with `npx --package renovate renovate-config-validator .github/renovate.json5`.
+// Check with `bunx --package renovate renovate-config-validator .github/renovate.json5`.
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: ["github>firsttris/workflows//renovate/default.json5"],
@@ -135,6 +135,22 @@
       commitMessageTopic: "Fedora of the dev image",
       prBodyNotes: [
         "The dev image should match the host (Bazzite): merge once Bazzite is on this Fedora. The Containers workflow builds both images; it warns when RPM Fusion has no `mesa-vulkan-drivers-freeworld` yet. Then rebuild the Distrobox (`dev/setup.sh`) and the runners (`dev/runner/setup-runner.sh`, docs/gpu-runner.md) and let gpu.yml run.",
+      ],
+      schedule: ["at any time"],
+      automerge: false,
+      dependencyDashboardApproval: false,
+    },
+    {
+      // Bun: packageManager in package.json and the dev image's (dev/Containerfile, COPY --from
+      // oven/bun) in one PR, so CI and the Distrobox and GPU runner use the same Bun. Renovate's
+      // bun manager reads packageManager itself, as the dependency "bun" (npm); without it here
+      // that one would go into the monthly group and merge itself without the dev image.
+      matchPackageNames: ["bun", "docker.io/oven/bun", "oven/bun"],
+      enabled: true,
+      groupName: "Bun",
+      sourceUrl: "https://github.com/oven-sh/bun",
+      prBodyNotes: [
+        "`packageManager` in package.json (CI's `bun-version-file`, the screenshots job's `npm install bun@…`) and the dev image's `oven/bun:<version>` (dev/Containerfile) move together. Bun installs the web workspace (`bun.lock`, bunfig.toml), runs the scripts, Vite, Vitest and Playwright's runner (`bun --bun`; no Node in CI). CI's web jobs and the browser tests run on this branch, the Containers workflow builds the dev image; after merging, rebuild the Distrobox (`dev/setup.sh`) and the runners (`dev/runner/setup-runner.sh`).",
       ],
       schedule: ["at any time"],
       automerge: false,

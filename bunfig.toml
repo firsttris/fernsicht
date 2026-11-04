@@ -1,0 +1,7 @@
+[install]
+# As before with pnpm: every package sees only its own dependencies (node_modules/.bun), not
+# whatever happens to lie in the root
+linker = "isolated"
+# No package younger than one day, as pnpm 12 did by default; Renovate waits three days
+# (firsttris/workflows renovate/default.json5)
+minimumReleaseAge = 86400

@@ -204,7 +204,7 @@ security, performance and the roadmap – is in the **[documentation](https://fi
 ```sh
 cargo build --release                       # host and client (test pattern, synthetic codec)
 cargo test --workspace                      # unit, property, integration, end-to-end
-pnpm install && pnpm test && pnpm test:e2e  # app UI and web viewer
+bun install && bun run test && bun run test:e2e  # app UI and web viewer
 ```
 
 On Bazzite, `dev/setup.sh` builds the development container with FFmpeg, Vulkan and the GPU drivers.

@@ -27,7 +27,6 @@ RUN dnf install -y \
       opus-devel libei-devel libevdev-devel \
       wayland-devel libxkbcommon-devel \
       webkit2gtk4.1-devel gtk3-devel libsoup3-devel \
-      nodejs22 pnpm \
       pciutils iproute iperf3 \
     && dnf clean all
 
@@ -35,3 +34,9 @@ RUN dnf install -y \
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component rustfmt,clippy \
     && chmod -R a+w /usr/local/rustup /usr/local/cargo
+
+# Bun for the web parts (package manager, scripts, Vite, Vitest, Playwright's runner): the binary
+# of the official image, in the version of packageManager in package.json (Renovate's Bun group
+# moves both). Where a tool's script asks for node, bun run and bunx stand in with Bun itself.
+COPY --from=docker.io/oven/bun:1.4.4 /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s bun /usr/local/bin/bunx

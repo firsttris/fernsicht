@@ -61,11 +61,11 @@ way a busy CI runner does not show up as a network error.
 
 | Level | Where | What | Command |
 |---|---|---|---|
-| Unit | `web/ui/src/**/*.test.ts` | Formatting (ms, %, device ID), demo data | `pnpm test` |
-| Component | `*.test.tsx` (Vitest, jsdom, Testing Library) | Overlay, session view (mode, keyboard shortcuts, audio), device list (search, filter, dialog), navigation, clipboard, viewer form | `pnpm test` |
-| Coverage | Vitest v8 | Thresholds: 90 % lines/functions, 85 % branches | `pnpm test:coverage` |
-| Browser E2E | `web/e2e` (Playwright, desktop + Pixel 7) | Real builds of both apps: flows, keyboard, deep links, live overlay | `pnpm test:e2e` |
-| Accessibility | `web/e2e` (axe) | WCAG 2.1 AA with no "serious"/"critical" findings and no horizontal scrolling on the phone | `pnpm test:e2e` |
+| Unit | `web/ui/src/**/*.test.ts` | Formatting (ms, %, device ID), demo data | `bun run test` |
+| Component | `*.test.tsx` (Vitest, jsdom, Testing Library) | Overlay, session view (mode, keyboard shortcuts, audio), device list (search, filter, dialog), navigation, clipboard, viewer form | `bun run test` |
+| Coverage | Vitest v8 | Thresholds: 90 % lines/functions, 85 % branches | `bun run test:coverage` |
+| Browser E2E | `web/e2e` (Playwright, desktop + Pixel 7) | Real builds of both apps: flows, keyboard, deep links, live overlay | `bun run test:e2e` |
+| Accessibility | `web/e2e` (axe) | WCAG 2.1 AA with no "serious"/"critical" findings and no horizontal scrolling on the phone | `bun run test:e2e` |
 
 ## What the tests have found so far
 

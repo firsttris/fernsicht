@@ -33,19 +33,19 @@ die das AppImage mitträgt, unter `binaries/` (einmal `./packaging/appimage.sh`
 legt sie an):
 
 ```sh
-pnpm install && pnpm --filter @fernsicht/client-ui build
+bun install && bun run --filter @fernsicht/client-ui build
 cargo build --release -p fernsicht-client --features vaapi,vulkan,window
 cd apps/desktop && cargo build --release
 FERNSICHT_CLIENT=../../target/release/fernsicht-client ./target/release/fernsicht
 ```
 
-Wenn du an der UI arbeitest, mit Hot Reload: `pnpm dev:client` starten,
+Wenn du an der UI arbeitest, mit Hot Reload: `bun run dev:client` starten,
 dann `cargo run --no-default-features`. Die App lädt dann den
 Vite-Server statt der eingebauten Dateien.
 
 ## Tests
 
 ```sh
-cargo test   # App-Logik gegen echten Host und echten Client
-pnpm test    # (im Repo-Wurzelverzeichnis) die UI, auch im App-Modus
+cargo test      # App-Logik gegen echten Host und echten Client
+bun run test    # (im Repo-Wurzelverzeichnis) die UI, auch im App-Modus
 ```

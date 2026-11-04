@@ -72,7 +72,7 @@ dev/setup.sh            # AMD machine
 dev/setup.sh --nvidia   # NVIDIA machine
 ```
 
-This builds the image `localhost/fernsicht-dev` with Rust, Node, VAAPI,
+This builds the image `localhost/fernsicht-dev` with Rust, Bun, VAAPI,
 Vulkan and FFmpeg with all codecs (from RPM Fusion, like Bazzite itself)
 and creates the Distrobox. Then:
 

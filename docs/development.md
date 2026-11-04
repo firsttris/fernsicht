@@ -5,7 +5,9 @@ Testing is described in detail on its own page: [testing](testing.md).
 
 ## Requirements
 
-- Rust (stable) and, for the web parts and the app, Node.js with pnpm (`corepack enable`).
+- Rust (stable) and, for the web parts and the app, [Bun](https://bun.com) in the version of
+  `packageManager` in `package.json` (package manager, script runner, Vite, Playwright's runner).
+  The dev container brings it.
 - For hardware video: FFmpeg and libva development headers (`vaapi`), the NVIDIA driver at runtime
   (`nvidia`, CUDA is loaded dynamically).
 - For the app: WebKitGTK (Tauri).
@@ -56,7 +58,7 @@ Each feature is listed in [modules](modules.md#build-features); all options are 
 ### The app
 
 ```sh
-pnpm install && pnpm --filter @fernsicht/client-ui build
+bun install && bun run --filter @fernsicht/client-ui build
 cargo build --release -p fernsicht-client --features vaapi,window   # the stream window
 cargo build --release --manifest-path apps/desktop/Cargo.toml        # the app
 FERNSICHT_CLIENT=target/release/fernsicht-client apps/desktop/target/release/fernsicht
@@ -70,9 +72,9 @@ as long as nothing is installed.
 With demo data, no host needed:
 
 ```sh
-pnpm install
-pnpm dev:client   # the app's interface on http://localhost:1420
-pnpm dev:viewer   # the web viewer on http://localhost:5174 (demo; the real one is served by the host)
+bun install
+bun run dev:client   # the app's interface on http://localhost:1420
+bun run dev:viewer   # the web viewer on http://localhost:5174 (demo; the real one is served by the host)
 ```
 
 ### Installing a local build
@@ -95,9 +97,9 @@ leaves out the end-to-end and browser tests):
 ```sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-pnpm install && pnpm check && pnpm -r typecheck && pnpm test
-pnpm test:coverage && pnpm test:e2e
-pnpm --filter @fernsicht/client-ui build     # the app needs the built UI
+bun install && bun run check && bun run typecheck && bun run test
+bun run test:coverage && bun run test:e2e
+bun run --filter @fernsicht/client-ui build     # the app needs the built UI
 cd apps/desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 shellcheck packaging/*.sh scripts/*.sh
 ```
@@ -111,7 +113,7 @@ The screenshots in the README and these docs are made by Playwright from the app
 web viewer with demo data:
 
 ```sh
-pnpm screenshots
+bun run screenshots
 ```
 
 `scripts/screenshots.sh` builds both, serves them on ports 4311 and 4312 and runs

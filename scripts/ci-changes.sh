@@ -24,7 +24,7 @@ files=$(git diff --name-only "$base" HEAD)
 # app and the generated TypeScript types sit between them.
 shared='^(\.github/|scripts/)'
 rust='^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/|apps/(client|host-agent|desktop)/|tests/|fuzz/|packaging/|dev/)'
-web='^(web/|apps/desktop/|package\.json$|pnpm-(lock|workspace)\.yaml$|biome\.json$)'
+web='^(web/|apps/desktop/|package\.json$|bun\.lock$|bunfig\.toml$|biome\.json$)'
 # What the GPU runners test: the GPU crates, the host's encoder and the
 # client's decoder and window, the GPU tests and what builds them. Network,
 # protocol, input, sound and the web viewer are tested in CI already.

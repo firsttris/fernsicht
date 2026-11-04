@@ -4,7 +4,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "test": "playwright test",
+    "test": "bun --bun playwright test",
     "typecheck": "tsc -p ."
   },
   "devDependencies": {

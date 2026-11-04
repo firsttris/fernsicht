@@ -1,6 +1,6 @@
 # Modules
 
-The repository is a Cargo workspace for the Rust side and a pnpm workspace for the web side.
+The repository is a Cargo workspace for the Rust side and a Bun workspace for the web side.
 
 ```text
 crates/   core · proto · net · capture · gpu · codec · render · input · audio · secure

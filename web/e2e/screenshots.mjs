@@ -1,5 +1,5 @@
 // Takes the screenshots in docs/ from the demo data (scripts/screenshots.sh
-// serves the builds). By hand: node screenshots.mjs <docs dir>
+// serves the builds). By hand: bun screenshots.mjs <docs dir>
 // The UI is German; the pictures show it as it is.
 import { chromium, devices } from "@playwright/test";
 
