@@ -13,7 +13,7 @@
 # is less reliable). A prefix already built with this version is kept.
 set -eu
 
-sdl_version=3.4.18
+sdl_version=3.4.20
 sdl_sha256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
 
 cd "$(dirname "$0")/.."
