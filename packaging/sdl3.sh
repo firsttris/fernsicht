@@ -13,8 +13,8 @@
 # is less reliable). A prefix already built with this version is kept.
 set -eu
 
-sdl_version=3.4.18
-sdl_sha256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+sdl_version=3.4.20
+sdl_sha256=f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f
 
 cd "$(dirname "$0")/.."
 prefix=$(realpath -m "${1:-target/sdl3}")
